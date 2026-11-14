@@ -5,6 +5,25 @@ use rmcp::model::{ElicitResult, ElicitationAction};
 
 use super::{Agent, Channel, LlmProvider};
 
+/// Render the `/mcp list` "Shadowed tools" section; empty when nothing is shadowed.
+fn format_shadowed_tools(collisions: &[zeph_mcp::tool::ToolCollision]) -> String {
+    use std::fmt::Write;
+
+    if collisions.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("\n\nShadowed tools (same sanitized id, first server wins dispatch):");
+    for c in collisions {
+        let _ = write!(
+            out,
+            "\n- {} is shadowed by {} (id: {})",
+            c.qualified_b, c.qualified_a, c.sanitized_id
+        );
+    }
+    out
+}
+
 impl<C: Channel> Agent<C> {
     /// Dispatch a `/mcp` subcommand, returning the output as a `String`.
     ///
@@ -108,12 +127,14 @@ impl<C: Channel> Agent<C> {
                 .mcp
                 .tools()
                 .iter()
-                .filter(|t| t.server_id == *id)
+                .filter(|t| t.server_id == id.as_str())
                 .count();
             total += count;
             let _ = writeln!(output, "- {id} ({count} tools)");
         }
         let _ = write!(output, "Total: {total} tool(s)");
+
+        output.push_str(&format_shadowed_tools(&manager.tool_collisions()));
 
         Ok(output)
     }
@@ -294,7 +315,7 @@ impl<C: Channel> Agent<C> {
                     .cloned();
                 if live.is_none() {
                     tracing::warn!(
-                        server_id = hit.server_id,
+                        server_id = %hit.server_id,
                         tool = hit.name,
                         "MCP tool from semantic search has no live match; dropping stale Qdrant hit"
                     );
@@ -313,19 +334,17 @@ impl<C: Channel> Agent<C> {
     ///   via `McpAccess::handle_mcp` (which cannot call `rebuild_semantic_index` directly
     ///   because the future would be `!Send`).
     ///
-    /// Both branches also call [`refresh_mcp_tool_ids`](Self::refresh_mcp_tool_ids) so
-    /// `TrustGateExecutor`'s Quarantine-deny set stays current with MCP servers connected
-    /// after startup (#5747) — otherwise it is only ever populated once, at agent construction.
+    /// The MCP provenance registry read by the trust gate, shadow sentinel, policy gate and the
+    /// tool loops is rebuilt by the tool-list mutators themselves, so it stays current with MCP
+    /// servers connected after startup without a separate refresh step.
     ///
     /// If neither trigger fires, this is a no-op.
     pub(super) async fn check_tool_refresh(&mut self) {
         // Handle deferred rebuild from /mcp add|remove via AgentAccess.
         if self.services.mcp.pending_semantic_rebuild {
             self.services.mcp.pending_semantic_rebuild = false;
-            self.refresh_mcp_tool_ids();
             self.rebuild_semantic_index().await;
             self.sync_mcp_registry().await;
-            self.refresh_shadow_sentinel_mcp_tool_ids();
             let mcp_total = self.services.mcp.tools().len();
             let mcp_servers = self
                 .services
@@ -352,12 +371,10 @@ impl<C: Channel> Agent<C> {
             // Guard against replacing a non-empty initial tool list with the watch's empty
             // initial value. The watch is only updated after a real tools/list_changed event.
             //
-            // This early return also means `refresh_mcp_tool_ids` below is skipped, so
-            // `mcp_tool_ids` can retain stale ids past this point — but only fail-safe (over-deny
-            // of ids that no longer map to a live tool), never fail-open. In practice this branch
-            // is unreachable with an empty list anyway: the `tools/list_changed` producer never
-            // sends an empty vec, and removing the last server goes through the
-            // `pending_semantic_rebuild` branch above, which has no such guard.
+            // In practice this branch is unreachable with an empty list anyway: the
+            // `tools/list_changed` producer never sends an empty vec, and removing the last
+            // server goes through the `pending_semantic_rebuild` branch above, which has no
+            // such guard.
             return;
         }
         tracing::info!(
@@ -367,10 +384,8 @@ impl<C: Channel> Agent<C> {
         self.services.mcp.set_tools(new_tools);
         self.services.mcp.sync_executor_tools();
         self.services.mcp.pruning_cache.reset();
-        self.refresh_mcp_tool_ids();
         self.rebuild_semantic_index().await;
         self.sync_mcp_registry().await;
-        self.refresh_shadow_sentinel_mcp_tool_ids();
         let mcp_total = self.services.mcp.tools().len();
         let mcp_servers = self
             .services
@@ -384,47 +399,6 @@ impl<C: Channel> Agent<C> {
             m.mcp_tool_count = mcp_total;
             m.mcp_server_count = mcp_servers;
         });
-    }
-
-    /// Refreshes `ShadowSentinel`'s registered-MCP-tool-id set from the current
-    /// `services.mcp.tools` list, so a server connected after startup (via `/mcp add` or a live
-    /// `tools/list_changed` notification) is reflected without waiting for a process restart.
-    ///
-    /// Only covers `ShadowSentinel`'s own tool-id set, used for risk classification.
-    /// `TrustGateExecutor`'s separate Quarantine-deny set is refreshed independently by
-    /// [`refresh_mcp_tool_ids`](Self::refresh_mcp_tool_ids) (#5747).
-    fn refresh_shadow_sentinel_mcp_tool_ids(&self) {
-        let Some(ref sentinel) = self.services.security.shadow_sentinel else {
-            return;
-        };
-        let ids: std::collections::HashSet<String> = self
-            .services
-            .mcp
-            .tools()
-            .iter()
-            .map(zeph_mcp::McpTool::sanitized_id)
-            .collect();
-        *sentinel.mcp_tool_ids_handle().write() = ids;
-    }
-
-    /// Rebuilds `TrustGateExecutor`'s MCP tool-id registry (`self.services.security.mcp_tool_ids`)
-    /// from the current `self.services.mcp.tools()`, using the same id derivation
-    /// (`McpTool::sanitized_id`) and replace-not-union semantics as the startup-time
-    /// `register_mcp_tool_ids` (binary crate `agent_setup.rs`). Replace semantics correctly
-    /// drop ids for servers that disconnected since the last refresh. A no-op when no handle
-    /// was attached via `AgentBuilder::with_mcp_tool_ids_handle`.
-    fn refresh_mcp_tool_ids(&self) {
-        let Some(ref handle) = self.services.security.mcp_tool_ids else {
-            return;
-        };
-        let ids: std::collections::HashSet<String> = self
-            .services
-            .mcp
-            .tools()
-            .iter()
-            .map(zeph_mcp::McpTool::sanitized_id)
-            .collect();
-        *handle.write() = ids;
     }
 
     pub(super) async fn sync_mcp_registry(&mut self) {
@@ -603,24 +577,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .filter(|o| o.connected)
             .count();
-        let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
-            .services
-            .mcp
-            .server_outcomes
-            .iter()
-            .map(|o| crate::metrics::McpServerStatus {
-                id: o.id.clone(),
-                status: if o.connected {
-                    crate::metrics::McpServerConnectionStatus::Connected
-                } else {
-                    crate::metrics::McpServerConnectionStatus::Failed
-                },
-                tool_count: o.tool_count,
-                error: o.error.clone(),
-                input_schemas_dropped: o.input_schemas_dropped,
-                output_schemas_dropped: o.output_schemas_dropped,
-            })
-            .collect();
+        let mcp_servers = self.services.mcp.server_statuses();
         self.update_metrics(|m| {
             m.mcp_tool_count = mcp_total;
             m.mcp_server_count = mcp_server_count;
@@ -773,13 +730,12 @@ fn build_elicitation_fields(
                     let vals = json
                         .get("enum")
                         .and_then(|v| v.as_array())
-                        .map(|arr| {
+                        .map_or_default(|arr| {
                             arr.iter()
                                 .filter_map(|v| v.as_str())
                                 .map(sanitize_elicitation_message)
                                 .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
+                        });
                     ElicitationFieldType::Enum(vals)
                 }
                 PrimitiveSchemaDefinition::String(_) => ElicitationFieldType::String,
@@ -869,7 +825,7 @@ impl<C: Channel + Send + 'static> zeph_commands::McpAccess for Agent<C> {
                     .mcp
                     .tools()
                     .iter()
-                    .map(|t| (t.server_id.clone(), t.name.clone()))
+                    .map(|t| (t.server_id.to_string(), t.name.clone()))
                     .collect();
                 Box::pin(async move {
                     use std::fmt::Write;
@@ -899,7 +855,7 @@ impl<C: Channel + Send + 'static> zeph_commands::McpAccess for Agent<C> {
                         .mcp
                         .tools()
                         .iter()
-                        .filter(|t| &t.server_id == sid)
+                        .filter(|t| t.server_id == sid.as_str())
                         .map(|t| (t.name.clone(), t.description.clone()))
                         .collect()
                 } else {
@@ -947,6 +903,26 @@ mod tests {
     };
     use super::*;
     use std::assert_matches;
+
+    #[test]
+    fn shadowed_tools_section_names_both_tools_and_the_id() {
+        use zeph_mcp::McpTrustLevel;
+        use zeph_mcp::tool::ToolCollision;
+
+        assert_eq!(format_shadowed_tools(&[]), "");
+        let col = ToolCollision {
+            sanitized_id: "a_b_c".into(),
+            server_a: "a.b".into(),
+            qualified_a: "a.b:c".into(),
+            trust_a: McpTrustLevel::Trusted,
+            server_b: "a".into(),
+            qualified_b: "a:b_c".into(),
+            trust_b: McpTrustLevel::Untrusted,
+        };
+        let out = format_shadowed_tools(&[col]);
+        assert!(out.contains("Shadowed tools"));
+        assert!(out.contains("a:b_c is shadowed by a.b:c (id: a_b_c)"));
+    }
 
     #[tokio::test]
     async fn handle_mcp_command_unknown_subcommand_shows_usage() {
@@ -1075,7 +1051,7 @@ mod tests {
         input_schema: serde_json::Value,
     ) -> zeph_mcp::McpTool {
         zeph_mcp::McpTool {
-            server_id: server_id.to_owned(),
+            server_id: server_id.into(),
             name: name.to_owned(),
             description: format!("{name} description"),
             input_schema,
@@ -1284,14 +1260,41 @@ mod tests {
         assert_eq!(agent.services.mcp.tools()[0].name, "refreshed_tool");
     }
 
-    /// #5736 follow-up (S1): a server connected after startup via a `tools/list_changed`
-    /// notification must be reflected in `ShadowSentinel`'s registered-MCP-tool-id set, not just
-    /// `services.mcp.tools` — otherwise the escalation fix in `classify_tool` stays blind to any
-    /// MCP tool the agent didn't already know about at process start.
+    fn refreshed_tool(name: &str) -> zeph_mcp::McpTool {
+        zeph_mcp::McpTool {
+            server_id: "srv".into(),
+            name: name.to_owned(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+        }
+    }
+
+    fn agent_with_tool_list(
+        initial: Vec<zeph_mcp::McpTool>,
+    ) -> (
+        Agent<MockChannel>,
+        zeph_tools::McpToolIdsHandle,
+        zeph_mcp::McpToolListReader,
+    ) {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let (writer, reader) = zeph_mcp::McpToolList::new(initial);
+        let handle = writer.ids_handle();
+        agent.services.mcp.tool_list = Some(writer);
+        (agent, handle, reader)
+    }
+
+    /// A server connected after startup via `tools/list_changed` must reach the shared registry
+    /// that `ShadowSentinel` classifies with, not just `services.mcp.tools`.
     #[tokio::test]
-    async fn check_tool_refresh_updates_shadow_sentinel_mcp_tool_ids() {
+    async fn check_tool_refresh_updates_shadow_sentinel_registry() {
         use crate::agent::shadow_sentinel::{
-            ProbeVerdict, SafetyProbe, ShadowEventStore, ShadowSentinel,
+            ProbeVerdict, SafetyProbe, ShadowEventStore, ShadowSentinel, ToolRiskCategory,
         };
 
         struct NoopProbe;
@@ -1307,12 +1310,7 @@ mod tests {
             }
         }
 
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
+        let (mut agent, handle, _reader) = agent_with_tool_list(Vec::new());
         let pool = zeph_db::DbConfig {
             url: ":memory:".to_owned(),
             ..Default::default()
@@ -1320,170 +1318,118 @@ mod tests {
         .connect()
         .await
         .expect("connect + migrate in-memory sqlite pool");
-        let store = ShadowEventStore::new(pool);
-        let sentinel = std::sync::Arc::new(ShadowSentinel::new(
-            store,
+        let sentinel = ShadowSentinel::new(
+            ShadowEventStore::new(pool),
             Box::new(NoopProbe),
             zeph_config::ShadowSentinelConfig::default(),
             "test-session",
-        ));
-        agent.services.security.shadow_sentinel = Some(std::sync::Arc::clone(&sentinel));
+        )
+        .with_mcp_tool_ids(handle);
+        assert_ne!(
+            sentinel.classify_tool("srv_frobnicate"),
+            ToolRiskCategory::McpUnclassified
+        );
 
         let (tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
         agent.services.mcp.tool_rx = Some(rx);
-
-        let new_tool = zeph_mcp::McpTool {
-            server_id: "srv".into(),
-            name: "refreshed_tool".into(),
-            description: String::new(),
-            input_schema: serde_json::json!({}),
-            output_schema: None,
-            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
-        };
-        let expected_id = new_tool.sanitized_id();
-        tx.send(vec![new_tool]).unwrap();
-
+        tx.send(vec![refreshed_tool("frobnicate")]).unwrap();
         agent.check_tool_refresh().await;
 
-        assert!(
-            sentinel.mcp_tool_ids_handle().read().contains(&expected_id),
-            "ShadowSentinel's mcp_tool_ids must be refreshed after a tools/list_changed event"
+        assert_eq!(
+            sentinel.classify_tool("srv_frobnicate"),
+            ToolRiskCategory::McpUnclassified
         );
     }
 
     #[tokio::test]
-    async fn check_tool_refresh_without_mcp_tool_ids_handle_does_not_panic() {
+    async fn check_tool_refresh_without_tool_list_still_applies_the_update() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        // No handle attached (services.security.mcp_tool_ids is None by default) — refresh
-        // must be a no-op w.r.t. that field, and the tool list update must still apply.
-        assert!(agent.services.security.mcp_tool_ids.is_none());
+        assert!(agent.services.mcp.tool_list.is_none());
 
         let (tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
         agent.services.mcp.tool_rx = Some(rx);
-        let new_tools = vec![zeph_mcp::McpTool {
-            server_id: "srv".into(),
-            name: "refreshed_tool".into(),
-            description: String::new(),
-            input_schema: serde_json::json!({}),
-            output_schema: None,
-            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
-        }];
-        tx.send(new_tools).unwrap();
+        tx.send(vec![refreshed_tool("refreshed_tool")]).unwrap();
 
         agent.check_tool_refresh().await;
         assert_eq!(agent.services.mcp.tool_count(), 1);
     }
 
     #[tokio::test]
-    async fn check_tool_refresh_updates_attached_mcp_tool_ids_handle() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        let handle =
-            std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashSet::new()));
-        agent.services.security.mcp_tool_ids = Some(std::sync::Arc::clone(&handle));
+    async fn check_tool_refresh_publishes_to_registry_and_executor_list() {
+        let (mut agent, handle, reader) = agent_with_tool_list(Vec::new());
 
         let (tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
         agent.services.mcp.tool_rx = Some(rx);
-        let new_tools = vec![zeph_mcp::McpTool {
-            server_id: "srv".into(),
-            name: "refreshed_tool".into(),
-            description: String::new(),
-            input_schema: serde_json::json!({}),
-            output_schema: None,
-            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
-        }];
-        tx.send(new_tools).unwrap();
+        tx.send(vec![refreshed_tool("refreshed_tool")]).unwrap();
 
         agent.check_tool_refresh().await;
 
-        assert!(
-            handle.read().contains("srv_refreshed_tool"),
-            "expected the sanitized id of the newly-connected tool in the handle, got: {:?}",
-            *handle.read()
-        );
+        assert!(handle.contains("srv_refreshed_tool"));
+        assert_eq!(reader.read().len(), 1);
     }
 
     #[tokio::test]
-    async fn check_tool_refresh_drops_disconnected_tool_from_mcp_tool_ids_handle() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-        // Simulate a stale id left over from an earlier (startup-time) population, for a
-        // server that has since disconnected.
-        let handle =
-            std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashSet::from([
-                "stale_server_old_tool".to_owned(),
-            ])));
-        agent.services.security.mcp_tool_ids = Some(std::sync::Arc::clone(&handle));
+    async fn check_tool_refresh_drops_disconnected_tool_from_registry() {
+        let stale = zeph_mcp::McpTool {
+            server_id: "stale_server".into(),
+            ..refreshed_tool("old_tool")
+        };
+        let (mut agent, handle, reader) = agent_with_tool_list(vec![stale]);
+        assert!(handle.contains("stale_server_old_tool"));
 
         let (tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
         agent.services.mcp.tool_rx = Some(rx);
-        let new_tools = vec![zeph_mcp::McpTool {
-            server_id: "srv".into(),
-            name: "refreshed_tool".into(),
-            description: String::new(),
-            input_schema: serde_json::json!({}),
-            output_schema: None,
-            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
-        }];
-        tx.send(new_tools).unwrap();
+        tx.send(vec![refreshed_tool("refreshed_tool")]).unwrap();
 
         agent.check_tool_refresh().await;
 
-        let ids = handle.read();
         assert!(
-            !ids.contains("stale_server_old_tool"),
-            "disconnected server's tool id must be dropped (replace, not union), got: {ids:?}"
+            !handle.contains("stale_server_old_tool"),
+            "disconnected server's tool id must be dropped (replace, not union)"
         );
-        assert!(ids.contains("srv_refreshed_tool"));
+        assert!(handle.contains("srv_refreshed_tool"));
+        assert!(
+            reader
+                .read()
+                .iter()
+                .all(|t| t.server_id.as_str() != "stale_server")
+        );
     }
 
     /// Covers the `pending_semantic_rebuild` trigger (set by `/mcp add`/`/mcp remove`), the
-    /// second of the two `check_tool_refresh` branches that call `refresh_mcp_tool_ids` — the
-    /// other tests above only exercise the `tools/list_changed` (`tool_rx`) branch.
+    /// branch of `check_tool_refresh` besides `tools/list_changed` (`tool_rx`).
     #[tokio::test]
-    async fn check_tool_refresh_updates_mcp_tool_ids_handle_via_pending_semantic_rebuild() {
-        let provider = mock_provider(vec![]);
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    async fn check_tool_refresh_keeps_registry_through_pending_semantic_rebuild() {
+        let (mut agent, handle, _reader) = agent_with_tool_list(Vec::new());
 
-        let handle =
-            std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashSet::new()));
-        agent.services.security.mcp_tool_ids = Some(std::sync::Arc::clone(&handle));
-
-        // Mirrors what handle_mcp_add/handle_mcp_remove already do before setting the flag:
-        // self.services.mcp.tools() is updated first, then pending_semantic_rebuild = true.
-        agent.services.mcp.set_tools(vec![zeph_mcp::McpTool {
-            server_id: "srv".into(),
-            name: "added_tool".into(),
-            description: String::new(),
-            input_schema: serde_json::json!({}),
-            output_schema: None,
-            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
-        }]);
+        agent
+            .services
+            .mcp
+            .set_tools(vec![refreshed_tool("added_tool")]);
         agent.services.mcp.pending_semantic_rebuild = true;
 
         agent.check_tool_refresh().await;
 
-        assert!(
-            handle.read().contains("srv_added_tool"),
-            "expected the sanitized id of the /mcp add-connected tool in the handle, got: {:?}",
-            *handle.read()
-        );
+        assert!(handle.contains("srv_added_tool"));
         assert!(!agent.services.mcp.pending_semantic_rebuild);
+    }
+
+    #[test]
+    fn pruning_keeps_pruned_tools_classified_as_mcp() {
+        let (writer, reader) = zeph_mcp::McpToolList::new(Vec::new());
+        let handle = writer.ids_handle();
+        let mut state = crate::agent::state::McpState::default();
+        state.tool_list = Some(writer);
+        state.set_tools(vec![refreshed_tool("a"), refreshed_tool("b")]);
+        state.apply_pruned_tools(vec![refreshed_tool("a")]);
+        assert_eq!(reader.read().len(), 1);
+        assert!(handle.contains("srv_b"));
+        state.sync_executor_tools();
+        assert_eq!(reader.read().len(), 2);
     }
 
     #[test]

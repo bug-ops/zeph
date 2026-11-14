@@ -122,7 +122,7 @@ pub mod whisper;
 
 pub use classifier::metrics::{ClassifierMetrics, ClassifierMetricsSnapshot, TaskMetricsSnapshot};
 pub use compatible::CompatibleConfig;
-pub use error::{LlmError, RefusalCategory};
+pub use error::{ApiErrorDetail, LlmError, RefusalCategory};
 pub use extractor::Extractor;
 pub use masking::{MaskedProvider, OutboundMasker, mask_messages};
 pub use openai::{CompletionTokensParam, OpenAiConfig};

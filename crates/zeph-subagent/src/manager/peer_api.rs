@@ -97,6 +97,7 @@ mod tests {
     use super::*;
     use crate::def::SubAgentDef;
     use crate::manager::SubAgentHandle;
+    use std::assert_matches;
 
     #[test]
     fn send_to_unknown_subagent_fails() {
@@ -104,7 +105,7 @@ mod tests {
         let err = mgr
             .send_to_subagent("nonexistent", "hi".to_owned())
             .unwrap_err();
-        assert!(matches!(err, DeliveryError::TargetNotFound(_)));
+        assert_matches!(err, DeliveryError::TargetNotFound(_));
     }
 
     #[test]
@@ -256,7 +257,7 @@ mod tests {
         let err = mgr
             .send_to_subagent("nonexistent-in-released-plan", "hi".to_owned())
             .unwrap_err();
-        assert!(matches!(err, DeliveryError::TargetNotFound(_)));
+        assert_matches!(err, DeliveryError::TargetNotFound(_));
         assert!(
             mgr.try_recv_peer_message().is_none(),
             "no dangling Plan-root mailbox after release"

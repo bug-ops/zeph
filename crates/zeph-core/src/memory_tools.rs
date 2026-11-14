@@ -512,6 +512,7 @@ impl ToolExecutor for MemoryToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_memory::semantic::SemanticMemory;
@@ -740,8 +741,9 @@ mod tests {
 
         let call = memory_save_call("derived from untrusted web content");
         let result = executor.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(ToolError::ConfirmationRequired { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::ConfirmationRequired { .. }),
             "expected ConfirmationRequired, got: {result:?}"
         );
         assert!(executor.requires_confirmation(&call));
@@ -780,10 +782,10 @@ mod tests {
 
         let call = memory_save_call("approved after confirmation");
         // First attempt is gated.
-        assert!(matches!(
+        assert_matches!(
             executor.execute_tool_call(&call).await,
             Err(ToolError::ConfirmationRequired { .. })
-        ));
+        );
         // Confirmed re-dispatch bypasses the gate and actually saves.
         let result = executor.execute_tool_call_confirmed(&call).await;
         assert!(result.is_ok(), "confirmed save should succeed: {result:?}");

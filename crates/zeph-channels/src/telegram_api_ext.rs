@@ -747,10 +747,7 @@ mod tests {
             .answer_guest_query("bad_id", "hi", None)
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, TelegramApiError::Api(_)),
-            "expected Api error"
-        );
+        assert_matches!(err, TelegramApiError::Api(_), "expected Api error");
     }
 
     // ── get_managed_bot_access_settings ──────────────────────────────────────
@@ -1060,8 +1057,9 @@ mod tests {
         client.base_url = server.uri();
 
         let err = client.get_me().await.unwrap_err();
-        assert!(
-            matches!(err, TelegramApiError::Http(_)),
+        assert_matches!(
+            err,
+            TelegramApiError::Http(_),
             "expected Http (timeout) error, got {err:?}"
         );
     }
@@ -1086,8 +1084,9 @@ mod tests {
             .answer_guest_query("qid", "hi", None)
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, TelegramApiError::Http(_)),
+        assert_matches!(
+            err,
+            TelegramApiError::Http(_),
             "expected Http error for 429 after retries are exhausted, got {err:?}"
         );
     }

@@ -97,7 +97,7 @@ Guest Mode allows Zeph to receive messages from guest users who interact via a u
 guest_mode = true
 ```
 
-When enabled, Zeph spawns a local HTTP proxy that intercepts `getUpdates` responses and extracts guest messages. Guest users see a system prompt annotation indicating their guest context, and responses are accumulated before being sent as a single reply.
+When enabled, Zeph spawns a local HTTP proxy that intercepts `getUpdates` responses and extracts guest messages. Guest users see a system prompt annotation indicating their guest context, and responses are accumulated before being sent as a single reply. The proxy caps upstream response bodies at 20 MiB.
 
 ### Bot-to-Bot Communication
 

@@ -369,6 +369,7 @@ impl Channel for SlackChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::time::Duration;
 
     fn make_channel() -> SlackChannel {
@@ -643,6 +644,6 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(result, Err(ChannelError::Other(_))));
+        assert_matches!(result, Err(ChannelError::Other(_)));
     }
 }

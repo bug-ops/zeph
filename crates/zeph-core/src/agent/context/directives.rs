@@ -925,8 +925,7 @@ mod tests {
         let text = preamble
             .directives
             .as_ref()
-            .map(|b| b.text.clone())
-            .unwrap_or_default();
+            .map_or_default(|b| b.text.clone());
         let turn = agent.build_user_message("q", vec![], preamble);
         agent.msg.messages.push(turn);
         text

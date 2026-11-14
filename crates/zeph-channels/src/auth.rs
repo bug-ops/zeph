@@ -70,6 +70,7 @@ pub fn is_identity_allowed(identity: Option<&str>, allowed: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn all_lists_empty_true_when_all_empty() {
@@ -90,7 +91,7 @@ mod tests {
         let a: Vec<String> = vec![];
         let b: Vec<String> = vec![];
         let result = require_configured_allowlist("test", &[&a, &b]);
-        assert!(matches!(result, Err(ChannelError::Other(_))));
+        assert_matches!(result, Err(ChannelError::Other(_)));
     }
 
     #[test]

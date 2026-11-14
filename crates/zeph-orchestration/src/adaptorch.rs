@@ -395,8 +395,7 @@ Respond with a single JSON object:\n\
         let arm = arm_entries
             .iter()
             .find(|(h, _)| *h == hint)
-            .map(|(_, d)| d.clone())
-            .unwrap_or_default();
+            .map_or_default(|(_, d)| d.clone());
         let mean = arm.alpha / (arm.alpha + arm.beta);
         let exploit = (score - mean).abs() < 0.15;
 

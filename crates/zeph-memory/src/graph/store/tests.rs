@@ -5,6 +5,7 @@ use super::*;
 use crate::graph::types::{EdgeType, GraphOrigin, GraphProvenance};
 use crate::store::SqliteStore;
 use crate::types::{CommunityId, ConversationId, EdgeId, EntityId, EpisodeId};
+use std::assert_matches;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -3629,8 +3630,9 @@ async fn insert_edge_typed_rejects_self_loop() {
         .await
         .unwrap_err();
 
-    assert!(
-        matches!(err, crate::error::MemoryError::InvalidInput(_)),
+    assert_matches!(
+        err,
+        crate::error::MemoryError::InvalidInput(_),
         "expected InvalidInput for self-loop, got: {err:?}"
     );
 }
@@ -3738,11 +3740,10 @@ async fn qdrant_point_ids_for_entities_times_out_on_pool_starvation() {
         .await;
     holder.await.expect("holder task");
 
-    assert!(
-        matches!(
+    assert_matches!(
             result,
             Err(crate::error::MemoryError::Timeout(ref msg)) if msg == "qdrant_point_ids_for_entities"
-        ),
+        ,
         "expected Timeout(\"qdrant_point_ids_for_entities\"), got: {result:?}"
     );
 }
@@ -3770,12 +3771,11 @@ async fn record_edge_retrieval_times_out_on_pool_starvation() {
     let result = gs.record_edge_retrieval(&[EdgeId::new(1)]).await;
     holder.await.expect("holder task");
 
-    assert!(
-        matches!(
+    assert_matches!(
             result,
             Err(crate::error::MemoryError::Timeout(ref msg))
                 if msg == "record_edge_retrieval: write timed out after 500ms"
-        ),
+        ,
         "expected Timeout(\"record_edge_retrieval: write timed out after 500ms\"), got: {result:?}"
     );
 }
@@ -3798,12 +3798,11 @@ async fn apply_hebbian_increment_times_out_on_pool_starvation() {
     let result = gs.apply_hebbian_increment(&[EdgeId::new(1)], 0.5_f32).await;
     holder.await.expect("holder task");
 
-    assert!(
-        matches!(
+    assert_matches!(
             result,
             Err(crate::error::MemoryError::Timeout(ref msg))
                 if msg == "apply_hebbian_increment: write timed out after 500ms"
-        ),
+        ,
         "expected Timeout(\"apply_hebbian_increment: write timed out after 500ms\"), got: {result:?}"
     );
 }

@@ -6,6 +6,7 @@
 
 #![allow(clippy::large_futures)]
 
+use std::assert_matches;
 use std::sync::Arc;
 
 use tokio::sync::watch;
@@ -35,7 +36,7 @@ fn replayed(stored: ToolResultSource) -> ToolOutputOrigin {
 
 fn mcp(server: &str) -> ToolResultSource {
     ToolResultSource::Mcp {
-        server_id: Some(server.to_owned()),
+        server_id: Some(server.into()),
     }
 }
 
@@ -335,7 +336,7 @@ fn vigil_keeps_live_native_exemption_and_never_exempts_mcp() {
         &none
     ));
     let mut ids = McpToolIds::default();
-    ids.insert("memory_search".into(), Some("notes".into()));
+    ids.insert("memory_search".into(), "notes".into());
     assert!(vigil_flags(
         "memory_search",
         &ToolOutputOrigin::Executed(None),
@@ -384,10 +385,10 @@ fn replayed_output_keeps_its_tool_output_shape() {
         replayed_from: Some(mcp("github")),
         ..Default::default()
     };
-    assert!(matches!(
+    assert_matches!(
         ToolOutputOrigin::from_output(&output),
         ToolOutputOrigin::Replayed { .. }
-    ));
+    );
     let synthetic = ToolOutput::synthetic(
         REPLAY.into(),
         "[skipped]",
@@ -506,6 +507,8 @@ async fn main_loop_overflow_save_records_the_resolved_mcp_source() {
         retention_days: 7,
         ..Default::default()
     };
+    let (writer, _reader) = zeph_mcp::McpToolList::new(Vec::new());
+    agent.services.mcp.tool_list = Some(writer);
     agent
         .services
         .mcp

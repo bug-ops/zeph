@@ -172,6 +172,7 @@ pub enum CompactionTier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn envelope_round_trips_through_json() {
@@ -192,7 +193,7 @@ mod tests {
         assert_eq!(back.seq, 5);
         assert_eq!(back.turn_id, Some(2));
         assert!(back.parent_seq.is_none());
-        assert!(matches!(back.kind, SessionEvent::ToolResult { .. }));
+        assert_matches!(back.kind, SessionEvent::ToolResult { .. });
     }
 
     #[test]

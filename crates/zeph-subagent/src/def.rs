@@ -1406,8 +1406,7 @@ mod tests {
             let boundary = std::fs::canonicalize(dir_a.path()).unwrap();
             let err =
                 SubAgentDef::load_with_boundary(&link_path, Some(&boundary), None).unwrap_err();
-            assert!(
-                matches!(&err, SubAgentError::Parse { reason, .. } if reason.contains("escapes allowed directory boundary")),
+            assert_matches!(&err, SubAgentError::Parse { reason, .. } if reason.contains("escapes allowed directory boundary"),
                 "expected boundary violation error, got: {err}"
             );
         }
@@ -1518,8 +1517,7 @@ mod tests {
     fn parse_yaml_disallowed_tools_from_except() {
         let content = "---\nname: a\ndescription: b\ntools:\n  allow:\n    - shell\n    - web\n  except:\n    - shell\n---\n\nbody\n";
         let def = SubAgentDef::parse(content).unwrap();
-        assert!(
-            matches!(def.tools, ToolPolicy::AllowList(ref v) if v.contains(&"shell".to_owned()))
+        assert_matches!(def.tools, ToolPolicy::AllowList(ref v) if v.contains(&"shell".to_owned())
         );
         assert_eq!(def.disallowed_tools, ["shell"]);
     }
@@ -1798,8 +1796,7 @@ mod tests {
         assert_eq!(reparsed.skills.include, def.skills.include);
         assert_eq!(reparsed.skills.exclude, def.skills.exclude);
         assert_eq!(reparsed.system_prompt, def.system_prompt);
-        assert!(
-            matches!(&reparsed.tools, ToolPolicy::AllowList(v) if v == &["shell", "web_scrape"])
+        assert_matches!(&reparsed.tools, ToolPolicy::AllowList(v) if v == &["shell", "web_scrape"]
         );
     }
 

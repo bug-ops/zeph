@@ -54,6 +54,58 @@ pub struct ResolvedOverlay {
     pub unverified_plugins: Vec<String>,
 }
 
+impl ResolvedOverlay {
+    /// Renders the overlay as the human-readable summary shown by `zeph plugin list --overlay`
+    /// and the `/plugins list --overlay` slash command.
+    ///
+    /// The summary lists source, skipped and unverified plugins; it does not depend on any
+    /// config values, so every surface prints the same text for the same overlay.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let overlay = zeph_plugins::ResolvedOverlay::default();
+    /// assert_eq!(overlay.render(), "No plugin overlay active.");
+    /// ```
+    #[must_use]
+    pub fn render(&self) -> String {
+        if self.source_plugins.is_empty()
+            && self.skipped_plugins.is_empty()
+            && self.unverified_plugins.is_empty()
+        {
+            return "No plugin overlay active.".to_owned();
+        }
+        let mut out = String::from("Active plugin overlay:\n");
+        if self.source_plugins.is_empty() {
+            out.push_str("  Source plugins:  (none)\n");
+        } else {
+            out.push_str("  Source plugins:  ");
+            out.push_str(&self.source_plugins.join(", "));
+            out.push('\n');
+        }
+        if self.skipped_plugins.is_empty() {
+            out.push_str("  Skipped plugins: (none)\n");
+        } else {
+            out.push_str("  Skipped plugins:\n");
+            for reason in &self.skipped_plugins {
+                out.push_str("    - ");
+                out.push_str(reason);
+                out.push('\n');
+            }
+        }
+        if !self.unverified_plugins.is_empty() {
+            out.push_str("  Unverified plugins (applied without an integrity digest):\n");
+            for reason in &self.unverified_plugins {
+                out.push_str("    - ");
+                out.push_str(reason);
+                out.push('\n');
+            }
+        }
+        out.truncate(out.trim_end_matches('\n').len());
+        out
+    }
+}
+
 /// Apply tighten-only config overlays from every installed plugin to `config`.
 ///
 /// Reads `<plugins_dir>/<plugin>/.plugin.toml` for each subdirectory, validates the
@@ -1019,5 +1071,26 @@ mod tests {
         assert_eq!(overlay.unverified_plugins.len(), 1);
         assert!(overlay.unverified_plugins[0].starts_with("oldplugin: "));
         assert!(overlay.unverified_plugins[0].contains("zeph plugin add"));
+    }
+
+    #[test]
+    fn render_lists_unverified_plugins_only_when_present() {
+        let mut overlay = ResolvedOverlay::default();
+        overlay.source_plugins.push("p".to_owned());
+        let without = overlay.render();
+        assert!(!without.contains("Unverified plugins"), "{without}");
+        assert!(!without.ends_with('\n'), "{without}");
+
+        overlay
+            .unverified_plugins
+            .push("p: no integrity digest recorded; run `zeph plugin add` again".to_owned());
+        let with = overlay.render();
+        assert!(
+            with.contains("Unverified plugins (applied without an integrity digest):\n    - p: no integrity digest"),
+            "{with}"
+        );
+
+        overlay.source_plugins.clear();
+        assert_ne!(overlay.render(), "No plugin overlay active.");
     }
 }

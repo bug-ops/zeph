@@ -526,11 +526,7 @@ impl BenchRunner {
             let _ = std::fs::remove_file(db_path);
         }
 
-        let raw = responses
-            .into_iter()
-            .last()
-            .map(|r| r.text)
-            .unwrap_or_default();
+        let raw = responses.into_iter().last().map_or_default(|r| r.text);
 
         Ok(match mode {
             ResponseMode::TerseAnswer => post_process_response(&raw),

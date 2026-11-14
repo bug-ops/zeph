@@ -174,8 +174,7 @@ impl<C: Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|mgr| crate::metrics::AgentDefSummary::build_all(mgr.definitions()))
-            .unwrap_or_default();
+            .map_or_default(|mgr| crate::metrics::AgentDefSummary::build_all(mgr.definitions()));
         self.update_metrics(|m| {
             m.providers = providers;
             m.agent_definitions = agent_definitions;

@@ -102,8 +102,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .rev()
             .find(|m| m.role == Role::User)
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
+            .map_or_default(|m| m.content.clone());
         let ctx_bytes = blake3::hash(user_msg.chars().take(256).collect::<String>().as_bytes());
         let context_hash =
             zeph_common::text::truncate_to_bytes_ref(&ctx_bytes.to_hex(), 16).to_owned();

@@ -322,6 +322,7 @@ fn parse_eval_response(raw: &str) -> Result<SkillQualityScore, serde_json::Error
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn composite_score_default_weights() {
@@ -412,8 +413,9 @@ mod tests {
             original_intent: "test",
         };
         let verdict = ev.evaluate(&req).await.unwrap();
-        assert!(
-            matches!(verdict, SkillVerdict::AcceptOnEvalError(_)),
+        assert_matches!(
+            verdict,
+            SkillVerdict::AcceptOnEvalError(_),
             "expected AcceptOnEvalError, got {verdict:?}"
         );
     }
@@ -438,8 +440,9 @@ mod tests {
             original_intent: "test",
         };
         let verdict = ev.evaluate(&req).await.unwrap();
-        assert!(
-            matches!(verdict, SkillVerdict::Reject { .. }),
+        assert_matches!(
+            verdict,
+            SkillVerdict::Reject { .. },
             "expected Reject, got {verdict:?}"
         );
     }
@@ -465,8 +468,9 @@ mod tests {
             original_intent: "get weather",
         };
         let verdict = ev.evaluate(&req).await.unwrap();
-        assert!(
-            matches!(verdict, SkillVerdict::Accept(_)),
+        assert_matches!(
+            verdict,
+            SkillVerdict::Accept(_),
             "expected Accept, got {verdict:?}"
         );
     }
@@ -493,8 +497,9 @@ mod tests {
             original_intent: "do something bad",
         };
         let verdict = ev.evaluate(&req).await.unwrap();
-        assert!(
-            matches!(verdict, SkillVerdict::Reject { .. }),
+        assert_matches!(
+            verdict,
+            SkillVerdict::Reject { .. },
             "expected Reject, got {verdict:?}"
         );
     }

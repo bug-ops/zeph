@@ -118,6 +118,7 @@ impl McpManager {
             add_remove_lock: tokio::sync::Mutex::new(()),
             lock_tool_list: false,
             tool_list_locked: Arc::new(DashMap::new()),
+            tool_collisions: Arc::new(SyncRwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
             max_connect_attempts: 3,
             startup_retry_backoff_ms: 1_000,

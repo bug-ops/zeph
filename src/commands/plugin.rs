@@ -14,38 +14,7 @@ fn print_overlay_section(
     let overlay = zeph_plugins::apply_plugin_config_overlays(config, plugins_dir)
         .map_err(|e| anyhow::anyhow!("overlay resolution failed: {e}"))?;
 
-    if overlay.source_plugins.is_empty()
-        && overlay.skipped_plugins.is_empty()
-        && overlay.unverified_plugins.is_empty()
-    {
-        println!("No plugin overlay active.");
-        return Ok(());
-    }
-
-    println!("Active plugin overlay:");
-
-    if overlay.source_plugins.is_empty() {
-        println!("  Source plugins:  (none)");
-    } else {
-        println!("  Source plugins:  {}", overlay.source_plugins.join(", "));
-    }
-
-    if overlay.skipped_plugins.is_empty() {
-        println!("  Skipped plugins: (none)");
-    } else {
-        println!("  Skipped plugins:");
-        for reason in &overlay.skipped_plugins {
-            println!("    - {reason}");
-        }
-    }
-
-    if !overlay.unverified_plugins.is_empty() {
-        println!("  Unverified plugins (applied without an integrity digest):");
-        for reason in &overlay.unverified_plugins {
-            println!("    - {reason}");
-        }
-    }
-
+    println!("{}", overlay.render());
     Ok(())
 }
 

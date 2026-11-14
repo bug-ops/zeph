@@ -170,8 +170,8 @@ pub struct SecurityWiringSnapshot {
     pub vigil_config: bool,
     /// `true` when [`Agent::with_hooks_config`] was called with a non-empty `HooksConfig`.
     pub hooks_config: bool,
-    /// `true` when [`Agent::with_mcp_tool_ids_handle`] has been called.
-    pub mcp_tool_ids_handle: bool,
+    /// `true` when [`Agent::with_mcp_tool_list`] has been called.
+    pub mcp_tool_list: bool,
     /// `true` when [`Agent::with_llm_classifier`] has been called.
     pub llm_classifier: bool,
     /// `true` when [`Agent::with_injection_classifier`] attached a classifier backend.
@@ -936,8 +936,7 @@ impl<C: Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|mgr| crate::metrics::AgentDefSummary::build_all(mgr.definitions()))
-            .unwrap_or_default();
+            .map_or_default(|mgr| crate::metrics::AgentDefSummary::build_all(mgr.definitions()));
         let tx = self
             .runtime
             .metrics
@@ -1111,10 +1110,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Attach the shared MCP tool list (updated dynamically when servers reconnect).
+    /// Attach the single writer of this agent's MCP tool list.
+    ///
+    /// The writer's reader half is held by the agent's `McpToolExecutor`, and its
+    /// [`ids_handle`](zeph_mcp::McpToolListWriter::ids_handle) by the gates and the sentinel, so
+    /// every tool-list change the agent applies (`/mcp add`, `/mcp remove`, `tools/list_changed`,
+    /// pruning) reaches the executor and the MCP provenance registry together.
     #[must_use]
-    pub fn with_mcp_shared_tools(mut self, shared: Arc<RwLock<Vec<zeph_mcp::McpTool>>>) -> Self {
-        self.services.mcp.shared_tools = Some(shared);
+    pub fn with_mcp_tool_list(mut self, writer: zeph_mcp::McpToolListWriter) -> Self {
+        self.services.mcp.tool_list = Some(writer);
         self
     }
 
@@ -1310,22 +1314,6 @@ impl<C: Channel> Agent<C> {
         sentinel: std::sync::Arc<crate::agent::shadow_sentinel::ShadowSentinel>,
     ) -> Self {
         self.services.security.shadow_sentinel = Some(sentinel);
-        self
-    }
-
-    /// Attach the shared handle into `TrustGateExecutor`'s MCP tool-id registry
-    /// (`zeph_tools::TrustGateExecutor::mcp_tool_ids_handle`).
-    ///
-    /// Without this, the registry is populated once at startup and never updated, so MCP
-    /// servers connected later (`/mcp add`, `tools/list_changed`) are invisible to the
-    /// Quarantine-deny check (#5747). When attached, `check_tool_refresh` keeps the set in
-    /// sync with the live MCP tool list every turn.
-    #[must_use]
-    pub fn with_mcp_tool_ids_handle(
-        mut self,
-        handle: Arc<RwLock<std::collections::HashSet<String>>>,
-    ) -> Self {
-        self.services.security.mcp_tool_ids = Some(handle);
         self
     }
 
@@ -1715,6 +1703,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Returns the memory store routing config this agent was built with.
+    ///
+    /// Lets callers outside `zeph-core` (e.g. entry-point wiring tests) verify that
+    /// [`with_routing`][Self::with_routing] reached the constructed agent.
+    #[must_use]
+    pub fn routing_config(&self) -> &StoreRoutingConfig {
+        &self.context_manager.routing
+    }
+
     /// Resolve the classifier provider for `llm`/`hybrid` store routing from the current
     /// routing config and provider pool.
     ///
@@ -1951,7 +1948,7 @@ impl<C: Channel> Agent<C> {
             shadow_sentinel: self.services.security.shadow_sentinel.is_some(),
             vigil_config: self.services.security.vigil.is_some(),
             hooks_config: !self.services.session.hooks_config.is_empty(),
-            mcp_tool_ids_handle: self.services.security.mcp_tool_ids.is_some(),
+            mcp_tool_list: self.services.mcp.tool_list.is_some(),
             llm_classifier: self.services.feedback.llm_classifier.is_some(),
             #[cfg(feature = "classifiers")]
             injection_classifier: self.services.security.sanitizer.has_classifier_backend(),
@@ -2453,24 +2450,7 @@ impl<C: Channel> Agent<C> {
                 .filter(|o| o.connected)
                 .count()
         };
-        let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
-            .services
-            .mcp
-            .server_outcomes
-            .iter()
-            .map(|o| crate::metrics::McpServerStatus {
-                id: o.id.clone(),
-                status: if o.connected {
-                    crate::metrics::McpServerConnectionStatus::Connected
-                } else {
-                    crate::metrics::McpServerConnectionStatus::Failed
-                },
-                tool_count: o.tool_count,
-                error: o.error.clone(),
-                input_schemas_dropped: o.input_schemas_dropped,
-                output_schemas_dropped: o.output_schemas_dropped,
-            })
-            .collect();
+        let mcp_servers = self.services.mcp.server_statuses();
         let extended_context = self.runtime.metrics.extended_context;
         tx.send_modify(|m| {
             m.provider_name = provider_name;
@@ -2826,8 +2806,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .rev()
             .find(|m| m.role == zeph_llm::provider::Role::Assistant)
-            .map(|m| super::context::truncate_chars(&m.content, 500))
-            .unwrap_or_default()
+            .map_or_default(|m| super::context::truncate_chars(&m.content, 500))
     }
 
     /// Apply all config-derived settings from [`AgentSessionConfig`] in a single call.
@@ -3263,6 +3242,7 @@ mod tests {
     };
     use super::*;
     use crate::config::{CompressionStrategy, StoreRoutingConfig, StoreRoutingStrategy};
+    use std::assert_matches;
 
     fn make_agent() -> Agent<MockChannel> {
         Agent::new(
@@ -3296,14 +3276,12 @@ mod tests {
             arc: zeph_config::ArcCompactionConfig::default(),
         };
         let agent = make_agent().with_compression(compression);
-        assert!(
-            matches!(
-                agent.context_manager.compression.strategy,
-                CompressionStrategy::Proactive {
-                    threshold_tokens: 50_000,
-                    max_summary_tokens: 2_000,
-                }
-            ),
+        assert_matches!(
+            agent.context_manager.compression.strategy,
+            CompressionStrategy::Proactive {
+                threshold_tokens: 50_000,
+                max_summary_tokens: 2_000,
+            },
             "expected Proactive strategy after with_compression"
         );
     }

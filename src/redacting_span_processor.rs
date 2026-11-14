@@ -80,6 +80,7 @@ mod tests {
     use opentelemetry::{KeyValue, Value};
     use opentelemetry_sdk::error::OTelSdkResult;
     use opentelemetry_sdk::trace::{SpanData, SpanProcessor};
+    use std::assert_matches;
     use std::sync::{Arc, Mutex};
 
     /// Minimal no-op `SpanProcessor` that captures the last span passed to `on_end`.
@@ -185,10 +186,9 @@ mod tests {
         let guard = captured.lock().unwrap();
         let result = guard.as_ref().unwrap();
         assert_eq!(result.attributes.len(), 3);
-        assert!(matches!(result.attributes[0].value, Value::I64(42)));
-        assert!(matches!(result.attributes[1].value, Value::Bool(true)));
-        assert!(
-            matches!(result.attributes[2].value, Value::F64(v) if (v - 0.5).abs() < f64::EPSILON)
+        assert_matches!(result.attributes[0].value, Value::I64(42));
+        assert_matches!(result.attributes[1].value, Value::Bool(true));
+        assert_matches!(result.attributes[2].value, Value::F64(v) if (v - 0.5).abs() < f64::EPSILON
         );
     }
 

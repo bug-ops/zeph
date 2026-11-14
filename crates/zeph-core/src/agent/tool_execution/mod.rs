@@ -67,7 +67,7 @@ struct ToolDispatchContext {
     /// once per dispatch batch from the tool registry. Reused by both the cache-lookup gate
     /// (`is_cacheable`) and the cache-store gate later in `apply_tier_results`, so the tier
     /// loop never re-scans the registry per call or per tier (#5733 follow-up, M1).
-    mcp_tool_ids: zeph_tools::McpToolIds,
+    mcp_tool_ids: std::sync::Arc<zeph_tools::McpToolIds>,
     /// MAGE trajectory risk gate (spec 004-19 FR-005).
     ///
     /// When `Some((score, top_signals))`, all tool calls in this batch are blocked with

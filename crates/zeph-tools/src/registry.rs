@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Write;
+use std::sync::Arc;
 
+use parking_lot::RwLock;
+
+use zeph_common::ToolName;
 use zeph_common::trust_level::ToolProvenance;
+use zeph_common::types::McpServerId;
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +36,7 @@ pub struct ToolDef {
     /// This is the authoritative way to determine whether a tool originates from an MCP
     /// server — `id` is a sanitized, server-namespaced string with no reliable prefix to
     /// pattern-match on (see #5712).
-    pub server_id: Option<String>,
+    pub server_id: Option<McpServerId>,
 }
 
 impl ToolDef {
@@ -41,27 +47,28 @@ impl ToolDef {
     }
 }
 
-/// Per-batch registry of MCP dispatch ids, the authority for classifying a tool call's provenance.
+/// Registry of MCP dispatch ids, the authority for classifying a tool call's provenance.
 ///
 /// Maps each sanitized MCP tool id (the id the model sees and the executor dispatches on) to the
 /// id of the serving MCP server. Provenance is looked up here, never derived from the shape of
-/// the tool name. Entries may be added from several sources (live executor definitions and a
-/// stored tool list); an id known to any source is treated as MCP.
+/// the tool name. An id known to the registry is treated as MCP; the first server registered for
+/// an id wins, matching dispatch.
 ///
 /// # Examples
 ///
 /// ```
 /// use zeph_common::trust_level::ToolProvenance;
+/// use zeph_common::types::McpServerId;
 /// use zeph_tools::McpToolIds;
 ///
 /// let mut ids = McpToolIds::default();
-/// ids.insert("github_create_issue".into(), Some("github".into()));
+/// ids.insert("github_create_issue".into(), "github".into());
 /// assert_eq!(ids.provenance("github_create_issue"), ToolProvenance::Mcp);
 /// assert_eq!(ids.provenance("bash"), ToolProvenance::Native);
-/// assert_eq!(ids.server_id("github_create_issue"), Some("github"));
+/// assert_eq!(ids.server_id("github_create_issue").map(McpServerId::as_str), Some("github"));
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct McpToolIds(std::collections::HashMap<String, Option<String>>);
+pub struct McpToolIds(HashMap<ToolName, McpServerId>);
 
 impl McpToolIds {
     /// Build the registry from tool definitions, keeping only MCP-served tools.
@@ -70,33 +77,28 @@ impl McpToolIds {
         let mut ids = Self::default();
         for def in defs {
             if let Some(server) = &def.server_id {
-                ids.insert(def.id.to_string(), Some(server.clone()));
+                ids.insert(ToolName::new(def.id.as_ref()), server.clone());
             }
         }
         ids
     }
 
-    /// Register an MCP tool id with its serving server (`None` when only the id is known).
+    /// Register an MCP tool id with its serving server.
     ///
-    /// The first known server id wins, matching dispatch (the first registered tool serves the
-    /// id); a later `None` or a different server never replaces it.
-    pub fn insert(&mut self, id: String, server_id: Option<String>) {
-        let slot = self.0.entry(id).or_insert(None);
-        if slot.is_none() {
-            *slot = server_id;
-        }
+    /// The first server registered for an id wins, matching dispatch (the first registered tool
+    /// serves the id); a later registration never replaces it.
+    pub fn insert(&mut self, id: ToolName, server_id: McpServerId) {
+        self.0.entry(id).or_insert(server_id);
     }
 
-    /// Register an MCP tool id whose server is unknown.
-    pub fn insert_id(&mut self, id: String) {
-        self.insert(id, None);
-    }
-
-    /// Merge every entry of `other` into `self`.
-    pub fn extend_from(&mut self, other: &Self) {
+    /// Union of `self` and `other`; on a shared id `self`'s server wins.
+    #[must_use]
+    pub fn join(&self, other: &Self) -> Self {
+        let mut joined = self.clone();
         for (id, server) in &other.0 {
-            self.insert(id.clone(), server.clone());
+            joined.insert(id.clone(), server.clone());
         }
+        joined
     }
 
     /// Returns `true` when `id` is a registered MCP dispatch id.
@@ -115,10 +117,74 @@ impl McpToolIds {
         }
     }
 
-    /// Serving MCP server id for `id`, when registered and known.
+    /// Serving MCP server id for `id`, when registered.
     #[must_use]
-    pub fn server_id(&self, id: &str) -> Option<&str> {
-        self.0.get(id)?.as_deref()
+    pub fn server_id(&self, id: &str) -> Option<&McpServerId> {
+        self.0.get(id)
+    }
+}
+
+/// Read-only, cheaply cloneable view of the live [`McpToolIds`] published by one writer.
+///
+/// Consumers (trust gate, shadow sentinel, policy gate, the inline and sub-agent loops) share
+/// one handle instead of keeping private copies that can drift. There is deliberately no
+/// `Default` and no public constructor other than [`McpToolIdsHandle::with_writer`]: a
+/// `Some(handle)` therefore always has a live [`McpToolIdsWriter`] behind it, and an empty
+/// stand-in cannot make a consumer skip its fail-safe fallback.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_tools::{McpToolIds, McpToolIdsHandle};
+///
+/// let (writer, handle) = McpToolIdsHandle::with_writer();
+/// assert!(!handle.contains("github_create_issue"));
+///
+/// let mut ids = McpToolIds::default();
+/// ids.insert("github_create_issue".into(), "github".into());
+/// writer.publish(ids);
+/// assert!(handle.contains("github_create_issue"));
+/// ```
+#[derive(Debug, Clone)]
+pub struct McpToolIdsHandle(Arc<RwLock<Arc<McpToolIds>>>);
+
+impl McpToolIdsHandle {
+    /// Create an empty registry together with the only writer that can publish to it.
+    #[must_use]
+    pub fn with_writer() -> (McpToolIdsWriter, Self) {
+        let handle = Self(Arc::new(RwLock::new(Arc::new(McpToolIds::default()))));
+        (McpToolIdsWriter(handle.clone()), handle)
+    }
+
+    /// The currently published registry. Cheap: an `Arc` clone.
+    #[must_use]
+    pub fn snapshot(&self) -> Arc<McpToolIds> {
+        Arc::clone(&self.0.read())
+    }
+
+    /// Returns `true` when `id` is a registered MCP dispatch id in the current registry.
+    #[must_use]
+    pub fn contains(&self, id: &str) -> bool {
+        self.0.read().contains(id)
+    }
+}
+
+/// The single write path of an [`McpToolIdsHandle`].
+///
+/// Not `Clone`, so one registry has exactly one writer.
+#[derive(Debug)]
+pub struct McpToolIdsWriter(McpToolIdsHandle);
+
+impl McpToolIdsWriter {
+    /// Replace the published registry.
+    pub fn publish(&self, ids: McpToolIds) {
+        *self.0.0.write() = Arc::new(ids);
+    }
+
+    /// A read handle onto the registry this writer publishes.
+    #[must_use]
+    pub fn handle(&self) -> McpToolIdsHandle {
+        self.0.clone()
     }
 }
 
@@ -208,8 +274,7 @@ fn format_schema_params(out: &mut String, schema: &schemars::Schema) {
     let required: Vec<&str> = obj
         .get("required")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
+        .map_or_default(|arr| arr.iter().filter_map(|v| v.as_str()).collect());
 
     let _ = writeln!(out, "Parameters:");
     for (name, prop) in props {
@@ -238,16 +303,8 @@ fn format_schema_params(out: &mut String, schema: &schemars::Schema) {
 mod tests {
     use super::*;
     use zeph_common::trust_level::ToolProvenance;
-
-    #[test]
-    fn mcp_tool_ids_known_server_not_overwritten_by_name_only_entry() {
-        let mut ids = McpToolIds::default();
-        ids.insert("github_create_issue".into(), Some("github".into()));
-        ids.insert_id("github_create_issue".into());
-        assert_eq!(ids.server_id("github_create_issue"), Some("github"));
-        ids.insert_id("other_tool".into());
-        assert_eq!(ids.provenance("other_tool"), ToolProvenance::Mcp);
-        assert_eq!(ids.server_id("other_tool"), None);
+    fn server_of(ids: &McpToolIds, id: &str) -> Option<String> {
+        ids.server_id(id).map(|s| s.as_str().to_owned())
     }
 
     #[test]
@@ -258,30 +315,57 @@ mod tests {
             schema: schemars::schema_for!(String),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
-            server_id: server.map(str::to_owned),
+            server_id: server.map(McpServerId::from),
         };
-        let ids = McpToolIds::from_definitions(&[
-            def("bash", None),
-            def("github_create_issue", Some("github")),
-        ]);
+        let ids =
+            McpToolIds::from_definitions(&[def("bash", None), def("gh_create_issue", Some("gh"))]);
         assert_eq!(ids.provenance("bash"), ToolProvenance::Native);
-        assert_eq!(ids.server_id("github_create_issue"), Some("github"));
+        assert_eq!(server_of(&ids, "gh_create_issue").as_deref(), Some("gh"));
     }
 
     #[test]
     fn mcp_tool_ids_first_known_server_wins() {
         let mut ids = McpToolIds::default();
-        ids.insert("shared_tool".into(), Some("first".into()));
-        ids.insert("shared_tool".into(), Some("second".into()));
-        assert_eq!(ids.server_id("shared_tool"), Some("first"));
+        ids.insert("shared_tool".into(), "first".into());
+        ids.insert("shared_tool".into(), "second".into());
+        assert_eq!(server_of(&ids, "shared_tool").as_deref(), Some("first"));
     }
 
     #[test]
-    fn mcp_tool_ids_name_only_entry_gets_a_later_server() {
+    fn mcp_tool_ids_join_is_a_union_where_self_wins() {
+        let mut a = McpToolIds::default();
+        a.insert("shared".into(), "a".into());
+        let mut b = McpToolIds::default();
+        b.insert("shared".into(), "b".into());
+        b.insert("only_b".into(), "b".into());
+        let joined = a.join(&b);
+        assert_eq!(server_of(&joined, "shared").as_deref(), Some("a"));
+        assert_eq!(server_of(&joined, "only_b").as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn handle_sees_every_publish_of_its_single_writer() {
+        let (writer, handle) = McpToolIdsHandle::with_writer();
+        let reader = handle.clone();
+        assert!(!reader.contains("t"));
         let mut ids = McpToolIds::default();
-        ids.insert_id("shared_tool".into());
-        ids.insert("shared_tool".into(), Some("github".into()));
-        assert_eq!(ids.server_id("shared_tool"), Some("github"));
+        ids.insert("t".into(), "s".into());
+        writer.publish(ids);
+        assert!(reader.contains("t"));
+        assert_eq!(server_of(&reader.snapshot(), "t").as_deref(), Some("s"));
+        writer.publish(McpToolIds::default());
+        assert!(!handle.contains("t"));
+    }
+
+    #[test]
+    fn snapshot_is_unaffected_by_a_later_publish() {
+        let (writer, handle) = McpToolIdsHandle::with_writer();
+        let mut ids = McpToolIds::default();
+        ids.insert("t".into(), "s".into());
+        writer.publish(ids);
+        let before = handle.snapshot();
+        writer.publish(McpToolIds::default());
+        assert!(before.contains("t"));
     }
 
     use crate::file::ReadParams;

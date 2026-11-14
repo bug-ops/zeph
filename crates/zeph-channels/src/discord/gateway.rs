@@ -243,12 +243,11 @@ fn parse_interaction_create(d: &Value) -> Option<(IncomingMessage, InteractionAc
         .get("member")
         .and_then(|m| m.get("roles"))
         .and_then(Value::as_array)
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     let incoming = IncomingMessage {
         channel_id,
@@ -298,12 +297,11 @@ fn parse_message_create(d: &Value) -> Option<IncomingMessage> {
         .get("member")
         .and_then(|m| m.get("roles"))
         .and_then(Value::as_array)
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     Some(IncomingMessage {
         channel_id,

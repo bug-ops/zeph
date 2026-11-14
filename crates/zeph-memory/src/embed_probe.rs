@@ -83,6 +83,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -96,7 +97,7 @@ mod tests {
     #[tokio::test]
     async fn probe_vector_size_propagates_embed_error() {
         let result = probe_vector_size(async { Err::<Vec<f32>, _>("boom") }, None).await;
-        assert!(matches!(result, Err(ProbeError::Embed("boom"))));
+        assert_matches!(result, Err(ProbeError::Embed("boom")));
     }
 
     #[tokio::test]
@@ -109,7 +110,7 @@ mod tests {
             Some(Duration::from_millis(1)),
         )
         .await;
-        assert!(matches!(result, Err(ProbeError::Timeout(_))));
+        assert_matches!(result, Err(ProbeError::Timeout(_)));
     }
 
     #[tokio::test]

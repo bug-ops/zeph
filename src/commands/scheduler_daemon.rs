@@ -360,10 +360,7 @@ fn print_status_human(status: &zeph_scheduler::DaemonStatus) {
     } else {
         "not running"
     };
-    let pid_str = status
-        .pid
-        .map(|p| format!(" (pid {p})"))
-        .unwrap_or_default();
+    let pid_str = status.pid.map_or_default(|p| format!(" (pid {p})"));
 
     println!("daemon:    {running}{pid_str}");
     println!("pid_file:  {}", status.pid_file.display());

@@ -18,6 +18,7 @@ pub use zeph_common::secret_redact::scrub_secret_shapes;
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::borrow::Cow;
 
     use super::*;
@@ -53,7 +54,7 @@ mod tests {
         let text = "This is a normal response with no secrets";
         let result = scrub_secret_shapes(text);
         assert_eq!(result, text);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
     }
 
     #[test]
@@ -147,8 +148,9 @@ mod tests {
             "risk-2024-report",
             "whisk-proj-notes",
         ] {
-            assert!(
-                matches!(scrub_secret_shapes(text), Cow::Borrowed(_)),
+            assert_matches!(
+                scrub_secret_shapes(text),
+                Cow::Borrowed(_),
                 "{text} must not allocate"
             );
         }
@@ -162,10 +164,7 @@ mod tests {
             "risk-assessment-2024-q3",
             "/var/cache/pnpm_store_v3_linux_x64_node20",
         ] {
-            assert!(
-                matches!(scrub_secret_shapes(text), Cow::Borrowed(_)),
-                "{text}"
-            );
+            assert_matches!(scrub_secret_shapes(text), Cow::Borrowed(_), "{text}");
         }
         for text in [
             "x9sk-ant-api03-aB3dEf_gH1jKlMnOpQrStUvWxYz-0123456789",
@@ -369,7 +368,7 @@ mod tests {
         let text = "Let's BEGIN the PRIVATE discussion about keys without any PEM markers";
         let result = scrub_secret_shapes(text);
         assert_eq!(result, text);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
     }
 
     #[test]

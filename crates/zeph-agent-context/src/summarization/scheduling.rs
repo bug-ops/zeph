@@ -142,8 +142,7 @@ pub(crate) fn maybe_refresh_subgoal(summ: &mut ContextSummarizationView<'_>) {
         .iter()
         .rev()
         .find(|m| m.role == Role::User && m.metadata.visibility.is_agent_visible())
-        .map(|m| m.content.as_str())
-        .unwrap_or_default();
+        .map_or_default(|m| m.content.as_str());
 
     if last_user_content.is_empty() {
         return;
@@ -264,8 +263,7 @@ fn last_user_content_hash(messages: &[Message]) -> Option<u64> {
         .iter()
         .rev()
         .find(|m| m.role == Role::User)
-        .map(|m| m.content.as_str())
-        .unwrap_or_default();
+        .map_or_default(|m| m.content.as_str());
 
     if content.is_empty() {
         return None;

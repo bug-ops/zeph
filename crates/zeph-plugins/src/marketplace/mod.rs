@@ -355,13 +355,14 @@ pub(crate) fn materialize_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn write_files_safe_rejects_absolute_path() {
         let dir = tempfile::tempdir().unwrap();
         let files = vec![("/etc/passwd".to_owned(), "evil".to_owned())];
         let err = write_files_safe(dir.path(), &files).unwrap_err();
-        assert!(matches!(err, RegistryError::UnsafePath(_)));
+        assert_matches!(err, RegistryError::UnsafePath(_));
     }
 
     #[test]
@@ -369,7 +370,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let files = vec![("../../etc/passwd".to_owned(), "evil".to_owned())];
         let err = write_files_safe(dir.path(), &files).unwrap_err();
-        assert!(matches!(err, RegistryError::UnsafePath(_)));
+        assert_matches!(err, RegistryError::UnsafePath(_));
     }
 
     #[test]
@@ -421,7 +422,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let files = vec![("README.md".to_owned(), "hello".to_owned())];
         let err = materialize_package(dir.path(), &files).unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidResponse(_)));
+        assert_matches!(err, RegistryError::InvalidResponse(_));
     }
 
     #[test]
@@ -429,7 +430,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let files = vec![("SKILL.md".to_owned(), "not frontmatter at all".to_owned())];
         let err = materialize_package(dir.path(), &files).unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidResponse(_)));
+        assert_matches!(err, RegistryError::InvalidResponse(_));
     }
 
     // ── Arbitrary-file-write via unvalidated SKILL.md `name` (security fix) ──
@@ -437,19 +438,19 @@ mod tests {
     #[test]
     fn validate_registry_skill_name_rejects_parent_dir_traversal() {
         let err = validate_registry_skill_name("../../../../etc").unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidResponse(_)));
+        assert_matches!(err, RegistryError::InvalidResponse(_));
     }
 
     #[test]
     fn validate_registry_skill_name_rejects_absolute_path() {
         let err = validate_registry_skill_name("/etc/cron.d").unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidResponse(_)));
+        assert_matches!(err, RegistryError::InvalidResponse(_));
     }
 
     #[test]
     fn validate_registry_skill_name_rejects_backslash_traversal() {
         let err = validate_registry_skill_name("..\\..\\Windows").unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidResponse(_)));
+        assert_matches!(err, RegistryError::InvalidResponse(_));
     }
 
     #[test]
@@ -472,7 +473,7 @@ mod tests {
                 .to_owned(),
         )];
         let err = materialize_package(dir.path(), &files).unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidResponse(_)));
+        assert_matches!(err, RegistryError::InvalidResponse(_));
         // Prove nothing escaped tmp_root: the tempdir must still be completely empty — not
         // just that install_dir construction "failed" in isolation, but that no write ever
         // reached the filesystem for this malicious package.
@@ -495,7 +496,7 @@ mod tests {
             format!("---\nname: {poc_path}\ndescription: evil\n---\nbody"),
         )];
         let err = materialize_package(dir.path(), &files).unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidResponse(_)));
+        assert_matches!(err, RegistryError::InvalidResponse(_));
         assert!(
             dir.path().read_dir().unwrap().next().is_none(),
             "tmp_root must be empty after a rejected malicious name — no partial write"
@@ -513,7 +514,7 @@ mod tests {
             .map(|i| (format!("f{i}.txt"), "x".to_owned()))
             .collect();
         let err = write_files_safe(dir.path(), &files).unwrap_err();
-        assert!(matches!(err, RegistryError::TooLarge(_)));
+        assert_matches!(err, RegistryError::TooLarge(_));
     }
 
     #[test]
@@ -522,7 +523,7 @@ mod tests {
         let huge = "x".repeat(usize::try_from(MAX_PACKAGE_TOTAL_BYTES).unwrap() + 1);
         let files = vec![("big.txt".to_owned(), huge)];
         let err = write_files_safe(dir.path(), &files).unwrap_err();
-        assert!(matches!(err, RegistryError::TooLarge(_)));
+        assert_matches!(err, RegistryError::TooLarge(_));
     }
 
     #[test]

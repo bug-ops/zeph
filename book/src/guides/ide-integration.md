@@ -120,6 +120,14 @@ Install the ACP extension from the marketplace, then add to `settings.json`:
 }
 ```
 
+## MCP servers supplied by the IDE
+
+When the IDE passes `mcpServers` in `session/new`, `session/load`, `session/fork` or `session/resume`, Zeph registers them for that session only:
+
+- Server ids get a per-session suffix, `{ide_id}-{sid8}`, so sessions never share a server.
+- The servers are released when the session ends or the connection closes.
+- IDE-provided servers are `Untrusted` and fail closed: they expose no tools unless a tool allowlist exists. No allowlist source is supplied today, so these servers connect but their tools are not callable yet.
+
 ## Subagent visibility features
 
 When Zeph orchestrates subagents internally, the IDE extension surfaces the execution hierarchy directly in the chat view.

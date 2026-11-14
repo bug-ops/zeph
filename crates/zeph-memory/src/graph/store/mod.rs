@@ -2128,8 +2128,7 @@ impl GraphStore {
 
             let type_filter = type_in
                 .as_ref()
-                .map(|type_in| format!("edge_type IN ({type_in}) AND "))
-                .unwrap_or_default();
+                .map_or_default(|type_in| format!("edge_type IN ({type_in}) AND "));
             let edge_filter = if at_timestamp.is_some() {
                 let ts_pos = id_start + n_frontier * 3;
                 format!(
@@ -2226,8 +2225,7 @@ impl GraphStore {
 
         let type_filter = type_in
             .as_ref()
-            .map(|type_in| format!("edge_type IN ({type_in}) AND "))
-            .unwrap_or_default();
+            .map_or_default(|type_in| format!("edge_type IN ({type_in}) AND "));
         let edge_filter = if at_timestamp.is_some() {
             let ts_pos = id_start + n_visited * 2;
             format!(

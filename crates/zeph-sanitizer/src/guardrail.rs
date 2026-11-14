@@ -755,8 +755,9 @@ mod tests {
     fn parse_safely_prefix_is_not_safe() {
         // "SAFELY..." must NOT be classified as Safe (regression for IMPL-02).
         let verdict = parse_response("SAFELY this is fine", GuardrailAction::Block);
-        assert!(
-            matches!(verdict, GuardrailVerdict::Flagged { .. }),
+        assert_matches!(
+            verdict,
+            GuardrailVerdict::Flagged { .. },
             "SAFELY... must be flagged, not safe"
         );
     }
@@ -764,8 +765,9 @@ mod tests {
     #[test]
     fn parse_safeguard_prefix_is_not_safe() {
         let verdict = parse_response("SAFEGUARD triggered", GuardrailAction::Block);
-        assert!(
-            matches!(verdict, GuardrailVerdict::Flagged { .. }),
+        assert_matches!(
+            verdict,
+            GuardrailVerdict::Flagged { .. },
             "SAFEGUARD... must be flagged, not safe"
         );
     }
@@ -789,8 +791,9 @@ mod tests {
         let provider = AnyProvider::Mock(mock);
         let filter = GuardrailFilter::new(provider, &default_config()).expect("valid");
         let verdict = filter.check("").await;
-        assert!(
-            matches!(verdict, GuardrailVerdict::Safe),
+        assert_matches!(
+            verdict,
+            GuardrailVerdict::Safe,
             "empty input must return Safe"
         );
         assert!(
@@ -806,8 +809,9 @@ mod tests {
         let provider = AnyProvider::Mock(mock);
         let filter = GuardrailFilter::new(provider, &default_config()).expect("valid");
         let verdict = filter.check("   \t\n  ").await;
-        assert!(
-            matches!(verdict, GuardrailVerdict::Safe),
+        assert_matches!(
+            verdict,
+            GuardrailVerdict::Safe,
             "whitespace-only input must return Safe"
         );
         assert!(

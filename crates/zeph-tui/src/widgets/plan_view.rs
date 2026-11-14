@@ -74,17 +74,13 @@ fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8, ascii: bool)
         title_display
     };
 
-    let agent_display = task
-        .agent
-        .as_deref()
-        .map(|a| {
-            if a.len() > 10 {
-                format!("{}…", zeph_common::text::truncate_to_bytes_ref(a, 9))
-            } else {
-                a.to_owned()
-            }
-        })
-        .unwrap_or_default();
+    let agent_display = task.agent.as_deref().map_or_default(|a| {
+        if a.len() > 10 {
+            format!("{}…", zeph_common::text::truncate_to_bytes_ref(a, 9))
+        } else {
+            a.to_owned()
+        }
+    });
 
     let duration = if task.duration_ms > 0 {
         task.duration_ms.to_string()

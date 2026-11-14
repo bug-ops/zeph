@@ -116,6 +116,7 @@ impl RegistryClient for MockRegistryClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn sample_entry(id: &str, name: &str) -> RegistryEntry {
         RegistryEntry {
@@ -140,7 +141,7 @@ mod tests {
     async fn fetch_returns_not_found_for_unregistered_id() {
         let mock = MockRegistryClient::new();
         let err = mock.fetch("missing").await.unwrap_err();
-        assert!(matches!(err, RegistryError::NotFound(id) if id == "missing"));
+        assert_matches!(err, RegistryError::NotFound(id) if id == "missing");
     }
 
     #[tokio::test]
@@ -163,8 +164,8 @@ mod tests {
     async fn failing_mock_returns_configured_error() {
         let mock = MockRegistryClient::new().failing("boom");
         let err = mock.search("x").await.unwrap_err();
-        assert!(matches!(err, RegistryError::Backend { .. }));
+        assert_matches!(err, RegistryError::Backend { .. });
         let err = mock.fetch("x").await.unwrap_err();
-        assert!(matches!(err, RegistryError::Backend { .. }));
+        assert_matches!(err, RegistryError::Backend { .. });
     }
 }

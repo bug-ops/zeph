@@ -412,6 +412,7 @@ fn chat_request_serialization() {
         top_p: None,
         frequency_penalty: None,
         presence_penalty: None,
+        logprobs: false,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(json.contains("\"model\":\"gpt-5.2\""));
@@ -438,6 +439,7 @@ fn chat_request_serialization_non_gpt5_uses_max_tokens() {
         top_p: None,
         frequency_penalty: None,
         presence_penalty: None,
+        logprobs: false,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(json.contains("\"max_tokens\":256"));
@@ -457,6 +459,7 @@ fn chat_request_with_stream_flag() {
         top_p: None,
         frequency_penalty: None,
         presence_penalty: None,
+        logprobs: false,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(json.contains("\"stream\":true"));
@@ -475,6 +478,7 @@ fn chat_request_with_reasoning_effort() {
         top_p: None,
         frequency_penalty: None,
         presence_penalty: None,
+        logprobs: false,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(json.contains("\"reasoning_effort\":\"medium\""));
@@ -583,6 +587,7 @@ fn vision_chat_request_serialization_uses_gpt5_completion_tokens() {
         top_p: None,
         frequency_penalty: None,
         presence_penalty: None,
+        logprobs: false,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(json.contains("\"max_completion_tokens\":55"));
@@ -2041,7 +2046,7 @@ fn list_models_response_parses_data_array() {
     let models: Vec<crate::model_cache::RemoteModelInfo> = page
         .get("data")
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|item| {
                     let id = item.get("id")?.as_str()?.to_string();
@@ -2054,8 +2059,7 @@ fn list_models_response_parses_data_array() {
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(models.len(), 2);
     assert_eq!(models[0].id, "gpt-4o");
     assert_eq!(models[0].created_at, Some(1_700_000_000));
@@ -2068,7 +2072,7 @@ fn list_models_response_empty_data_array() {
     let models: Vec<crate::model_cache::RemoteModelInfo> = page
         .get("data")
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|item| {
                     let id = item.get("id")?.as_str()?.to_string();
@@ -2080,8 +2084,7 @@ fn list_models_response_empty_data_array() {
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(models.len(), 0);
 }
 
@@ -2091,7 +2094,7 @@ fn list_models_response_missing_data_key_returns_empty() {
     let models: Vec<crate::model_cache::RemoteModelInfo> = page
         .get("data")
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|item| {
                     let id = item.get("id")?.as_str()?.to_string();
@@ -2103,8 +2106,7 @@ fn list_models_response_missing_data_key_returns_empty() {
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(models.len(), 0);
 }
 
@@ -2413,8 +2415,9 @@ async fn chat_429_rate_limit_propagates() {
         metadata: MessageMetadata::default(),
     }];
     let result = p.chat(&messages).await;
-    assert!(
-        matches!(result, Err(LlmError::RateLimited)),
+    assert_matches!(
+        result,
+        Err(LlmError::RateLimited),
         "expected RateLimited (429 propagated through retry exhaustion), got: {result:?}"
     );
 }
@@ -3335,4 +3338,134 @@ fn marker_checkpoint_never_reaches_the_openai_request() {
         assert!(!json.contains("MARKER-ONLY-TEXT"), "{json}");
         assert!(json.contains("hello"));
     }
+}
+
+fn logprobs_test_provider(base_url: String) -> OpenAiProvider {
+    OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url,
+        model: "gpt-4o".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    })
+}
+
+fn logprobs_test_messages() -> Vec<Message> {
+    vec![Message::from_legacy(crate::provider::Role::User, "hi")]
+}
+
+fn chat_response_with_logprobs(logprobs: &[f64]) -> wiremock::ResponseTemplate {
+    let content: Vec<_> = logprobs
+        .iter()
+        .map(|lp| serde_json::json!({ "token": "t", "logprob": lp }))
+        .collect();
+    wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "choices": [{
+            "message": { "role": "assistant", "content": "answer" },
+            "logprobs": { "content": content }
+        }],
+        "usage": { "prompt_tokens": 4, "completion_tokens": 2 }
+    }))
+}
+
+#[tokio::test]
+async fn chat_with_extras_requests_logprobs_and_reports_mean_nll() {
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(serde_json::json!({ "logprobs": true })))
+        .respond_with(chat_response_with_logprobs(&[-0.5, -1.5]))
+        .mount(&server)
+        .await;
+
+    let p = logprobs_test_provider(server.uri());
+    let (text, extras) = p.chat_with_extras(&logprobs_test_messages()).await.unwrap();
+    assert_eq!(text, "answer");
+    let entropy = extras.entropy.expect("entropy from logprobs");
+    assert!((entropy - 1.0).abs() < 1e-9, "{entropy}");
+}
+
+#[tokio::test]
+async fn chat_never_requests_logprobs() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(crate::testing::openai_chat_response("ok"))
+        .mount(&server)
+        .await;
+
+    let p = logprobs_test_provider(server.uri());
+    p.chat(&logprobs_test_messages()).await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    assert!(!String::from_utf8_lossy(&requests[0].body).contains("logprobs"));
+}
+
+#[tokio::test]
+async fn logprobs_rejection_retries_once_and_latches() {
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(serde_json::json!({ "logprobs": true })))
+        .respond_with(ResponseTemplate::new(400).set_body_string("logprobs not supported"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(crate::testing::openai_chat_response("plain"))
+        .mount(&server)
+        .await;
+
+    let p = logprobs_test_provider(server.uri());
+    let (text, extras) = p.chat_with_extras(&logprobs_test_messages()).await.unwrap();
+    assert_eq!(text, "plain");
+    assert_eq!(extras.entropy, None);
+
+    p.chat_with_extras(&logprobs_test_messages()).await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        3,
+        "second call must skip the rejected parameter"
+    );
+    assert!(!String::from_utf8_lossy(&requests[2].body).contains("logprobs"));
+}
+
+#[test]
+fn logprobs_latch_is_shared_by_clones() {
+    let p = logprobs_test_provider("http://localhost".into());
+    let clone = p.clone();
+    p.logprobs_rejected.store(true, Ordering::Relaxed);
+    assert!(clone.logprobs_rejected.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn unrelated_bad_request_is_not_latched() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad"))
+        .mount(&server)
+        .await;
+
+    let p = logprobs_test_provider(server.uri());
+    p.chat_with_extras(&logprobs_test_messages())
+        .await
+        .unwrap_err();
+    assert!(!p.logprobs_rejected.load(Ordering::Relaxed));
 }

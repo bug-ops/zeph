@@ -13,6 +13,7 @@ use std::assert_matches;
 use std::pin::Pin;
 
 use indoc::indoc;
+use zeph_common::trust_level::TurnContextTrust;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 use zeph_tools::ToolCall;
@@ -456,9 +457,9 @@ fn insert_handle_with_pending_secret_channel(
             secret_tx,
             started_at_str: String::new(),
             transcript_dir: None,
-            mcp_tool_names: Vec::new(),
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
             resumed_from: None,
         },
     );
@@ -522,6 +523,7 @@ mod session_spawn_budget_gate {
     //! Session-wide cumulative subagent spawn cap (issue #6545).
 
     use super::*;
+    use std::assert_matches;
 
     fn cfg_with_max_spawns(max: usize) -> SubAgentConfig {
         SubAgentConfig {
@@ -816,8 +818,9 @@ async fn test_reserve_slots_blocks_spawn() {
     mgr.reserve_slots(1);
     // Now active(1) + reserved(1) >= max_concurrent(2) → should reject.
     let err = do_spawn(&mut mgr, "bot", "second").await.unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+    assert_matches!(
+        err,
+        SubAgentError::ConcurrencyLimit { .. },
         "expected ConcurrencyLimit, got: {err}"
     );
 }
@@ -855,8 +858,9 @@ async fn test_reservation_with_zero_active_blocks_spawn() {
     mgr.reserve_slots(2);
     // active(0) + reserved(2) >= max_concurrent(2) → blocked.
     let err = do_spawn(&mut mgr, "bot", "first").await.unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+    assert_matches!(
+        err,
+        SubAgentError::ConcurrencyLimit { .. },
         "reservation alone must block spawn when reserved >= max_concurrent"
     );
 }
@@ -1178,8 +1182,9 @@ async fn concurrency_slot_freed_after_cancel() {
 
     // Concurrency limit reached — second spawn should fail.
     let err = do_spawn(&mut mgr, "bot", "task 2").await.unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+    assert_matches!(
+        err,
+        SubAgentError::ConcurrencyLimit { .. },
         "expected concurrency limit error, got: {err}"
     );
 
@@ -1353,9 +1358,9 @@ async fn background_agent_auto_denies_secret_request() {
         .await
         .unwrap();
 
-    // Should complete without blocking — background auto-denies the secret.
+    // The bound only detects a hang; it is real-time and generous so a loaded CI host cannot trip it.
     let result =
-        tokio::time::timeout(tokio::time::Duration::from_secs(2), mgr.collect(&task_id)).await;
+        tokio::time::timeout(tokio::time::Duration::from_secs(30), mgr.collect(&task_id)).await;
     assert!(
         result.is_ok(),
         "background agent must not block on secret request"
@@ -1593,15 +1598,6 @@ async fn spawn_bypass_permissions_with_config_gate_succeeds() {
 
 /// Write a minimal completed meta file and empty JSONL so `resume()` has something to load.
 fn write_completed_meta(dir: &std::path::Path, agent_id: &str, def_name: &str) {
-    write_completed_meta_with_tool_names(dir, agent_id, def_name, Vec::new());
-}
-
-fn write_completed_meta_with_tool_names(
-    dir: &std::path::Path,
-    agent_id: &str,
-    def_name: &str,
-    mcp_tool_names: Vec<String>,
-) {
     use crate::transcript::{TranscriptMeta, TranscriptWriter};
     let meta = TranscriptMeta {
         agent_id: agent_id.to_owned(),
@@ -1612,8 +1608,8 @@ fn write_completed_meta_with_tool_names(
         finished_at: Some("2026-01-01T00:01:00Z".to_owned()),
         resumed_from: None,
         turns_used: 1,
-        mcp_tool_names,
         trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+        inherited_trust: None,
     };
     TranscriptWriter::write_meta(dir, agent_id, &meta).unwrap();
     // Create the empty JSONL so TranscriptReader::load succeeds.
@@ -1713,9 +1709,9 @@ fn resume_still_running_via_active_agents_returns_error() {
             secret_tx,
             started_at_str: "2026-01-01T00:00:00Z".to_owned(),
             transcript_dir: None,
-            mcp_tool_names: Vec::new(),
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
             resumed_from: None,
         },
     );
@@ -1788,8 +1784,9 @@ async fn resume_concurrency_limit_reached_returns_error() {
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+    assert_matches!(
+        err,
+        SubAgentError::ConcurrencyLimit { .. },
         "expected concurrency limit error, got: {err}"
     );
 }
@@ -1908,6 +1905,261 @@ async fn fresh_spawn_final_meta_is_per_result() {
     let meta = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
     assert_eq!(meta.trust_schema, TranscriptTrustSchema::PerResult);
     assert_eq!(meta.resumed_from, None);
+    assert_eq!(meta.inherited_trust, None);
+}
+
+fn tagged_message(trust: TurnContextTrust) -> zeph_llm::provider::Message {
+    let mut msg = zeph_llm::provider::Message::from_legacy(zeph_llm::provider::Role::User, "r");
+    msg.metadata.trust_level = Some(trust.as_u8());
+    msg
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn spawn_records_inherited_floor_and_collect_keeps_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = make_cfg_with_dir(tmp.path());
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let ctx = SpawnContext {
+        parent_messages: vec![tagged_message(TurnContextTrust::ExternalUntrusted)],
+        inherited_trust: Some(TurnContextTrust::LocalUntrusted),
+        ..SpawnContext::default()
+    };
+
+    let id = mgr
+        .spawn(
+            "bot",
+            "do stuff",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            ctx,
+        )
+        .await
+        .unwrap();
+    let at_spawn = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
+    assert_eq!(
+        at_spawn.inherited_trust,
+        Some(TurnContextTrust::ExternalUntrusted),
+        "the floor folds the supplied floor with the tags of the handed-over messages"
+    );
+
+    wait_completed(&mgr, &id).await;
+    mgr.collect(&id).await.unwrap();
+    let finalized = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
+    assert_eq!(
+        finalized.inherited_trust,
+        Some(TurnContextTrust::ExternalUntrusted)
+    );
+}
+
+/// Answers every tool call with a fixed output and exposes no definitions, so MCP provenance can
+/// only come from the parent registry handle.
+struct FixedOutputExecutor;
+
+impl ErasedToolExecutor for FixedOutputExecutor {
+    fn execute_erased<'a>(
+        &'a self,
+        _response: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+
+    fn execute_confirmed_erased<'a>(
+        &'a self,
+        _response: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+
+    fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+        vec![]
+    }
+
+    fn execute_tool_call_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
+            summary: "remote result".into(),
+            blocks_executed: 1,
+            ..Default::default()
+        }))))
+    }
+
+    fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+        false
+    }
+
+    fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+        false
+    }
+
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        self.execute_tool_call_erased(call)
+    }
+
+    fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+        zeph_tools::CheckpointListResult::default()
+    }
+
+    fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+        false
+    }
+}
+
+/// #7074: a resumed session classifies MCP results from the live parent registry carried by the
+/// spawn context, including a server added after the original session was spawned.
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn resume_reads_the_live_parent_registry() {
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::ToolUseRequest;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let original_id = "0000beef-0000-0000-0000-000000000000";
+    write_completed_meta(tmp.path(), original_id, "bot");
+
+    let (writer, handle) = zeph_tools::McpToolIdsHandle::with_writer();
+    let mut registry = zeph_tools::McpToolIds::default();
+    registry.insert("late_srv_tool".into(), "late_srv".into());
+    writer.publish(registry);
+    let ctx = SpawnContext {
+        mcp_tool_ids: Some(handle),
+        ..SpawnContext::default()
+    };
+
+    let tool_response = ChatResponse::tool_use(
+        None,
+        vec![ToolUseRequest {
+            id: "call-1".into(),
+            name: "late_srv_tool".into(),
+            input: serde_json::json!({}),
+        }],
+    );
+    let (mock, _) = MockProvider::default()
+        .with_tool_use(vec![tool_response, ChatResponse::text("final answer")]);
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let cfg = make_cfg_with_dir(tmp.path());
+    let (new_id, _) = mgr
+        .resume(
+            "0000beef",
+            "continue",
+            AnyProvider::Mock(mock),
+            Arc::new(FixedOutputExecutor),
+            None,
+            &cfg,
+            Some(&ctx),
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &new_id).await;
+    mgr.collect(&new_id).await.unwrap();
+
+    let messages =
+        crate::transcript::TranscriptReader::load(&tmp.path().join(format!("{new_id}.jsonl")))
+            .unwrap();
+    assert!(
+        format!("{messages:?}").contains("<external-data"),
+        "an MCP result of the resumed session must be fenced as external data: {messages:?}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn collect_keeps_the_floor_when_the_spawn_sidecar_is_unreadable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = make_cfg_with_dir(tmp.path());
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let ctx = SpawnContext {
+        inherited_trust: Some(TurnContextTrust::ExternalUntrusted),
+        ..SpawnContext::default()
+    };
+    let id = mgr
+        .spawn(
+            "bot",
+            "do stuff",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            ctx,
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &id).await;
+    let sidecar = tmp.path().join(format!("{id}.meta.json"));
+    std::fs::write(&sidecar, b"not json").unwrap();
+
+    mgr.collect(&id).await.unwrap();
+    let finalized = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
+    assert_eq!(
+        finalized.inherited_trust,
+        Some(TurnContextTrust::ExternalUntrusted),
+        "an unreadable sidecar must not drop the inherited floor"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn resume_folds_original_floor_with_current_floor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let original_id = "0000abcd-0000-0000-0000-000000000000";
+    write_completed_meta(tmp.path(), original_id, "bot");
+    let mut original =
+        crate::transcript::TranscriptReader::load_meta(tmp.path(), original_id).unwrap();
+    original.inherited_trust = Some(TurnContextTrust::ExternalUntrusted);
+    crate::transcript::TranscriptWriter::write_meta(tmp.path(), original_id, &original).unwrap();
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let cfg = make_cfg_with_dir(tmp.path());
+    let ctx = SpawnContext {
+        inherited_trust: Some(TurnContextTrust::Trusted),
+        ..SpawnContext::default()
+    };
+
+    let (new_id, _) = mgr
+        .resume(
+            "0000abcd",
+            "continue",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            Some(&ctx),
+        )
+        .await
+        .unwrap();
+
+    let resumed = crate::transcript::TranscriptReader::load_meta(tmp.path(), &new_id).unwrap();
+    assert_eq!(
+        resumed.inherited_trust,
+        Some(TurnContextTrust::ExternalUntrusted),
+        "a lower current floor must not lower the original session's floor"
+    );
+    mgr.cancel(&new_id).unwrap();
 }
 
 #[tokio::test]
@@ -2702,8 +2954,7 @@ async fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
     "})
     .unwrap();
 
-    assert!(
-        matches!(&def.tools, ToolPolicy::AllowList(list) if list == &["shell"]),
+    assert_matches!(&def.tools, ToolPolicy::AllowList(list) if list == &["shell"],
         "should start with only shell"
     );
 
@@ -2715,11 +2966,10 @@ async fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
     .await;
 
     // read/write/edit must be auto-added to the AllowList.
-    assert!(
-        matches!(&def.tools, ToolPolicy::AllowList(list)
+    assert_matches!(&def.tools, ToolPolicy::AllowList(list)
             if list.contains(&"read".to_owned())
                 && list.contains(&"write".to_owned())
-                && list.contains(&"edit".to_owned())),
+                && list.contains(&"edit".to_owned()),
         "read/write/edit must be auto-enabled in AllowList when memory is set"
     );
 }
@@ -2873,7 +3123,7 @@ fn make_agent_loop_args(
         initial_messages: vec![],
         transcript_writer: None,
         spawn_depth: 0,
-        mcp_tool_names: Vec::new(),
+        mcp_tool_ids: None,
         content_isolation: ContentIsolationConfig::default(),
         credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
@@ -3035,7 +3285,7 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         initial_messages: vec![],
         transcript_writer: None,
         spawn_depth: 0,
-        mcp_tool_names: Vec::new(),
+        mcp_tool_ids: None,
         content_isolation: ContentIsolationConfig::default(),
         credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
@@ -3201,7 +3451,7 @@ async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
         initial_messages: vec![],
         transcript_writer: Some(writer),
         spawn_depth: 0,
-        mcp_tool_names: Vec::new(),
+        mcp_tool_ids: None,
         content_isolation: ContentIsolationConfig::default(),
         credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
@@ -3612,7 +3862,7 @@ fn spawn_context_default_is_empty() {
     assert!(ctx.parent_cancel.is_none());
     assert!(ctx.parent_provider_name.is_none());
     assert_eq!(ctx.spawn_depth, 0);
-    assert_eq!(ctx.mcp_tool_names, [] as [String; 0]);
+    assert!(ctx.mcp_tool_ids.is_none());
 }
 
 #[test]
@@ -3628,6 +3878,7 @@ fn spawn_context_default_origin_is_autonomous() {
 /// both `spawn` and `spawn_for_task` share.
 mod delegation_mode_gate {
     use super::*;
+    use std::assert_matches;
 
     async fn try_spawn(
         mgr: &mut SubAgentManager,
@@ -3662,7 +3913,7 @@ mod delegation_mode_gate {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     #[tokio::test]
@@ -3676,7 +3927,7 @@ mod delegation_mode_gate {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     #[tokio::test]
@@ -3703,7 +3954,7 @@ mod delegation_mode_gate {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     #[tokio::test]
@@ -3759,7 +4010,7 @@ mod delegation_mode_gate {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
         assert!(
             rx.try_recv().is_err(),
             "on_done must never fire for a rejected spawn"
@@ -3786,7 +4037,7 @@ mod delegation_mode_gate {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     /// Regression test for the review finding that `resume()` had no delegation gate at all
@@ -3817,8 +4068,9 @@ mod delegation_mode_gate {
             )
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, SubAgentError::DelegationDenied { .. }),
+        assert_matches!(
+            err,
+            SubAgentError::DelegationDenied { .. },
             "expected DelegationDenied, got {err:?}"
         );
         assert!(
@@ -3856,7 +4108,7 @@ mod delegation_mode_gate {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     /// `explicit_request_only` must still permit `resume` — it is inherently an explicit
@@ -4053,8 +4305,9 @@ async fn spawn_exceeds_max_depth_returns_error() {
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::MaxDepthExceeded { depth: 2, max: 2 }),
+    assert_matches!(
+        err,
+        SubAgentError::MaxDepthExceeded { depth: 2, max: 2 },
         "expected MaxDepthExceeded, got {err:?}"
     );
 }
@@ -4267,36 +4520,6 @@ fn build_context_summary_limits_count_chars_not_bytes() {
 
 // ── Phase 2: MCP tool annotation tests (#2581) ────────────────────────────
 
-#[tokio::test]
-async fn mcp_tool_names_appended_to_system_prompt() {
-    use zeph_llm::mock::MockProvider;
-
-    let (mock, _) = MockProvider::default().with_tool_use(vec![ChatResponse::text("done")]);
-
-    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
-    let mut args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 5);
-    args.mcp_tool_names = vec!["search".into(), "write_file".into()];
-    // The system_prompt is inspected indirectly — if the loop completes the annotation was built.
-    let result = run_agent_loop(args).await;
-    assert!(result.is_ok(), "loop should succeed: {result:?}");
-}
-
-#[tokio::test]
-async fn empty_mcp_tool_names_no_annotation() {
-    use zeph_llm::mock::MockProvider;
-
-    let (mock, _) = MockProvider::default().with_tool_use(vec![ChatResponse::text("done")]);
-
-    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
-    let mut args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 5);
-    args.mcp_tool_names = vec![];
-    let result = run_agent_loop(args).await;
-    assert!(
-        result.is_ok(),
-        "loop should succeed with no MCP tools: {result:?}"
-    );
-}
-
 // ── MemoryAwareExecutor tests (#3771) ─────────────────────────────────────
 
 /// A stub executor that always returns `SandboxViolation` for any tool call.
@@ -4392,8 +4615,9 @@ async fn memory_aware_executor_blocks_write_outside_memory_dir() {
 
     let call = make_write_call(outside_file.to_str().unwrap(), "should be blocked");
     let result = executor.execute_tool_call_erased(&call).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "write outside memory dir should be blocked, got: {result:?}"
     );
 }
@@ -4411,8 +4635,9 @@ async fn memory_aware_executor_blocks_path_traversal() {
 
     let call = make_write_call(traversal_path.to_str().unwrap(), "should never be written");
     let result = executor.execute_tool_call_erased(&call).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "path traversal should be blocked, got: {result:?}"
     );
 }
@@ -4455,8 +4680,9 @@ async fn memory_aware_executor_confirmed_path_blocks_outside_memory_dir() {
 
     let call = make_write_call(outside_file.to_str().unwrap(), "should be blocked");
     let result = executor.execute_tool_call_confirmed_erased(&call).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "confirmed write outside memory dir should be blocked, got: {result:?}"
     );
 }
@@ -4627,164 +4853,6 @@ fn sanitize_identity_field_unicode_char_safe_truncation() {
         result.is_char_boundary(result.len()),
         "result must be valid UTF-8"
     );
-}
-
-fn mcp_server_config(id: &str) -> zeph_config::McpServerConfig {
-    serde_json::from_str(&format!(r#"{{"id":"{id}"}}"#)).unwrap()
-}
-
-#[tokio::test]
-async fn spawn_context_session_mcp_servers_merged() {
-    let mut mgr = make_manager();
-    mgr.definitions.push(sample_def());
-
-    let ctx = SpawnContext {
-        mcp_tool_names: vec!["existing-server".into()],
-        session_mcp_servers: vec![mcp_server_config("new-server")],
-        ..SpawnContext::default()
-    };
-    let task_id = mgr
-        .spawn(
-            "bot",
-            "go",
-            mock_provider(vec!["done"]),
-            noop_executor(),
-            None,
-            &SubAgentConfig::default(),
-            ctx,
-        )
-        .await
-        .unwrap();
-    let names = &mgr.agents[&task_id].mcp_tool_names;
-    assert!(names.contains(&"existing-server".to_owned()));
-    assert!(names.contains(&"new-server".to_owned()));
-}
-
-#[tokio::test]
-async fn spawn_context_session_mcp_servers_dedup() {
-    let mut mgr = make_manager();
-    mgr.definitions.push(sample_def());
-
-    let ctx = SpawnContext {
-        mcp_tool_names: vec!["shared-server".into()],
-        session_mcp_servers: vec![mcp_server_config("shared-server")],
-        ..SpawnContext::default()
-    };
-    let task_id = mgr
-        .spawn(
-            "bot",
-            "go",
-            mock_provider(vec!["done"]),
-            noop_executor(),
-            None,
-            &SubAgentConfig::default(),
-            ctx,
-        )
-        .await
-        .unwrap();
-    let names = &mgr.agents[&task_id].mcp_tool_names;
-    assert_eq!(
-        names
-            .iter()
-            .filter(|n| n.as_str() == "shared-server")
-            .count(),
-        1
-    );
-}
-
-// ── resume sanitization tests ─────────────────────────────────────────────
-
-#[test]
-fn resume_sanitization_drops_invalid_mcp_tool_names() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    let tmp = tempfile::tempdir().unwrap();
-    let agent_id = "11110000-0000-0000-0000-000000000001";
-    let tool_names = vec![
-        "valid-tool".to_owned(),
-        "a".repeat(257),          // too long
-        "bad\x01tool".to_owned(), // control character
-        "another-valid".to_owned(),
-    ];
-    write_completed_meta_with_tool_names(tmp.path(), agent_id, "bot", tool_names);
-
-    let mut mgr = make_manager();
-    mgr.definitions.push(sample_def());
-    let cfg = make_cfg_with_dir(tmp.path());
-
-    let (new_id, _) = rt
-        .block_on(mgr.resume(
-            "11110000",
-            "continue",
-            mock_provider(vec!["done"]),
-            noop_executor(),
-            None,
-            &cfg,
-            None,
-        ))
-        .unwrap();
-
-    let names = &mgr.agents[&new_id].mcp_tool_names;
-    assert!(
-        !names.iter().any(|n| n.len() > 256),
-        "oversized entry must be dropped"
-    );
-    assert!(
-        !names
-            .iter()
-            .any(|n| n.chars().any(|c| c.is_ascii_control())),
-        "control-char entry must be dropped"
-    );
-    assert_eq!(names.len(), 2, "only two valid entries must survive");
-
-    let _guard = rt.enter();
-    mgr.cancel(&new_id).unwrap();
-}
-
-#[test]
-fn resume_sanitization_preserves_valid_mcp_tool_names() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    let tmp = tempfile::tempdir().unwrap();
-    let agent_id = "22220000-0000-0000-0000-000000000002";
-    let tool_names = vec![
-        "tool-alpha".to_owned(),
-        "tool-beta".to_owned(),
-        "a".repeat(256), // exactly at limit — valid
-    ];
-    write_completed_meta_with_tool_names(tmp.path(), agent_id, "bot", tool_names.clone());
-
-    let mut mgr = make_manager();
-    mgr.definitions.push(sample_def());
-    let cfg = make_cfg_with_dir(tmp.path());
-
-    let (new_id, _) = rt
-        .block_on(mgr.resume(
-            "22220000",
-            "continue",
-            mock_provider(vec!["done"]),
-            noop_executor(),
-            None,
-            &cfg,
-            None,
-        ))
-        .unwrap();
-
-    let names = &mgr.agents[&new_id].mcp_tool_names;
-    assert_eq!(
-        names.len(),
-        tool_names.len(),
-        "all valid entries must survive the filter"
-    );
-    for expected in &tool_names {
-        assert!(
-            names.contains(expected),
-            "entry {expected:?} must be present"
-        );
-    }
-
-    let _guard = rt.enter();
-    mgr.cancel(&new_id).unwrap();
 }
 
 // ---- Fleet registry tests (#4370) ----
@@ -5256,8 +5324,7 @@ fn constraint_propagation_deny_list_no_parent_allowlist_is_noop() {
     let mut def = def_with_deny_list(&["dangerous"]);
     let ctx = SpawnContext::default();
     apply_constraint_propagation(&mut def, &ctx);
-    assert!(
-        matches!(&def.tools, ToolPolicy::DenyList(v) if v == &["dangerous"]),
+    assert_matches!(&def.tools, ToolPolicy::DenyList(v) if v == &["dangerous"],
         "DenyList must be unchanged when no parent allowlist is set"
     );
 }
@@ -5951,6 +6018,7 @@ fn intersect_allowlists_disjoint_sets_returns_empty_not_none() {
 /// task is even launched, so these assertions need no timing coordination with that task.
 mod peer_messaging_integration_tests {
     use crate::peer::{AgentId, DeliveryError, PeerGroupId};
+    use std::assert_matches;
 
     use super::*;
 
@@ -6039,8 +6107,9 @@ mod peer_messaging_integration_tests {
             .unwrap_err();
         // Critic round-4 S3: a cross-group target must be indistinguishable from a
         // nonexistent one (NFR-003) — `TargetNotFound`, not `Unauthorized`.
-        assert!(
-            matches!(err, DeliveryError::TargetNotFound(_)),
+        assert_matches!(
+            err,
+            DeliveryError::TargetNotFound(_),
             "expected TargetNotFound (no existence oracle across groups), got: {err:?}"
         );
         assert_eq!(
@@ -6138,6 +6207,6 @@ mod peer_messaging_integration_tests {
         })
         .await
         .expect("send must return well within the timeout, not hang");
-        assert!(matches!(result, Err(DeliveryError::MailboxFull(_))));
+        assert_matches!(result, Err(DeliveryError::MailboxFull(_)));
     }
 }

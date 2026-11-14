@@ -297,6 +297,7 @@ mod tests {
     // fails to parse it as a Postgres URL. See #5603.
     #[cfg(feature = "sqlite")]
     mod with_backend {
+        use std::assert_matches;
         use std::sync::atomic::{AtomicU32, Ordering};
 
         use zeph_durable::config::DurableConfig;
@@ -440,8 +441,9 @@ mod tests {
             .expect_err("the fire body's error must propagate");
             // The step-failure message is metadata-only by design (INV-5) — the closure's own
             // error detail is attached as the `source`, not inlined into `Display`.
-            assert!(
-                matches!(&err, SchedulerError::TaskFailed(_)),
+            assert_matches!(
+                &err,
+                SchedulerError::TaskFailed(_),
                 "unexpected error: {err:?}"
             );
 

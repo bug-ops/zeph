@@ -5,6 +5,7 @@ use super::super::Agent;
 use super::super::agent_tests::{
     MetricsSnapshot, MockChannel, MockToolExecutor, create_test_registry, mock_provider,
 };
+use std::assert_matches;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, MessagePart, Role};
 use zeph_memory::semantic::SemanticMemory;
@@ -1404,8 +1405,7 @@ async fn persist_message_roundtrip_preserves_role_part_alignment() {
     // First message: assistant + ToolUse
     assert_eq!(history[0].role, Role::Assistant);
     assert_eq!(history[0].content, "[tool_use: list_dir(id_1)]");
-    assert!(
-        matches!(&history[0].parts[0], MessagePart::ToolUse { id, .. } if id == "id_1"),
+    assert_matches!(&history[0].parts[0], MessagePart::ToolUse { id, .. } if id == "id_1",
         "first message must be assistant ToolUse"
     );
 
@@ -1415,8 +1415,7 @@ async fn persist_message_roundtrip_preserves_role_part_alignment() {
         history[1].content,
         "[tool_result: id_1]\nfile1.txt\nfile2.txt"
     );
-    assert!(
-        matches!(&history[1].parts[0], MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "id_1"),
+    assert_matches!(&history[1].parts[0], MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "id_1",
         "second message must be user ToolResult"
     );
 

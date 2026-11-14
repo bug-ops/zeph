@@ -1366,8 +1366,9 @@ mod wiremock_tests {
             .send_message(&format!("{}/rpc", server.uri()), params, None)
             .await;
         assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), crate::error::A2aError::Timeout(_)),
+        assert_matches!(
+            result.unwrap_err(),
+            crate::error::A2aError::Timeout(_),
             "expected Timeout error"
         );
     }

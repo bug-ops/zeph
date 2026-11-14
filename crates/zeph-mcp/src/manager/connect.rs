@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use parking_lot::RwLock as SyncRwLock;
 use rmcp::transport::auth::CredentialStore;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -16,13 +17,13 @@ use tokio::task::JoinSet;
 use crate::client::{McpClient, OAuthConnectResult, ToolRefreshEvent};
 use crate::elicitation::ElicitationEvent;
 use crate::error::McpError;
-use crate::tool::McpTool;
+use crate::tool::{McpTool, ToolCollision, detect_collisions};
 
 use super::ingest::{apply_injection_penalties, ingest_tools};
 use super::retry::connect_with_retry;
 use super::{
     ConnectOutput, IngestConfig, IngestLimits, McpManager, McpTransport, McpTrustLevel,
-    ServerConnectOutcome, ServerEntry, StatusSender,
+    ServerConnectOutcome, ServerEntry, ServerTrust, StatusSender,
 };
 
 impl McpManager {
@@ -111,6 +112,7 @@ impl McpManager {
         let server_tool_metadata = Arc::clone(&self.server_tool_metadata);
         let lock_tool_list = self.lock_tool_list;
         let tool_list_locked = Arc::clone(&self.tool_list_locked);
+        let tool_collisions = Arc::clone(&self.tool_collisions);
 
         let task = async move {
             let mut rx = rx;
@@ -176,6 +178,7 @@ impl McpManager {
                     total_tools = all_tools.len(),
                     "tools/list_changed: tool list refreshed"
                 );
+                record_tool_diagnostics(&all_tools, &server_trust, &tool_collisions).await;
                 // Ignore send error — no subscribers is not a problem.
                 let _ = tools_watch_tx.send(all_tools);
             }
@@ -218,7 +221,7 @@ impl McpManager {
         };
         let outputs = self.process_connect_results(raw, limits).await;
         let (all_tools, outcomes, _snapshot) = self.commit_pending(outputs).await;
-        self.log_tool_collisions(&all_tools).await;
+        self.record_tool_diagnostics(&all_tools).await;
         (all_tools, outcomes)
     }
 
@@ -387,7 +390,7 @@ impl McpManager {
         if !snapshot.is_empty() {
             let _ = self.tools_watch_tx.send(snapshot);
         }
-        self.log_tool_collisions(&all_tools).await;
+        self.record_tool_diagnostics(&all_tools).await;
     }
 
     #[tracing::instrument(name = "mcp.manager.spawn_oauth_connections", skip_all)]
@@ -510,36 +513,21 @@ impl McpManager {
         outputs
     }
 
-    /// Log warnings for all `sanitized_id` collisions in `tools`.
+    /// Run the tool diagnostic pass over `tools` and publish its collision report.
     ///
-    /// When trust levels differ, the lower-trust tool is shadowed — its `sanitized_id` is
-    /// claimed by a higher-trust tool. When trust levels are equal, the first-registered
-    /// tool wins dispatch. Either way the collision is a misconfiguration and must be logged
-    /// so the operator can disambiguate (MF-1 / SF-6 fix).
-    #[tracing::instrument(name = "mcp.manager.log_tool_collisions", skip_all)]
-    pub(super) async fn log_tool_collisions(&self, tools: &[McpTool]) {
-        use crate::tool::detect_collisions;
+    /// See [`record_tool_diagnostics`]; call once per tool-list change.
+    #[tracing::instrument(name = "mcp.manager.record_tool_diagnostics", skip_all)]
+    pub(super) async fn record_tool_diagnostics(&self, tools: &[McpTool]) {
+        record_tool_diagnostics(tools, &self.server_trust, &self.tool_collisions).await;
+    }
 
-        let trust_guard = self.server_trust.read().await;
-        let trust_map: std::collections::HashMap<String, McpTrustLevel> = trust_guard
-            .iter()
-            .map(|(id, (tl, _, _, _))| (id.clone(), *tl))
-            .collect();
-        drop(trust_guard);
-
-        for col in detect_collisions(tools, &trust_map) {
-            tracing::warn!(
-                sanitized_id = %col.sanitized_id,
-                server_a = %col.server_a,
-                qualified_a = %col.qualified_a,
-                trust_a = ?col.trust_a,
-                server_b = %col.server_b,
-                qualified_b = %col.qualified_b,
-                trust_b = ?col.trust_b,
-                "MCP tool sanitized_id collision: '{}' shadows '{}' — executor will always dispatch to the first-registered tool",
-                col.qualified_a, col.qualified_b,
-            );
-        }
+    /// Tools currently shadowed by an earlier tool with the same `sanitized_id`.
+    ///
+    /// Reflects the latest tool-list change. Dispatch stays first-registered-wins, so
+    /// `server_b` of each entry is unreachable until the operator disambiguates the ids.
+    #[must_use]
+    pub fn tool_collisions(&self) -> Vec<ToolCollision> {
+        self.tool_collisions.read().clone()
     }
 
     /// Process a single server connection result without holding any shared write locks.
@@ -876,4 +864,47 @@ pub(super) async fn validate_roots(
         }
     }
     result
+}
+
+/// Diagnostic pass over a flattened tool list, run once per tool-list change.
+///
+/// Warns once per tool whose `sanitized_id` is truncated to 128 characters and once per
+/// `sanitized_id` collision, and replaces the stored collision report so `/mcp list` and the
+/// TUI can show shadowed tools. When trust levels differ the lower-trust tool may be the
+/// shadowed one; either way the first-registered tool wins dispatch (MF-1 / SF-6).
+pub(super) async fn record_tool_diagnostics(
+    tools: &[McpTool],
+    server_trust: &ServerTrust,
+    collisions: &SyncRwLock<Vec<ToolCollision>>,
+) {
+    for tool in tools.iter().filter(|t| t.is_sanitized_id_truncated()) {
+        tracing::warn!(
+            server_id = %tool.server_id,
+            name = %tool.name,
+            "MCP tool sanitized_id exceeds 128 chars and is truncated"
+        );
+    }
+
+    let trust_map: HashMap<String, McpTrustLevel> = server_trust
+        .read()
+        .await
+        .iter()
+        .map(|(id, (tl, _, _, _))| (id.clone(), *tl))
+        .collect();
+
+    let found = detect_collisions(tools, &trust_map);
+    for col in &found {
+        tracing::warn!(
+            sanitized_id = %col.sanitized_id,
+            server_a = %col.server_a,
+            qualified_a = %col.qualified_a,
+            trust_a = ?col.trust_a,
+            server_b = %col.server_b,
+            qualified_b = %col.qualified_b,
+            trust_b = ?col.trust_b,
+            "MCP tool sanitized_id collision: '{}' shadows '{}'; the executor dispatches to the first-registered tool",
+            col.qualified_a, col.qualified_b,
+        );
+    }
+    *collisions.write() = found;
 }

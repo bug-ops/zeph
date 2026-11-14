@@ -944,8 +944,7 @@ mod tests {
         let matchers = vec![make_matcher("Edit", vec![hook.clone()])];
         let result = matching_hooks(&matchers, "Edit");
         assert_eq!(result.len(), 1);
-        assert!(
-            matches!(&result[0].action, HookAction::Command { command } if command == "echo hi")
+        assert_matches!(&result[0].action, HookAction::Command { command } if command == "echo hi"
         );
     }
 
@@ -1231,8 +1230,7 @@ PostToolUse:
         assert_eq!(hooks.pre_tool_use.len(), 1);
         assert_eq!(hooks.pre_tool_use[0].matcher, "Edit|Write");
         assert_eq!(hooks.pre_tool_use[0].hooks.len(), 1);
-        assert!(
-            matches!(&hooks.pre_tool_use[0].hooks[0].action, HookAction::Command { command } if command == "echo pre")
+        assert_matches!(&hooks.pre_tool_use[0].hooks[0].action, HookAction::Command { command } if command == "echo pre"
         );
         assert_eq!(hooks.post_tool_use.len(), 1);
     }
@@ -1280,8 +1278,9 @@ PreToolUse:
         .await
         .expect("fire_hooks must return within 5 s — deadlock regression #4011");
 
-        assert!(
-            matches!(result, Err(HookError::Timeout { .. })),
+        assert_matches!(
+            result,
+            Err(HookError::Timeout { .. }),
             "expected HookError::Timeout, got: {result:?}"
         );
     }

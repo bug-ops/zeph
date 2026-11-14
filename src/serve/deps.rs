@@ -22,9 +22,8 @@
 //! `runner.rs`/`acp.rs`/`daemon.rs` — see [`build_tool_executor`]'s and
 //! `agent_factory::build_agent_factory`'s doc comments for the split between eager pieces here
 //! and the per-session gate wrap there (required to avoid a cross-session trust-state race,
-//! SEC-H1). MCP is still absent from the gated tree (the gap above), so
-//! `agent_setup::register_mcp_tool_ids` is called with an empty slice for now — the seam a
-//! future MCP-wiring PR must populate.
+//! SEC-H1). MCP is still absent from the gated tree (the gap above), so each session gets an
+//! empty `McpToolList` for now — the seam a future MCP-wiring PR must populate.
 //!
 //! **`[tools.policy]` compile failure (#6008)**: unlike CLI/TUI/ACP/daemon, which stay
 //! fail-open (see `agent_setup::build_policy_gate_pieces`'s doc comment) since an operator
@@ -234,6 +233,10 @@ pub(crate) struct ServeAgentDeps {
     /// Gated on `safe_mode` at the `apply_security_pipeline` call site, matching the other three
     /// entry points.
     pub(crate) hooks_config: zeph_config::HooksConfig,
+    /// `config.memory.store_routing` (#7056), wired into every session's `Agent` via
+    /// `Agent::with_routing` so `[memory.store_routing]` takes effect for `/sessions*` agents,
+    /// matching `runner.rs`/`daemon.rs`/`acp.rs`.
+    pub(crate) store_routing: zeph_core::config::StoreRoutingConfig,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -655,6 +658,7 @@ pub(crate) async fn assemble_serve_deps(
         typed_pages_state,
         shadow_memory_config: config.memory.shadow_memory.clone(),
         hooks_config: config.hooks.clone(),
+        store_routing: config.memory.store_routing.clone(),
     })
 }
 

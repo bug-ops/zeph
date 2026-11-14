@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
+
 use zeph_common::trust_level::{NativeToolKind, ToolProvenance, ToolResultSource};
 use zeph_sanitizer::{ContentSourceKind, tool_output_source};
 use zeph_tools::{McpToolIds, ResolvedToolSource};
@@ -225,13 +227,20 @@ fn batch_dispatch_trust_level(
 }
 
 impl<C: Channel> Agent<C> {
-    /// MCP dispatch ids for one tool-call batch: the live executor definitions that carry a
-    /// server id (the dispatch authority, shared across ACP sessions) joined with the stored
-    /// tool list (fail-safe coverage when the executor view was pruned or refreshed).
-    pub(in crate::agent) fn batch_mcp_tool_ids(&self) -> McpToolIds {
-        let mut ids = McpToolIds::from_definitions(&self.tool_executor.tool_definitions_erased());
-        ids.extend_from(self.services.mcp.tool_ids());
-        ids
+    /// MCP dispatch ids for one tool-call batch.
+    ///
+    /// The registry published by the tool-list writer (it covers every tool the agent's own
+    /// executor can dispatch, including tools pruned from the turn's exposed view) joined with the
+    /// live executor definitions that carry a server id. The join is the fail-safe for an MCP
+    /// executor that is not paired with the writer (an empty writer, an embedder, a test): such a
+    /// tool is still classified as MCP instead of silently falling back to native.
+    pub(in crate::agent) fn batch_mcp_tool_ids(&self) -> Arc<McpToolIds> {
+        let from_executor =
+            McpToolIds::from_definitions(&self.tool_executor.tool_definitions_erased());
+        match self.services.mcp.tool_list.as_ref() {
+            Some(list) => Arc::new(list.ids_handle().snapshot().join(&from_executor)),
+            None => Arc::new(from_executor),
+        }
     }
 
     /// Sanitize tool output body before inserting it into the LLM message history.
@@ -397,12 +406,7 @@ impl<C: Channel> Agent<C> {
     /// design — this is intentional; see `MemoryToolExecutor::current_trust_level`'s doc
     /// comment for the full rationale.
     pub(super) fn context_max_trust_level(&self) -> zeph_sanitizer::ContentTrustLevel {
-        self.msg
-            .messages
-            .iter()
-            .filter_map(|m| m.metadata.trust_level)
-            .map(zeph_sanitizer::ContentTrustLevel::from_u8_or_untrusted)
-            .max()
+        zeph_subagent::max_message_trust(&self.msg.messages)
             .unwrap_or(zeph_sanitizer::ContentTrustLevel::Trusted)
     }
 
@@ -580,13 +584,13 @@ impl<C: Channel> Agent<C> {
         &mut self,
         sanitized: &zeph_sanitizer::SanitizedContent,
         tool_name: &str,
-        mcp_server_id: Option<&str>,
+        mcp_server_id: Option<&zeph_common::types::McpServerId>,
         has_injection_flags: bool,
     ) -> Option<(String, bool)> {
-        let mcp_server_id = mcp_server_id.map(str::to_owned);
+        let mcp_server_id = mcp_server_id.cloned();
         tracing::warn!(
             tool = %tool_name,
-            mcp_server_id = mcp_server_id.as_deref().unwrap_or("unknown"),
+            mcp_server_id = mcp_server_id.as_ref().map_or("unknown", zeph_common::types::McpServerId::as_str),
             "MCP tool result crossing ACP trust boundary"
         );
         self.push_security_event(

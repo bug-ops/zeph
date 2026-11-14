@@ -643,6 +643,7 @@ pub(crate) fn write_private_file(path: &Path, data: &[u8]) -> Result<(), AgeVaul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use tempfile::tempdir;
 
     fn init_temp_vault(dir: &Path) -> (PathBuf, PathBuf) {
@@ -698,7 +699,7 @@ mod tests {
         let original_key = std::fs::read(&key_path).unwrap();
 
         let err = AgeVaultProvider::init_vault(dir.path()).unwrap_err();
-        assert!(matches!(err, AgeVaultError::VaultAlreadyExists(_)));
+        assert_matches!(err, AgeVaultError::VaultAlreadyExists(_));
 
         // Neither file was touched by the rejected re-init.
         assert_eq!(std::fs::read(&key_path).unwrap(), original_key);
@@ -813,8 +814,9 @@ mod tests {
         std::fs::write(&vault_path, b"").unwrap();
 
         let result = AgeVaultProvider::load(&key_path, &vault_path);
-        assert!(
-            matches!(result, Err(AgeVaultError::KeyParse(_))),
+        assert_matches!(
+            result,
+            Err(AgeVaultError::KeyParse(_)),
             "expected KeyParse, got {result:?}",
         );
     }
@@ -828,8 +830,9 @@ mod tests {
         std::fs::write(&vault_path, b"not valid age ciphertext at all").unwrap();
 
         let result = AgeVaultProvider::load(&key_path, &vault_path);
-        assert!(
-            matches!(result, Err(AgeVaultError::Decrypt(_))),
+        assert_matches!(
+            result,
+            Err(AgeVaultError::Decrypt(_)),
             "expected Decrypt, got {result:?}",
         );
     }
@@ -863,8 +866,7 @@ mod tests {
             .unwrap();
 
         let result = vault.set_secret_mut("KEY".into(), "clobbered".into(), false);
-        assert!(
-            matches!(result, Err(AgeVaultError::AlreadyExists(ref k)) if k == "KEY"),
+        assert_matches!(result, Err(AgeVaultError::AlreadyExists(ref k)) if k == "KEY",
             "expected AlreadyExists(\"KEY\"), got {result:?}",
         );
         assert_eq!(vault.get("KEY"), Some("original"));

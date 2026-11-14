@@ -1147,9 +1147,105 @@ pub enum StopHint {
     MaxTurnRequests,
 }
 
+// ── McpServerId ──────────────────────────────────────────────────────────────
+
+/// Identifier of a configured MCP server (`[[mcp.servers]] id = "…"`).
+///
+/// An identity type: the id is validated once as configuration, so construction accepts any
+/// string. It deliberately has no `Default`, because an empty id would silently pass for a real
+/// server in provenance and audit records. The inner `Arc<str>` keeps clones O(1) across tool
+/// definitions, registries and audit rows.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::types::McpServerId;
+///
+/// let id = McpServerId::new("github");
+/// assert_eq!(id.as_str(), "github");
+/// assert_eq!(id, "github");
+/// assert_eq!(id.to_string(), "github");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct McpServerId(Arc<str>);
+
+impl McpServerId {
+    /// Wraps a server id.
+    #[must_use]
+    pub fn new(id: impl Into<Arc<str>>) -> Self {
+        Self(id.into())
+    }
+
+    /// Returns the id as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for McpServerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for McpServerId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for McpServerId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for McpServerId {
+    fn from(id: &str) -> Self {
+        Self(Arc::from(id))
+    }
+}
+
+impl From<String> for McpServerId {
+    fn from(id: String) -> Self {
+        Self(Arc::from(id))
+    }
+}
+
+impl PartialEq<str> for McpServerId {
+    fn eq(&self, other: &str) -> bool {
+        &*self.0 == other
+    }
+}
+
+impl PartialEq<&str> for McpServerId {
+    fn eq(&self, other: &&str) -> bool {
+        &*self.0 == *other
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
+
+    #[test]
+    fn mcp_server_id_roundtrips_as_plain_string() {
+        let id = McpServerId::new("github");
+        assert_eq!(serde_json::to_string(&id).unwrap(), "\"github\"");
+        let back: McpServerId = serde_json::from_str("\"github\"").unwrap();
+        assert_eq!(back, id);
+        assert_eq!(back, "github");
+    }
+
+    #[test]
+    fn mcp_server_id_looks_up_hash_map_by_str() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(McpServerId::from("a"), 1);
+        assert_eq!(map.get("a"), Some(&1));
+    }
 
     #[test]
     fn goal_id_short_is_first_eight_hex_digits() {
@@ -1400,29 +1496,24 @@ mod tests {
     #[test]
     fn skill_name_rejects_invalid() {
         assert_eq!(SkillName::parse(""), Err(SkillNameError::Length(0)));
-        assert!(matches!(
+        assert_matches!(
             SkillName::parse(&"a".repeat(65)),
             Err(SkillNameError::Length(65))
-        ));
+        );
         assert!(SkillName::parse(&"a".repeat(64)).is_ok());
         for bad in ["Alpha", "a_b", "a b", "é", "a/b", "../x"] {
-            assert!(
-                matches!(SkillName::parse(bad), Err(SkillNameError::Charset(_))),
+            assert_matches!(
+                SkillName::parse(bad),
+                Err(SkillNameError::Charset(_)),
                 "{bad}"
             );
         }
-        assert!(matches!(
-            SkillName::parse("-a"),
-            Err(SkillNameError::EdgeHyphen(_))
-        ));
-        assert!(matches!(
-            SkillName::parse("a-"),
-            Err(SkillNameError::EdgeHyphen(_))
-        ));
-        assert!(matches!(
+        assert_matches!(SkillName::parse("-a"), Err(SkillNameError::EdgeHyphen(_)));
+        assert_matches!(SkillName::parse("a-"), Err(SkillNameError::EdgeHyphen(_)));
+        assert_matches!(
             SkillName::parse("a--b"),
             Err(SkillNameError::DoubleHyphen(_))
-        ));
+        );
     }
 
     #[test]

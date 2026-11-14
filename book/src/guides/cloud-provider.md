@@ -42,6 +42,10 @@ speed = "fast"          # default: "standard"
 
 Fast mode is honored only by models that advertise it: Opus 5.5, Fable 5.2 and Mythos 5.2. On any other Claude model Zeph logs a warning and runs at standard speed. `speed = "fast"` on a non-Claude provider entry fails config validation. Cost tracking applies fast-mode pricing, and the TUI status bar shows a `fast` tag while the active provider runs in fast mode. The `--init` wizard asks for the speed when you pick a fast-capable model; `--migrate-config` adds the commented `speed` key to existing Claude entries.
 
+For providers that run in a non-standard speed, `/provider status` shows `Speed: configured X, last response Y`, where Y is parsed from the response `usage.speed` (`n/a` before the first response). If Claude rejects the `speed` parameter with a 400, Zeph stops sending it for that provider (one-shot latch) and continues at standard speed. Background and ensemble calls are billed at the speed and model of the provider that served them.
+
+A Claude 404 is reported as `not_found_error: model: <id> (check the model id and account access)` and is logged once.
+
 ### Server-Side Compaction
 
 Enable `server_compaction = true` to let the Claude API manage context length on the server side. When the context approaches the model's limit, Claude produces a compact summary in-place. Zeph surfaces the compaction event in the TUI and via the `server_compaction_events` metric.

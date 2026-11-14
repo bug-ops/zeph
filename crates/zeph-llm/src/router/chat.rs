@@ -30,8 +30,7 @@ impl RouterProvider {
         let mut status = StatusReporter::new(status_tx);
         let query = messages
             .last()
-            .map(crate::provider::Message::to_llm_content)
-            .unwrap_or_default();
+            .map_or_default(crate::provider::Message::to_llm_content);
         let features = self.bandit_features(query.as_ref()).await;
 
         let p = self

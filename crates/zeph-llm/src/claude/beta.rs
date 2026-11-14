@@ -59,6 +59,8 @@ pub(super) struct BetaLatches {
     thinking_binding: AtomicBool,
     /// The API answered 400 to a `role: "system"` message inside `messages[]`.
     mid_conversation_system: AtomicBool,
+    /// The API answered 400 to the `speed` request parameter.
+    speed: AtomicBool,
 }
 
 impl BetaLatches {
@@ -82,6 +84,15 @@ impl BetaLatches {
         self.mid_conversation_system.load(Ordering::Relaxed)
     }
 
+    pub(super) fn speed_rejected(&self) -> bool {
+        self.speed.load(Ordering::Relaxed)
+    }
+
+    /// Latch the `speed` parameter as rejected. Returns `true` only for the call that flipped it.
+    pub(super) fn reject_speed(&self) -> bool {
+        !self.speed.swap(true, Ordering::Relaxed)
+    }
+
     /// Latch mid-conversation system messages as unsupported. Returns `true` only for the call
     /// that flipped it.
     pub(super) fn reject_mid_conversation_system(&self) -> bool {
@@ -97,6 +108,13 @@ pub(super) fn is_mid_conversation_system_rejection(status: StatusCode, body: &st
     }
     let lower = body.to_ascii_lowercase();
     MID_SYSTEM_MARKERS.iter().all(|m| lower.contains(m))
+}
+
+/// Whether a 400 body names the top-level `speed` request parameter.
+pub(super) fn names_rejected_speed(status: StatusCode, body: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && !is_thinking_binding_mismatch(status, body)
+        && contains_root_path(body, "speed")
 }
 
 /// Whether a 400 body reports a thinking block bound to a different conversation prefix.
@@ -143,6 +161,7 @@ pub(super) fn claude_error(status: StatusCode, body: &str) -> LlmError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     const MISMATCH_BODY: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation. Remove the block, or set `thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\". That setting requires the `thinking-binding-controls-2026-08-01` value in the `anthropic-beta` header."}}"#;
 
@@ -165,10 +184,10 @@ mod tests {
             MISMATCH_BODY,
             BetaFeature::ThinkingBinding
         ));
-        assert!(matches!(
+        assert_matches!(
             claude_error(status, MISMATCH_BODY),
             LlmError::ThinkingBindingMismatch
-        ));
+        );
     }
 
     #[test]

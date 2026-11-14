@@ -1729,8 +1729,9 @@ mod tests {
         let escape = format!("{}/nonexistent/../../etc/passwd", dir.path().display());
         let params = make_params(&[("path", serde_json::json!(escape))]);
         let result = exec.execute_file_tool("read", &params).await;
-        assert!(
-            matches!(result, Err(ToolError::SandboxViolation { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::SandboxViolation { .. }),
             "expected SandboxViolation for dotdot bypass, got {result:?}"
         );
     }
@@ -1784,8 +1785,9 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
         let params = make_params(&[("path", serde_json::json!(secret.to_str().unwrap()))]);
         let result = exec.execute_file_tool("read", &params).await;
-        assert!(
-            matches!(result, Err(ToolError::SandboxViolation { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::SandboxViolation { .. }),
             "expected SandboxViolation, got: {result:?}"
         );
     }

@@ -14,6 +14,7 @@ use zeph_common::deep_link::{CwdValidationError, build_cwd_denylist};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -27,8 +28,9 @@ mod tests {
     #[test]
     fn relative_path_returns_not_absolute() {
         let result = validate_deep_link_cwd(Path::new("relative/path"), &[]);
-        assert!(
-            matches!(result, Err(CwdValidationError::NotAbsolute)),
+        assert_matches!(
+            result,
+            Err(CwdValidationError::NotAbsolute),
             "expected NotAbsolute, got {result:?}"
         );
     }
@@ -39,8 +41,9 @@ mod tests {
             Path::new("/this/path/definitely/does/not/exist/zeph_test"),
             &[],
         );
-        assert!(
-            matches!(result, Err(CwdValidationError::CanonicalizeFailed(_))),
+        assert_matches!(
+            result,
+            Err(CwdValidationError::CanonicalizeFailed(_)),
             "expected CanonicalizeFailed, got {result:?}"
         );
     }
@@ -52,8 +55,9 @@ mod tests {
         fs::write(&file_path, b"test").expect("write test file");
         let result = validate_deep_link_cwd(&file_path, &[]);
         let _ = fs::remove_file(&file_path);
-        assert!(
-            matches!(result, Err(CwdValidationError::NotADirectory)),
+        assert_matches!(
+            result,
+            Err(CwdValidationError::NotADirectory),
             "expected NotADirectory, got {result:?}"
         );
     }
@@ -63,8 +67,9 @@ mod tests {
         let dir = std::env::temp_dir();
         let allowed = vec![PathBuf::from("/nonexistent/root/zeph_allowed")];
         let result = validate_deep_link_cwd(&dir, &allowed);
-        assert!(
-            matches!(result, Err(CwdValidationError::OutsideAllowedRoots)),
+        assert_matches!(
+            result,
+            Err(CwdValidationError::OutsideAllowedRoots),
             "expected OutsideAllowedRoots, got {result:?}"
         );
     }
@@ -85,8 +90,9 @@ mod tests {
     #[test]
     fn proc_path_is_denied() {
         let result = validate_deep_link_cwd(Path::new("/proc"), &[]);
-        assert!(
-            matches!(result, Err(CwdValidationError::Denied(_))),
+        assert_matches!(
+            result,
+            Err(CwdValidationError::Denied(_)),
             "expected Denied for /proc, got {result:?}"
         );
     }
@@ -95,8 +101,9 @@ mod tests {
     #[test]
     fn sys_path_is_denied() {
         let result = validate_deep_link_cwd(Path::new("/sys"), &[]);
-        assert!(
-            matches!(result, Err(CwdValidationError::Denied(_))),
+        assert_matches!(
+            result,
+            Err(CwdValidationError::Denied(_)),
             "expected Denied for /sys, got {result:?}"
         );
     }
@@ -108,8 +115,9 @@ mod tests {
             let ssh_path = std::path::PathBuf::from(&home).join(".ssh");
             if ssh_path.exists() {
                 let result = validate_deep_link_cwd(&ssh_path, &[]);
-                assert!(
-                    matches!(result, Err(CwdValidationError::Denied(_))),
+                assert_matches!(
+                    result,
+                    Err(CwdValidationError::Denied(_)),
                     "~/.ssh should be denied: {result:?}"
                 );
             } else {

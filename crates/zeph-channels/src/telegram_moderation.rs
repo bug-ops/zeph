@@ -205,8 +205,7 @@ mod tests {
         let client = TelegramApiClient::with_base_url(server.uri());
         let backend = TelegramModerationBackend::new(client, BOT_ID);
         let err = backend.delete_reaction(1, 2, 3, "👍").await.unwrap_err();
-        assert!(
-            matches!(err, ModerationError::Api(ref msg) if msg.contains("not an administrator")),
+        assert_matches!(err, ModerationError::Api(ref msg) if msg.contains("not an administrator"),
             "expected admin check error, got {err:?}"
         );
     }
@@ -231,8 +230,9 @@ mod tests {
         let client = TelegramApiClient::with_base_url(server.uri());
         let backend = TelegramModerationBackend::new(client, BOT_ID);
         let err = backend.delete_reaction(1, 2, 3, "👎").await.unwrap_err();
-        assert!(
-            matches!(err, ModerationError::Api(_)),
+        assert_matches!(
+            err,
+            ModerationError::Api(_),
             "expected Api error, got {err:?}"
         );
     }
@@ -274,8 +274,7 @@ mod tests {
         let client = TelegramApiClient::with_base_url(server.uri());
         let backend = TelegramModerationBackend::new(client, BOT_ID);
         let err = backend.delete_all_reactions(1, 2, 3).await.unwrap_err();
-        assert!(
-            matches!(err, ModerationError::Api(ref msg) if msg.contains("not an administrator")),
+        assert_matches!(err, ModerationError::Api(ref msg) if msg.contains("not an administrator"),
             "expected admin check error, got {err:?}"
         );
     }
@@ -356,8 +355,9 @@ mod tests {
         let client = TelegramApiClient::with_base_url(server.uri());
         let backend = TelegramModerationBackend::new(client, BOT_ID);
         let err = backend.delete_reaction(1, 2, 3, "👍").await.unwrap_err();
-        assert!(
-            matches!(err, ModerationError::Http(_)),
+        assert_matches!(
+            err,
+            ModerationError::Http(_),
             "expected Http error, got {err:?}"
         );
     }

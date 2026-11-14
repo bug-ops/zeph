@@ -1551,6 +1551,7 @@ mod render_cache_tests {
 
 mod try_recv_tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn try_recv_returns_empty_when_no_events() {
@@ -1836,6 +1837,7 @@ mod command_palette_tests {
 }
 
 mod mention_picker_tests {
+    use std::assert_matches;
     use std::fs;
     use std::sync::Arc;
 
@@ -2283,10 +2285,10 @@ mod mention_picker_tests {
         let effects =
             crate::app::reducer::reduce(&mut app, crate::app::action::Action::InsertChar('@'));
 
-        assert!(matches!(
+        assert_matches!(
             effects.as_slice(),
             [crate::app::reducer::Effect::EnsureFileIndex]
-        ));
+        );
         let picker = app
             .mention_picker
             .as_ref()
@@ -3213,8 +3215,9 @@ fn wave_state_network_when_background_inflight_without_foreground() {
     assert!(!app.is_agent_busy());
     app.metrics.bg_inflight = 1;
     assert_eq!(app.background_inflight(), 1);
-    assert!(
-        matches!(app.wave_state(), WaveState::Network { .. }),
+    assert_matches!(
+        app.wave_state(),
+        WaveState::Network { .. },
         "background request must drive the Network wave even when the agent is idle"
     );
 }
@@ -3816,6 +3819,7 @@ fn wants_animation_frame_true_while_shimmer_active() {
 }
 
 mod poll_pending_theme_tests {
+    use std::assert_matches;
     use tokio::sync::oneshot;
 
     use super::*;
@@ -3919,8 +3923,9 @@ mod poll_pending_theme_tests {
         // The function will dispatch a spawn_blocking task and return Ok(false).
         let result = app.apply_theme("my-custom-theme");
 
-        assert!(
-            matches!(result, Ok(false)),
+        assert_matches!(
+            result,
+            Ok(false),
             "non-preset theme must return Ok(false), got: {result:?}"
         );
         assert!(

@@ -208,8 +208,9 @@ async fn cocoon_retry_exhausted_returns_unavailable() {
 
     let provider = make_provider(&server.uri());
     let result = provider.chat(&user_message("fail test")).await;
-    assert!(
-        matches!(result, Err(crate::error::LlmError::Unavailable)),
+    assert_matches!(
+        result,
+        Err(crate::error::LlmError::Unavailable),
         "expected Unavailable after exhausting retries, got: {result:?}"
     );
 }
@@ -350,8 +351,9 @@ async fn cocoon_embed_returns_unsupported_on_404() {
 
     let provider = make_provider(&server.uri());
     let err = provider.embed("test").await.unwrap_err();
-    assert!(
-        matches!(err, crate::error::LlmError::EmbedUnsupported { .. }),
+    assert_matches!(
+        err,
+        crate::error::LlmError::EmbedUnsupported { .. },
         "expected EmbedUnsupported, got: {err:?}"
     );
 }
@@ -418,8 +420,9 @@ async fn cocoon_embed_batch_count_mismatch() {
     let provider = make_provider(&server.uri());
     let texts = ["first", "second", "third"];
     let err = provider.embed_batch(&texts).await.unwrap_err();
-    assert!(
-        matches!(err, crate::error::LlmError::Other(_)),
+    assert_matches!(
+        err,
+        crate::error::LlmError::Other(_),
         "expected Other error on count mismatch, got: {err:?}"
     );
 }
@@ -446,8 +449,9 @@ async fn cocoon_chat_context_length_error() {
         .chat(&user_message("long input"))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, crate::error::LlmError::ContextLengthExceeded),
+    assert_matches!(
+        err,
+        crate::error::LlmError::ContextLengthExceeded,
         "expected ContextLengthExceeded, got: {err:?}"
     );
 }
@@ -493,8 +497,9 @@ async fn cocoon_api_error_on_5xx() {
 
     let provider = make_provider(&server.uri());
     let err = provider.chat(&user_message("test")).await.unwrap_err();
-    assert!(
-        matches!(err, crate::error::LlmError::ApiError { status: 500, .. }),
+    assert_matches!(
+        err,
+        crate::error::LlmError::ApiError { status: 500, .. },
         "expected ApiError(500), got: {err:?}"
     );
 }
@@ -559,8 +564,9 @@ async fn cocoon_malformed_json_response() {
 
     let provider = make_provider(&server.uri());
     let err = provider.chat(&user_message("test")).await.unwrap_err();
-    assert!(
-        matches!(err, crate::error::LlmError::Json(_)),
+    assert_matches!(
+        err,
+        crate::error::LlmError::Json(_),
         "expected Json parse error, got: {err:?}"
     );
 }

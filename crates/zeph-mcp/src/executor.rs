@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use parking_lot::RwLock;
 
 use zeph_common::ToolName;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, extract_fenced_blocks};
@@ -13,12 +12,14 @@ use zeph_tools::registry::{InvocationHint, ToolDef};
 
 use crate::manager::McpManager;
 use crate::tool::McpTool;
+use crate::tool_list::McpToolListReader;
+use zeph_common::types::McpServerId;
 
 /// [`ToolExecutor`] implementation that dispatches tool calls to MCP servers.
 ///
 /// `McpToolExecutor` bridges the `zeph-tools` dispatch layer and `McpManager`. It
 /// maintains a local snapshot of the registered MCP tools (updated via
-/// [`set_tools`](McpToolExecutor::set_tools)) and resolves tool calls by matching
+/// the paired [`McpToolListWriter`](crate::McpToolListWriter)) and resolves tool calls by matching
 /// the sanitized tool ID against the snapshot before forwarding to the manager.
 ///
 /// # Security invariant
@@ -37,7 +38,7 @@ use crate::tool::McpTool;
 #[derive(Debug, Clone)]
 pub struct McpToolExecutor {
     manager: Arc<McpManager>,
-    tools: Arc<RwLock<Vec<McpTool>>>,
+    tools: McpToolListReader,
     /// Validator for MCP-sourced images (spec-072). `None` disables media passthrough
     /// entirely — `media_passthrough` server config becomes a no-op without it.
     media_sanitizer: Option<Arc<zeph_sanitizer::MediaSanitizer>>,
@@ -51,13 +52,13 @@ pub struct McpToolExecutor {
 }
 
 impl McpToolExecutor {
-    /// Create a new executor from a shared `McpManager` and a shared tool list.
+    /// Create a new executor from a shared `McpManager` and the reader of an agent's tool list.
     ///
-    /// The `tools` `RwLock` is updated via [`set_tools`](Self::set_tools) after each
-    /// connect or refresh. Pass the same `Arc<RwLock<Vec<McpTool>>>` to both the executor
-    /// and the code that handles `tools/list_changed` events.
+    /// The list is written only by the [`McpToolListWriter`](crate::McpToolListWriter) paired
+    /// with `tools` (see [`McpToolList::new`](crate::McpToolList::new)), which also keeps the MCP
+    /// tool-id registry in step with what this executor can dispatch.
     #[must_use]
-    pub fn new(manager: Arc<McpManager>, tools: Arc<RwLock<Vec<McpTool>>>) -> Self {
+    pub fn new(manager: Arc<McpManager>, tools: McpToolListReader) -> Self {
         Self {
             manager,
             tools,
@@ -100,29 +101,6 @@ impl McpToolExecutor {
     pub fn with_status_tx(mut self, tx: zeph_llm::status::StatusSender) -> Self {
         self.status_tx = Some(tx);
         self
-    }
-
-    /// Replace the registered tool snapshot.
-    ///
-    /// Logs a `WARN` for each `sanitized_id` collision: when two tools map to the same
-    /// sanitized ID the second is unreachable via [`execute_tool_call`](Self::execute_tool_call).
-    pub fn set_tools(&self, tools: Vec<McpTool>) {
-        // Warn on sanitized_id collisions: two tools mapping to the same id means
-        // the second will be unreachable via execute_tool_call.
-        let mut seen = std::collections::HashMap::new();
-        for t in &tools {
-            let sid = t.sanitized_id();
-            if let Some(prev) = seen.insert(sid.clone(), t.qualified_name()) {
-                tracing::warn!(
-                    sanitized_id = %sid,
-                    first = %prev,
-                    second = %t.qualified_name(),
-                    "MCP tool sanitized_id collision: second tool will be unreachable"
-                );
-            }
-        }
-        let mut guard = self.tools.write();
-        *guard = tools;
     }
 
     /// Validate `ContentBlock::Image` blocks in a tool result through the configured
@@ -228,7 +206,7 @@ impl McpToolExecutor {
                 error_domain: None,
                 error_phase: None,
                 claim_source: Some(zeph_tools::ClaimSource::Mcp),
-                mcp_server_id: Some(server_id.to_owned()),
+                mcp_server_id: Some(McpServerId::from(server_id)),
                 injection_flagged: false,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
@@ -283,7 +261,7 @@ impl McpToolExecutor {
                 error_domain: Some("security".to_owned()),
                 error_phase: None,
                 claim_source: Some(zeph_tools::ClaimSource::Mcp),
-                mcp_server_id: Some(server_id.to_owned()),
+                mcp_server_id: Some(McpServerId::from(server_id)),
                 injection_flagged: false,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
@@ -344,16 +322,17 @@ impl ToolExecutor for McpToolExecutor {
         let args = serde_json::Value::Object(call.params.clone());
         let result = self
             .manager
-            .call_tool(&tool.server_id, &tool.name, args)
+            .call_tool(tool.server_id.as_str(), &tool.name, args)
             .await
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
         let raw_text = crate::content::render_content_blocks(&result.content);
 
-        let text = crate::sanitize::intent_anchor_wrap(&tool.server_id, &tool.name, &raw_text);
+        let text =
+            crate::sanitize::intent_anchor_wrap(tool.server_id.as_str(), &tool.name, &raw_text);
 
         let media = self
-            .collect_media(&tool.server_id, &tool.name, &result.content)
+            .collect_media(tool.server_id.as_str(), &tool.name, &result.content)
             .await;
 
         Ok(Some(tool_output(&tool, text, media, &result)))
@@ -385,7 +364,9 @@ impl ToolExecutor for McpToolExecutor {
                 let tools = self.tools.read();
                 tools
                     .iter()
-                    .find(|t| t.server_id == instruction.server && t.name == instruction.tool)
+                    .find(|t| {
+                        t.server_id == instruction.server.as_str() && t.name == instruction.tool
+                    })
                     .cloned()
             };
             let Some(tool) = found else {
@@ -494,11 +475,16 @@ fn default_args() -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::policy::PolicyEnforcer;
+    use crate::tool_list::{McpToolList, McpToolListWriter};
+
+    fn make_executor_with_writer() -> (McpToolExecutor, McpToolListWriter) {
+        let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
+        let (writer, reader) = McpToolList::new(vec![]);
+        (McpToolExecutor::new(mgr, reader), writer)
+    }
 
     fn make_executor() -> McpToolExecutor {
-        let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
-        let tools = Arc::new(RwLock::new(vec![]));
-        McpToolExecutor::new(mgr, tools)
+        make_executor_with_writer().0
     }
 
     // --- MediaSanitizer / media_passthrough gating (spec-072) ---
@@ -544,7 +530,7 @@ mod tests {
             vec![],
             PolicyEnforcer::new(vec![]),
         ));
-        let tools = Arc::new(RwLock::new(vec![]));
+        let (_writer, tools) = McpToolList::new(vec![]);
         let sanitizer = Arc::new(zeph_sanitizer::MediaSanitizer::new(
             &zeph_config::McpMediaConfig::default(),
         ));
@@ -654,7 +640,7 @@ mod tests {
             vec![],
             PolicyEnforcer::new(vec![]),
         ));
-        let tools = Arc::new(RwLock::new(vec![]));
+        let (_writer, tools) = McpToolList::new(vec![]);
         let sanitizer = Arc::new(zeph_sanitizer::MediaSanitizer::new(
             &zeph_config::McpMediaConfig::default(),
         ));
@@ -684,7 +670,7 @@ mod tests {
             vec![],
             PolicyEnforcer::new(vec![]),
         ));
-        let tools = Arc::new(RwLock::new(vec![]));
+        let (_writer, tools) = McpToolList::new(vec![]);
         let sanitizer = Arc::new(zeph_sanitizer::MediaSanitizer::new(
             &zeph_config::McpMediaConfig::default(),
         ));
@@ -703,6 +689,37 @@ mod tests {
         let update = tokio::time::timeout(std::time::Duration::from_millis(100), rx.next())
             .await
             .expect("a clear must be delivered once decoding finishes");
+        assert_eq!(update, Some(zeph_llm::status::StatusUpdate::Clear));
+    }
+
+    #[tokio::test]
+    async fn collect_media_cancelled_mid_decode_still_clears_status() {
+        let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
+        let mgr = Arc::new(McpManager::new(
+            vec![entry],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        ));
+        let (_writer, tools) = McpToolList::new(vec![]);
+        let sanitizer = Arc::new(zeph_sanitizer::MediaSanitizer::new(
+            &zeph_config::McpMediaConfig::default(),
+        ));
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Mcp);
+        let executor = McpToolExecutor::new(mgr, tools)
+            .with_media(sanitizer, 4)
+            .with_status_tx(tx);
+
+        let blocks = [png_image_block()];
+        let mut fut = Box::pin(executor.collect_media("srv", "tool", &blocks));
+        assert!(
+            futures::poll!(fut.as_mut()).is_pending(),
+            "decode must still be in flight after the first poll"
+        );
+        drop(fut);
+
+        let update = tokio::time::timeout(std::time::Duration::from_millis(100), rx.next())
+            .await
+            .expect("dropping the future must clear the decode status");
         assert_eq!(update, Some(zeph_llm::status::StatusUpdate::Clear));
     }
 
@@ -852,14 +869,14 @@ mod tests {
     #[test]
     fn tool_definitions_returns_sanitized_names() {
         let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
-        let tools = Arc::new(RwLock::new(vec![McpTool {
+        let (_writer, tools) = McpToolList::new(vec![McpTool {
             server_id: "gh".into(),
             name: "create_issue".into(),
             description: "Create a GitHub issue".into(),
             input_schema: serde_json::json!({}),
             output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
-        }]));
+        }]);
         let executor = McpToolExecutor::new(mgr, tools);
         let defs = executor.tool_definitions();
         assert_eq!(defs.len(), 1);
@@ -868,10 +885,10 @@ mod tests {
     }
 
     #[test]
-    fn set_tools_updates_definitions() {
-        let executor = make_executor();
+    fn published_tools_update_definitions() {
+        let (executor, writer) = make_executor_with_writer();
         assert!(executor.tool_definitions().is_empty());
-        executor.set_tools(vec![McpTool {
+        writer.publish_full(&[McpTool {
             server_id: "fs".into(),
             name: "list_dir".into(),
             description: "List directory".into(),
@@ -918,9 +935,9 @@ mod tests {
         // Verify the output tool_name uses qualified format for quarantine routing.
         // We can't easily run a full call, but we can verify the rejection error path
         // hits before any server dispatch.
-        let executor = make_executor();
+        let (executor, writer) = make_executor_with_writer();
         // Register a real tool so the lookup can succeed but server call fails.
-        executor.set_tools(vec![McpTool {
+        writer.publish_full(&[McpTool {
             server_id: "srv".into(),
             name: "tool".into(),
             description: "d".into(),
@@ -973,14 +990,14 @@ mod tests {
         // Register a tool whose sanitized_id is "gh_create_issue".
         // A call with tool_id "gh_create_issue" matches; a call with a different id does not.
         let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
-        let tools = Arc::new(RwLock::new(vec![McpTool {
+        let (_writer, tools) = McpToolList::new(vec![McpTool {
             server_id: "gh".into(),
             name: "create_issue".into(),
             description: "desc".into(),
             input_schema: serde_json::json!({}),
             output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
-        }]));
+        }]);
         let executor = McpToolExecutor::new(mgr, tools);
 
         // A different sanitized id must not match.
@@ -1002,14 +1019,14 @@ mod tests {
         // Register a tool so the lookup succeeds, but the manager has no connected server —
         // the call_tool on the manager must return an error (not None).
         let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
-        let tools = Arc::new(RwLock::new(vec![McpTool {
+        let (_writer, tools) = McpToolList::new(vec![McpTool {
             server_id: "missing_server".into(),
             name: "some_tool".into(),
             description: "desc".into(),
             input_schema: serde_json::json!({}),
             output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
-        }]));
+        }]);
         let executor = McpToolExecutor::new(mgr, tools);
 
         // tool_id matches the sanitized_id "missing_server_some_tool".
@@ -1030,7 +1047,7 @@ mod tests {
     fn tool_definitions_sanitized_id_has_no_colon() {
         // After the fix, no tool definition id may contain ':'.
         let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
-        let tools = Arc::new(RwLock::new(vec![
+        let (_writer, tools) = McpToolList::new(vec![
             McpTool {
                 server_id: "srv-one".into(),
                 name: "tool:with:colons".into(),
@@ -1047,7 +1064,7 @@ mod tests {
                 output_schema: None,
                 security_meta: crate::tool::ToolSecurityMeta::default(),
             },
-        ]));
+        ]);
         let executor = McpToolExecutor::new(mgr, tools);
         let defs = executor.tool_definitions();
         assert_eq!(defs.len(), 2);
@@ -1064,14 +1081,14 @@ mod tests {
     fn tool_definitions_sanitized_id_matches_expected_pattern() {
         // Verify that every character in every id matches [a-zA-Z0-9_-].
         let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
-        let tools = Arc::new(RwLock::new(vec![McpTool {
+        let (_writer, tools) = McpToolList::new(vec![McpTool {
             server_id: "my.server".into(),
             name: "tool name!".into(),
             description: "d".into(),
             input_schema: serde_json::json!({}),
             output_schema: None,
             security_meta: crate::tool::ToolSecurityMeta::default(),
-        }]));
+        }]);
         let executor = McpToolExecutor::new(mgr, tools);
         let defs = executor.tool_definitions();
         assert_eq!(defs.len(), 1);

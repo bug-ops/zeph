@@ -23,7 +23,7 @@ use zeph_common::hash_chain::{
     ChainHash, ChainKeyRing, KeyResolution, chain_next, genesis,
     verify_chained_prefix_with_checkpoint,
 };
-use zeph_common::trust_level::TranscriptTrustSchema;
+use zeph_common::trust_level::{TranscriptTrustSchema, TurnContextTrust};
 use zeph_llm::provider::{Message, MessagePart};
 
 use super::error::SubAgentError;
@@ -108,8 +108,7 @@ fn anchor_store() -> Option<Arc<dyn AnchorStore>> {
 /// in another task's transcript) breaks at the genesis hash.
 fn file_identity(path: &Path) -> Vec<u8> {
     path.file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|s| s.to_string_lossy().into_owned())
         .into_bytes()
 }
 
@@ -197,18 +196,52 @@ pub struct TranscriptMeta {
     pub resumed_from: Option<String>,
     /// Number of LLM turns consumed by the session.
     pub turns_used: u32,
-    /// MCP tool names available when this session was spawned.
-    ///
-    /// Persisted so that a resumed session can restore the same tool name annotations
-    /// in its system prompt without re-connecting MCP servers.
-    #[serde(default)]
-    pub mcp_tool_names: Vec<String>,
     /// Trust-marker format of the sibling JSONL transcript.
     ///
     /// Sidecars written before per-result trust tagging lack this key and deserialize to
     /// [`TranscriptTrustSchema::Legacy`], so importers treat them as external content.
     #[serde(default = "TranscriptTrustSchema::legacy")]
     pub trust_schema: TranscriptTrustSchema,
+    /// Highest trust tier tagged on the context this session started from (the parent's
+    /// conversation at spawn, the earlier transcript on resume).
+    ///
+    /// Per-result markers only cover tool results written during the session, so an importer
+    /// folds this floor in: a transcript that may quote inherited external content is not
+    /// imported below it. `None` when the inherited context carried no trust tag, and for
+    /// sidecars written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_trust: Option<TurnContextTrust>,
+}
+
+/// Highest trust tier tagged on any of `messages`; `None` when no message carries a tag.
+///
+/// Untagged messages are ignored. Used for the trust floor a sub-agent inherits with its
+/// starting context.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::trust_level::TurnContextTrust;
+/// use zeph_llm::provider::{Message, Role};
+/// use zeph_subagent::max_message_trust;
+///
+/// let mut tagged = Message::from_legacy(Role::User, "result");
+/// tagged.metadata.trust_level = Some(TurnContextTrust::ExternalUntrusted.as_u8());
+/// let untagged = Message::from_legacy(Role::Assistant, "reply");
+///
+/// assert_eq!(max_message_trust(&[untagged.clone()]), None);
+/// assert_eq!(
+///     max_message_trust(&[untagged, tagged]),
+///     Some(TurnContextTrust::ExternalUntrusted)
+/// );
+/// ```
+#[must_use]
+pub fn max_message_trust(messages: &[Message]) -> Option<TurnContextTrust> {
+    messages
+        .iter()
+        .filter_map(|m| m.metadata.trust_level)
+        .map(TurnContextTrust::from_u8_or_untrusted)
+        .max()
 }
 
 /// Appends [`TranscriptEntry`] lines to a JSONL transcript file.
@@ -1026,8 +1059,8 @@ mod tests {
             finished_at: Some("2026-01-01T00:01:00Z".to_owned()),
             resumed_from: None,
             turns_used: 2,
-            mcp_tool_names: Vec::new(),
             trust_schema: TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
         }
     }
 
@@ -1080,7 +1113,7 @@ mod tests {
         let messages = TranscriptReader::load(&path).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].parts.len(), 1);
-        assert!(matches!(messages[0].parts[0], MessagePart::Text { .. }));
+        assert_matches!(messages[0].parts[0], MessagePart::Text { .. });
         assert!(
             !messages[0]
                 .parts
@@ -1121,8 +1154,8 @@ mod tests {
         let messages = TranscriptReader::load(&path).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].parts.len(), 2);
-        assert!(matches!(messages[0].parts[0], MessagePart::Text { .. }));
-        assert!(matches!(messages[0].parts[1], MessagePart::ToolUse { .. }));
+        assert_matches!(messages[0].parts[0], MessagePart::Text { .. });
+        assert_matches!(messages[0].parts[1], MessagePart::ToolUse { .. });
     }
 
     #[tokio::test]
@@ -1415,15 +1448,10 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(subagent_transcript_integrity)]
-    fn meta_roundtrip_preserves_mcp_tool_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let agent_id = "abc-123";
-        let mut meta = test_meta(agent_id);
-        meta.mcp_tool_names = vec!["search".into(), "write_file".into()];
-        TranscriptWriter::write_meta(dir.path(), agent_id, &meta).unwrap();
-        let loaded = TranscriptReader::load_meta(dir.path(), agent_id).unwrap();
-        assert_eq!(loaded.mcp_tool_names, vec!["search", "write_file"]);
+    fn meta_with_legacy_mcp_tool_names_key_still_loads() {
+        let json = r#"{"agent_id":"a","agent_name":"bot","def_name":"bot","status":"Completed","started_at":"2026-01-01T00:00:00Z","turns_used":1,"mcp_tool_names":["search"]}"#;
+        let meta: TranscriptMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.agent_id, "a");
     }
 
     #[test]

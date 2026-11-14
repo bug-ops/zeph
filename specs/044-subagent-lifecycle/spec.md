@@ -185,7 +185,7 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | FR-007 | WHEN a `Grant` TTL expires THEN `PermissionGrants::check()` SHALL return an error for that grant | must |
 | FR-008 | WHEN `FilteredToolExecutor` receives a tool call THEN it SHALL check the `ToolPolicy` and denylist before forwarding to the real executor, matching tool IDs case-insensitively after stripping argument suffixes (`"Bash(cargo *)"` → `"bash"`) via `normalize_tool_id` (#3765) | must |
 | FR-009 | WHEN a subagent session ends (normally or via cancellation) THEN a JSONL transcript SHALL be written with complete turn history | must |
-| FR-009a | WHEN a transcript is written THEN `TranscriptMeta.trust_schema` SHALL record its trust-marker format (`per_result` for new sessions; a missing key reads as `legacy`). `SubAgentHandle` carries `trust_schema` and `resumed_from` so the final meta written on collect keeps both; resuming a `legacy` transcript yields a `legacy` session (#7022). Text of sub-agent notices (#7021) passes `SecretMaskRegistry::mask`, then `scrub_secret_shapes`, then `PiiFilter::scrub` when enabled, the same order as live forwarding. | must |
+| FR-009a | WHEN a transcript is written THEN `TranscriptMeta.trust_schema` SHALL record its trust-marker format (`per_result` for new sessions; a missing key reads as `legacy`). `SubAgentHandle` carries `trust_schema` and `resumed_from` so the final meta written on collect keeps both, and collect re-reads the spawn-time sidecar to keep `inherited_trust` (#7027, the trust floor of the context the session started from; resume folds the original meta floor, the current `SpawnContext` floor and the tags on the replayed history); resuming a `legacy` transcript yields a `legacy` session (#7022). Text of sub-agent notices (#7021) passes `SecretMaskRegistry::mask`, then `scrub_secret_shapes`, then `PiiFilter::scrub` when enabled, the same order as live forwarding. | must |
 | FR-010 | WHEN `sweep_old_transcripts()` is called THEN transcripts beyond the retention window SHALL be deleted | must |
 | FR-011 | WHEN lifecycle hooks are defined THEN `fire_hooks()` SHALL execute matching hooks for each `HookType` event | must |
 | FR-012 | WHEN hook execution fails THEN the failure SHALL be logged at `WARN` and the subagent session SHALL continue | must |
@@ -219,7 +219,7 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | `SubAgentManager` | Lifecycle manager | Concurrency limit, active handles map, cancellation registry |
 | `SubAgentHandle` | Reference to a running task | Task ID (UUID), status channel, cancellation token |
 | `SubAgentStatus` | Current state of a task | Variants: `Running`, `Completed`, `Failed`, `Cancelled` |
-| `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_names`, `max_trust_level`, `inherited_tool_allowlist`, `credential_scrub` |
+| `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_ids`, `inherited_trust`, `block_sink`, `max_trust_level`, `inherited_tool_allowlist`, `credential_scrub` |
 | `PermissionGrants` | TTL-bounded permission registry | Map of `GrantKind` → expiry timestamp |
 | `Grant` | Single permission grant | `kind: GrantKind`, `ttl_secs`, expiry instant |
 | `GrantKind` | Type of permission | Variants: `Secret(String)` (vault key), `Tool(String)` (tool name, #6625) |
@@ -314,13 +314,20 @@ initial spawn time and lost on respawn.
 
 ### Mechanism
 
-`SpawnContext::mcp_tool_names` is updated from the live parent `McpManager` reference
-at respawn time, not from a stale snapshot.
+`SpawnContext::mcp_tool_ids: Option<McpToolIdsHandle>` is a read-only handle onto the parent's
+single `McpToolList` writer, so spawn, respawn and resume all read the live registry (`snapshot()`
+per batch), never a copy taken at spawn time. The snapshot is always joined with
+`McpToolIds::from_definitions` over the executor's live definitions, and `None` (for example
+`SpawnContext::default()` in an embedder) uses the definitions alone, so an empty or unpaired
+registry can never classify an MCP result as native. `McpToolIdsHandle` has no
+`Default` and is built only by `McpToolIdsHandle::with_writer`, so `Some(handle)` always has a live
+writer behind it. `SpawnContext.session_mcp_servers` and `TranscriptMeta.mcp_tool_names` are removed
+(old sidecars still load: `TranscriptMeta` has no `deny_unknown_fields`).
 
 ### Key Invariants
 
 - Respawned subagents MUST inherit the parent's current MCP config, not the config at initial spawn
-- MCP tool names list is never cached in `SubAgentDef` — always fetched live from parent manager (known gap: resume currently reads `mcp_tool_names` from the transcript meta; trust classification tolerates this because live executor definitions are joined in per batch)
+- The MCP tool id registry is never cached in `SubAgentDef` or the transcript — spawn and resume read the live parent handle (`SpawnContext.mcp_tool_ids`); the transcript stores no MCP tool list
 
 ---
 
@@ -792,10 +799,15 @@ Every sub-agent tool result (the `Ok(Some)` summary and the `Err` text) is prote
 2. `strip_control_chars_preserve_whitespace` (control and zero-width characters are removed first so they cannot split a secret past the matchers)
 3. `SecretMaskRegistry::mask` (`would_mask` pre-check; section 16)
 4. `zeph_common::secret_redact::scrub_secrets`, only when `CredentialScrub::Enabled`
-5. `ContentSanitizer::sanitize(raw, resolved.content_source(tool_name))` (`ResolvedToolSource::resolve`) (injection flags logged at `warn`); provenance is resolved per batch from the live executor's MCP definitions joined with `mcp_tool_names`, then joined with the result's `ClaimSource` and, for a replayed `read_overflow` body, its stored source (`ToolOutput.replayed_from`)
+5. `ContentSanitizer::sanitize(raw, resolved.content_source(tool_name))` (`ResolvedToolSource::resolve`) (injection flags logged at `warn`); provenance is resolved per batch from `SpawnContext.mcp_tool_ids` (`snapshot()` of the parent's live registry when `Some`) joined with the live executor's MCP definitions, then joined with the result's `ClaimSource` and, for a replayed `read_overflow` body, its stored source (`ToolOutput.replayed_from`)
 6. `[tool output: name]` fence for results, `[tool error]:` prefix for errors
 
 `SpawnContext.credential_scrub: CredentialScrub { Enabled, Disabled }` (`Default = Enabled`, `From<bool>`) is set from `runtime.config.redact_credentials` when the context is built in `subagent_commands.rs` and threaded into `AgentLoopArgs`. The sub-agent wire `is_error` stays `Err`-only: a non-zero exit is not a sub-agent tool error (`[[006-tools/spec]]`).
+
+### Block recording and inherited trust (#7055, #7027)
+
+- A pre-dispatch verifier block in a sub-agent is recorded exactly like the parent's: `SpawnContext.block_sink: Option<Arc<dyn PreDispatchBlockSink>>` receives a `PreDispatchBlock` (metric, `PreExecutionBlock` security event, audit row) on spawn and on resume.
+- `SpawnContext.inherited_trust: Option<TurnContextTrust>` is the trust floor of the parent's full (unwindowed) context, computed once in `build_spawn_context`, persisted as `TranscriptMeta.inherited_trust` and folded with the current floor (max) on resume; untagged messages are ignored, same rule as `context_max_trust_level`.
 
 ### Hook dispatch (#6987)
 
@@ -833,7 +845,7 @@ The sub-agent loop (`handle_tool_step`, `crates/zeph-subagent/src/agent_loop.rs`
 - `SpawnContext.pre_execution_verifiers` (`Arc<[Box<dyn PreExecutionVerifier>]>`) is rebuilt from the parent's config by `build_pre_execution_verifiers` in `build_spawn_context` (same factory as the parent's own list) and carried by both `spawn` and `resume` into the loop's `ToolGates`. The first `Block` returns an `is_error` tool result with the text of the parent's `GateRefusal::PreExecutionBlocked`; the executor is not called
 - URLs found in tool output that carried injection flags are remembered per loop (normalized as in the parent); a later call whose arguments reuse one logs a WARN and is not blocked
 - The parent's channel tool allowlist narrows `inherited_tool_allowlist` (`inherit_tool_allowlist`): only channel names already in `normalize_tool_id` form are kept (the parent matches names exactly, so mapping `Bash(cargo *)` to `bash` would widen the sub-agent), and a present side never collapses to `None`
-- Sub-agent blocks are WARN-only: no `pre_execution_blocks` metric, security event or audit row
+- A sub-agent block is WARN-logged and recorded through `SpawnContext.block_sink` (#7055): `pre_execution_blocks` metric, `PreExecutionBlock` security event and an audit row, the same as a parent-loop block. The channel-allowlist refusal is a parent-loop gate and is not part of the sub-agent loop
 
 ### Key Invariants
 

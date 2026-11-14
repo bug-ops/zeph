@@ -432,6 +432,7 @@ impl PeerRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn router(config: PeerMessagingConfig) -> Arc<PeerRouter> {
         PeerRouter::new(config, None)
@@ -463,7 +464,7 @@ mod tests {
         let r = router(PeerMessagingConfig::default());
         let root = register_root(&r, PeerGroupId::Session, "spawner");
         let err = r.send(root.id(), "nope", "hi".to_owned()).unwrap_err();
-        assert!(matches!(err, DeliveryError::TargetNotFound(_)));
+        assert_matches!(err, DeliveryError::TargetNotFound(_));
     }
 
     #[test]
@@ -480,7 +481,7 @@ mod tests {
         );
         let ghost = AgentId::Task("never-registered".to_owned());
         let err = r.send(&ghost, "child", "hi".to_owned()).unwrap_err();
-        assert!(matches!(err, DeliveryError::TargetNotFound(_)));
+        assert_matches!(err, DeliveryError::TargetNotFound(_));
     }
 
     #[test]
@@ -613,13 +614,13 @@ mod tests {
         let (_c, _c_rx) = register_task(&r, "c", "c", root.id().clone(), PeerGroupId::Session);
 
         let err = r.send(a.id(), "c", "hi".to_owned()).unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err,
             DeliveryError::Unauthorized {
                 reason: UnauthorizedReason::NotInScope,
                 ..
             }
-        ));
+        );
     }
 
     #[test]
@@ -643,13 +644,13 @@ mod tests {
         );
 
         let err = r.send(c.id(), "a", "hi".to_owned()).unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err,
             DeliveryError::Unauthorized {
                 reason: UnauthorizedReason::NotInScope,
                 ..
             }
-        ));
+        );
     }
 
     #[test]
@@ -688,13 +689,13 @@ mod tests {
         let err = r
             .send(cousin_1.id(), "cousin-2", "hi".to_owned())
             .unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err,
             DeliveryError::Unauthorized {
                 reason: UnauthorizedReason::NotInScope,
                 ..
             }
-        ));
+        );
     }
 
     #[test]
@@ -723,8 +724,9 @@ mod tests {
         let err = r
             .send(session_task.id(), "plan-task", "leak?".to_owned())
             .unwrap_err();
-        assert!(
-            matches!(err, DeliveryError::TargetNotFound(_)),
+        assert_matches!(
+            err,
+            DeliveryError::TargetNotFound(_),
             "expected TargetNotFound (no existence oracle across groups), got: {err:?}"
         );
         assert_eq!(r.mailbox_depth(&AgentId::Task("plan-task".to_owned())), 0);
@@ -751,7 +753,7 @@ mod tests {
         let err = r
             .send(plan1_task.id(), "p2-task", "straggler".to_owned())
             .unwrap_err();
-        assert!(matches!(err, DeliveryError::TargetNotFound(_)));
+        assert_matches!(err, DeliveryError::TargetNotFound(_));
     }
 
     #[test]
@@ -759,13 +761,13 @@ mod tests {
         let r = router(PeerMessagingConfig::default());
         let root = register_root(&r, PeerGroupId::Session, "spawner");
         let err = r.send(root.id(), "spawner", "echo".to_owned()).unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err,
             DeliveryError::Unauthorized {
                 reason: UnauthorizedReason::SelfAddress,
                 ..
             }
-        ));
+        );
     }
 
     #[test]
@@ -776,7 +778,7 @@ mod tests {
         let (_b, _b_rx) = register_task(&r, "b", "dup", root.id().clone(), PeerGroupId::Session);
 
         let err = r.send(root.id(), "dup", "hi".to_owned()).unwrap_err();
-        assert!(matches!(err, DeliveryError::TargetNotFound(_)));
+        assert_matches!(err, DeliveryError::TargetNotFound(_));
     }
 
     #[test]
@@ -808,7 +810,7 @@ mod tests {
         let err = r
             .send(root.id(), "anyone", "way too long".to_owned())
             .unwrap_err();
-        assert!(matches!(err, DeliveryError::BodyTooLarge { .. }));
+        assert_matches!(err, DeliveryError::BodyTooLarge { .. });
     }
 
     #[test]
@@ -820,7 +822,7 @@ mod tests {
         let r = router(cfg);
         let root = register_root(&r, PeerGroupId::Session, "spawner");
         let err = r.send(root.id(), "anyone", "hi".to_owned()).unwrap_err();
-        assert!(matches!(err, DeliveryError::Disabled));
+        assert_matches!(err, DeliveryError::Disabled);
     }
 
     #[test]
@@ -842,7 +844,7 @@ mod tests {
         r.send(root.id(), "child", "first".to_owned())
             .expect("first fits");
         let err = r.send(root.id(), "child", "second".to_owned()).unwrap_err();
-        assert!(matches!(err, DeliveryError::MailboxFull(_)));
+        assert_matches!(err, DeliveryError::MailboxFull(_));
     }
 
     #[test]
@@ -861,7 +863,7 @@ mod tests {
         let err = r
             .send(root.id(), "child", "anyone home?".to_owned())
             .unwrap_err();
-        assert!(matches!(err, DeliveryError::TargetTerminated(_)));
+        assert_matches!(err, DeliveryError::TargetTerminated(_));
     }
 
     #[test]
@@ -879,7 +881,7 @@ mod tests {
         drop(child);
 
         let err = r.send(root.id(), "child", "hi".to_owned()).unwrap_err();
-        assert!(matches!(err, DeliveryError::TargetNotFound(_)));
+        assert_matches!(err, DeliveryError::TargetNotFound(_));
     }
 
     #[test]

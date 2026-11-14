@@ -14,10 +14,7 @@ use crate::task::TaskHandler;
 
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/bug-ops/zeph/releases/latest";
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
-const MAX_RESPONSE: BodyLimit = match BodyLimit::new(MAX_RESPONSE_BYTES) {
-    Some(limit) => limit,
-    None => panic!("response limit must be non-zero"),
-};
+const MAX_RESPONSE: BodyLimit = BodyLimit::from_const(MAX_RESPONSE_BYTES);
 
 /// [`TaskHandler`] that polls the GitHub releases API for a newer Zeph version.
 ///

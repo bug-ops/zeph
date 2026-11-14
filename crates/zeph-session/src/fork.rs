@@ -273,6 +273,7 @@ fn validate_blob_hash(hash: &str) -> Result<(), SessionError> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::Arc;
 
     use super::*;
@@ -400,8 +401,9 @@ mod tests {
         let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(3), &store, None)
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, SessionError::Integrity(_)),
+        assert_matches!(
+            err,
+            SessionError::Integrity(_),
             "tampering the parent's chain must abort the fork with an Integrity error, not \
              silently produce a child; got {err:?}"
         );
@@ -477,10 +479,7 @@ mod tests {
         let parent_dir = crate::session_dir(data_dir.path(), "parent");
         let parent_log = SessionEventLog::open(&parent_dir).await.unwrap();
         let events = parent_log.read_all().await.unwrap();
-        assert!(matches!(
-            events.last().unwrap().kind,
-            SessionEvent::ForkPoint { .. }
-        ));
+        assert_matches!(events.last().unwrap().kind, SessionEvent::ForkPoint { .. });
     }
 
     #[tokio::test]
@@ -493,7 +492,7 @@ mod tests {
         let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(100), &store, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::InvalidForkPoint(_)));
+        assert_matches!(err, SessionError::InvalidForkPoint(_));
     }
 
     #[tokio::test]
@@ -505,7 +504,7 @@ mod tests {
         let err = ForkEngine::fork(data_dir.path(), "no-such", "child", Some(0), &store, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::NotFound(_)));
+        assert_matches!(err, SessionError::NotFound(_));
     }
 
     #[tokio::test]
@@ -644,7 +643,7 @@ mod tests {
         let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(5), &store, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::InvalidBlobHash(_)));
+        assert_matches!(err, SessionError::InvalidBlobHash(_));
 
         // No child directory content should have been created by the rejected fork attempt.
         let child_dir = crate::session_dir(data_dir.path(), "child");
@@ -679,7 +678,7 @@ mod tests {
         let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(5), &store, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, SessionError::InvalidBlobHash(_)));
+        assert_matches!(err, SessionError::InvalidBlobHash(_));
     }
 
     /// Regression test for the critic's M3 finding: the same hash referenced twice in the

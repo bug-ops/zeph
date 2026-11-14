@@ -64,13 +64,15 @@ fn build_ingest_documents(
 /// A [`TranscriptTrustSchema::Legacy`] transcript predates per-result trust tagging, so it is
 /// `ExternalUntrusted` regardless of its content. For [`TranscriptTrustSchema::PerResult`] it is
 /// the highest tier recorded on any tool-result message, never below the
-/// [`IngestSourceKind::SubagentTranscript`] floor; a tool-result message without a recorded
+/// [`IngestSourceKind::SubagentTranscript`] floor or the `inherited` floor of the context the
+/// session started from (#7027); a tool-result message without a recorded
 /// tier or with an unknown value counts as `ExternalUntrusted`. The maximum is taken over the
 /// whole transcript, not per entry, because assistant text that follows a web fetch or an MCP
 /// call carries that content forward.
 fn transcript_trust(
     entries: &[TranscriptEntry],
     schema: TranscriptTrustSchema,
+    inherited: Option<TurnContextTrust>,
 ) -> TurnContextTrust {
     if schema == TranscriptTrustSchema::Legacy {
         return TurnContextTrust::ExternalUntrusted;
@@ -89,6 +91,7 @@ fn transcript_trust(
                 TurnContextTrust::from_u8_or_untrusted,
             )
         })
+        .chain(inherited)
         .fold(IngestSourceKind::SubagentTranscript.trust_level(), Ord::max)
 }
 
@@ -167,6 +170,8 @@ pub struct SubagentJsonl {
     task_id: String,
     /// Trust-marker format of the transcript being imported.
     schema: TranscriptTrustSchema,
+    /// Trust floor of the context the session started from, from its meta sidecar.
+    inherited_trust: Option<TurnContextTrust>,
     /// Number of preceding messages used as extraction context.
     context_window: usize,
 }
@@ -186,8 +191,19 @@ impl SubagentJsonl {
         Self {
             task_id: task_id.into(),
             schema,
+            inherited_trust: None,
             context_window: 3,
         }
+    }
+
+    /// Sets the trust floor of the context the session started from (from the meta sidecar).
+    ///
+    /// Per-result markers only cover tool results written during the session; this floor keeps
+    /// content quoted from inherited external context from importing below its tier.
+    #[must_use]
+    pub fn with_inherited_trust(mut self, inherited: Option<TurnContextTrust>) -> Self {
+        self.inherited_trust = inherited;
+        self
     }
 
     /// Overrides the context window size.
@@ -234,7 +250,7 @@ impl IngestSourceAdapter for SubagentJsonl {
             self.context_window,
             batch_id,
             IngestSourceKind::SubagentTranscript,
-            transcript_trust(&entries, self.schema),
+            transcript_trust(&entries, self.schema, self.inherited_trust),
             |id| format!("subagent:{}#{id}", self.task_id),
         ))
     }
@@ -702,6 +718,33 @@ mod tests {
 
     fn parse_trust(lines: &[String]) -> Vec<TurnContextTrust> {
         parse_trust_with(lines, TranscriptTrustSchema::PerResult)
+    }
+
+    #[test]
+    fn inherited_external_floor_raises_a_per_result_transcript() {
+        let lines = [tool_result_line(
+            0,
+            "shell",
+            Some(TurnContextTrust::LocalUntrusted.as_u8()),
+        )];
+        let docs = SubagentJsonl::new("task-t", TranscriptTrustSchema::PerResult)
+            .with_inherited_trust(Some(TurnContextTrust::ExternalUntrusted))
+            .parse(&lines.join("\n"), &ImportBatchId::new())
+            .unwrap();
+        assert!(!docs.is_empty());
+        assert!(
+            docs.iter()
+                .all(|d| d.provenance().trust == TurnContextTrust::ExternalUntrusted)
+        );
+    }
+
+    #[test]
+    fn inherited_trusted_floor_never_lowers_the_source_floor() {
+        let docs = SubagentJsonl::new("task-t", TranscriptTrustSchema::PerResult)
+            .with_inherited_trust(Some(TurnContextTrust::Trusted))
+            .parse(&make_jsonl(&[(0, "plain text")]), &ImportBatchId::new())
+            .unwrap();
+        assert_eq!(docs[0].provenance().trust, TurnContextTrust::LocalUntrusted);
     }
 
     #[test]

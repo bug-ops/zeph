@@ -274,11 +274,9 @@ mod tests {
         let cyclic_task = make_node(1, &[1]);
         let result = scheduler.inject_tasks(TaskId(0), vec![cyclic_task], 20);
         assert!(result.is_err(), "cyclic injection must return an error");
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                crate::error::OrchestrationError::VerificationFailed(_)
-            ),
+        assert_matches!(
+            result.unwrap_err(),
+            crate::error::OrchestrationError::VerificationFailed(_),
             "must return VerificationFailed for cycle"
         );
         assert_eq!(scheduler.global_replan_count, 0);
@@ -601,8 +599,9 @@ mod tests {
         let err = scheduler
             .record_predicate_outcome(out_of_bounds, outcome, 64)
             .unwrap_err();
-        assert!(
-            matches!(err, crate::error::OrchestrationError::TaskNotFound(_)),
+        assert_matches!(
+            err,
+            crate::error::OrchestrationError::TaskNotFound(_),
             "expected TaskNotFound, got {err:?}"
         );
     }
@@ -640,11 +639,9 @@ mod tests {
             },
             20,
         );
-        assert!(
-            matches!(
-                result,
-                Err(crate::error::OrchestrationError::ReplanBudgetExhausted { .. })
-            ),
+        assert_matches!(
+            result,
+            Err(crate::error::OrchestrationError::ReplanBudgetExhausted { .. }),
             "expected ReplanBudgetExhausted, got {result:?}"
         );
     }

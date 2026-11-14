@@ -222,6 +222,7 @@ pub fn clear_absorbed_tool_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn low_value_tool_detection_case_insensitive() {
@@ -441,13 +442,11 @@ mod tests {
             2
         );
         let parts = &msg.parts;
-        assert!(
-            matches!(&parts[1], MessagePart::ToolOutput { body, compacted_at: Some(7), .. } if body == "[cleared]")
+        assert_matches!(&parts[1], MessagePart::ToolOutput { body, compacted_at: Some(7), .. } if body == "[cleared]"
         );
-        assert!(
-            matches!(&parts[2], MessagePart::ToolResult { content, .. } if content == "[cleared]")
+        assert_matches!(&parts[2], MessagePart::ToolResult { content, .. } if content == "[cleared]"
         );
-        assert!(matches!(&parts[3], MessagePart::ToolResult { content, .. } if content == "res-c"));
+        assert_matches!(&parts[3], MessagePart::ToolResult { content, .. } if content == "res-c");
     }
 
     #[test]
@@ -467,14 +466,14 @@ mod tests {
             0
         );
         assert_eq!(msg.parts.len(), 4);
-        assert!(matches!(&msg.parts[0], MessagePart::ToolUse { .. }));
-        assert!(matches!(
+        assert_matches!(&msg.parts[0], MessagePart::ToolUse { .. });
+        assert_matches!(
             &msg.parts[1],
             MessagePart::ToolOutput {
                 compacted_at: Some(7),
                 ..
             }
-        ));
+        );
     }
 
     #[test]

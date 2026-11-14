@@ -327,6 +327,7 @@ pub fn parse_anchor_key(key: &str) -> Option<(AnchorSubsystem, Vec<u8>)> {
 mod tests {
     use super::*;
     use crate::hash_chain::{ChainKey, chain_next, genesis};
+    use std::assert_matches;
 
     fn sample_head() -> ChainHash {
         let key = ChainKey::new([1u8; 32]);
@@ -416,6 +417,6 @@ mod tests {
     fn anchor_head_rejects_malformed_hex() {
         let mut anchor = Anchor::new(0, 1, sample_head());
         anchor.head_hex = "not-hex".to_owned();
-        assert!(matches!(anchor.head(), Err(AnchorError::Malformed)));
+        assert_matches!(anchor.head(), Err(AnchorError::Malformed));
     }
 }

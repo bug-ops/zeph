@@ -607,8 +607,7 @@ pub fn load_durable_integrity_seal(
     let sealed = provider.get(DURABLE_INTEGRITY_SEALED_KEY).is_some();
     let grandfather = provider
         .get(DURABLE_INTEGRITY_GRANDFATHER_KEY)
-        .map(parse_grandfather_set)
-        .unwrap_or_default();
+        .map_or_default(parse_grandfather_set);
     (sealed, grandfather)
 }
 

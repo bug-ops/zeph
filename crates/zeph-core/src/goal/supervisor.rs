@@ -154,6 +154,7 @@ impl GoalSupervisor {
 mod tests {
     use super::*;
     use crate::quality::parser::ChatJsonError;
+    use std::assert_matches;
     use zeph_llm::LlmError;
 
     #[test]
@@ -194,8 +195,7 @@ mod tests {
     fn supervisor_error_from_chat_json_error_llm_preserved() {
         let llm_err = ChatJsonError::Llm(LlmError::Other("backend failure".into()));
         let sup_err = SupervisorError::from(llm_err);
-        assert!(
-            matches!(sup_err, SupervisorError::Llm(ref msg) if msg.contains("backend failure")),
+        assert_matches!(sup_err, SupervisorError::Llm(ref msg) if msg.contains("backend failure"),
             "Llm variant must preserve the error message"
         );
     }
@@ -204,8 +204,9 @@ mod tests {
     fn supervisor_error_from_chat_json_error_llm_429_becomes_rate_limited() {
         let llm_err = ChatJsonError::Llm(LlmError::Other("HTTP 429 rate limit".into()));
         let sup_err = SupervisorError::from(llm_err);
-        assert!(
-            matches!(sup_err, SupervisorError::RateLimited),
+        assert_matches!(
+            sup_err,
+            SupervisorError::RateLimited,
             "429 in message must become RateLimited"
         );
     }
@@ -213,8 +214,9 @@ mod tests {
     #[test]
     fn supervisor_error_from_chat_json_error_timeout() {
         let err = SupervisorError::from(ChatJsonError::Timeout(5000));
-        assert!(
-            matches!(err, SupervisorError::Timeout(5000)),
+        assert_matches!(
+            err,
+            SupervisorError::Timeout(5000),
             "Timeout variant must preserve milliseconds"
         );
     }
@@ -222,8 +224,7 @@ mod tests {
     #[test]
     fn supervisor_error_from_chat_json_error_parse() {
         let err = SupervisorError::from(ChatJsonError::Parse("bad json".to_owned()));
-        assert!(
-            matches!(err, SupervisorError::Parse(ref s) if s == "bad json"),
+        assert_matches!(err, SupervisorError::Parse(ref s) if s == "bad json",
             "Parse variant must preserve the raw string"
         );
     }

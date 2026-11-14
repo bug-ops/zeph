@@ -61,6 +61,17 @@ impl SecurityEvent {
 /// Ring buffer capacity for security events.
 pub const SECURITY_EVENT_CAP: usize = 100;
 
+impl MetricsSnapshot {
+    /// Append `event` to the security-event ring buffer, evicting the oldest at
+    /// [`SECURITY_EVENT_CAP`].
+    pub fn push_security_event(&mut self, event: SecurityEvent) {
+        if self.security_events.len() >= SECURITY_EVENT_CAP {
+            self.security_events.pop_front();
+        }
+        self.security_events.push_back(event);
+    }
+}
+
 /// Lightweight snapshot of a single task row for TUI display.
 ///
 /// Captured from the task graph on each metrics tick; kept minimal on purpose.
@@ -149,6 +160,9 @@ pub struct McpServerStatus {
     pub input_schemas_dropped: usize,
     /// Number of `output_schema`s dropped for injection or exceeding the depth cap.
     pub output_schemas_dropped: usize,
+    /// Number of this server's tools shadowed by an earlier tool with the same `sanitized_id`
+    /// (unreachable until the operator disambiguates the ids).
+    pub shadowed_tools: usize,
 }
 
 /// Read-only, secret-free summary of a single `[[llm.providers]]` entry for the TUI
@@ -1113,10 +1127,7 @@ mod tests {
                 format!("event {i}"),
             );
             collector.update(|m| {
-                if m.security_events.len() >= SECURITY_EVENT_CAP {
-                    m.security_events.pop_front();
-                }
-                m.security_events.push_back(event);
+                m.push_security_event(event);
             });
         }
         let snap = rx.borrow();

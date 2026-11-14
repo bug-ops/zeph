@@ -92,8 +92,7 @@ impl<C: Channel> Agent<C> {
                 .iter()
                 .rev()
                 .find(|m| m.role == Role::Assistant)
-                .map(|m| m.content.clone())
-                .unwrap_or_default();
+                .map_or_default(|m| m.content.clone());
 
             // D2Skill: extract correction from this failure→success pair.
             self.spawn_d2skill_correction_extraction(

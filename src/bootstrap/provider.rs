@@ -547,8 +547,7 @@ fn build_triage_provider(
     // Resolve triage classification provider.
     let default_triage_name = pool
         .first()
-        .map(zeph_core::config::ProviderEntry::effective_name)
-        .unwrap_or_default();
+        .map_or_default(zeph_core::config::ProviderEntry::effective_name);
     let triage_prov_name = cr.triage_provider.as_ref().map_or_else(
         || default_triage_name.as_str(),
         zeph_common::ProviderName::as_str,
@@ -679,6 +678,7 @@ pub(crate) fn build_single_provider_from_pool(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::path::Path;
 
     use zeph_core::config::{Config, ProviderEntry, ProviderKind};
@@ -815,8 +815,9 @@ mod tests {
         let config = Config::load(Path::new("/nonexistent")).unwrap();
         // IndexConfig.embedding_provider defaults to None — empty path.
         let result = resolve_index_embed_provider(&config, make_fallback());
-        assert!(
-            matches!(result, AnyProvider::Ollama(_)),
+        assert_matches!(
+            result,
+            AnyProvider::Ollama(_),
             "expected fallback Ollama provider"
         );
     }
@@ -829,8 +830,9 @@ mod tests {
         config.index.embedding_provider = Some(ProviderName::from("does-not-exist"));
         // No matching entry in llm.providers — should warn and return fallback.
         let result = resolve_index_embed_provider(&config, make_fallback());
-        assert!(
-            matches!(result, AnyProvider::Ollama(_)),
+        assert_matches!(
+            result,
+            AnyProvider::Ollama(_),
             "expected fallback Ollama provider on unknown name"
         );
     }
@@ -916,8 +918,9 @@ mod tests {
 
         let provider =
             create_provider_from_pool(&config).expect("router construction must succeed");
-        assert!(
-            matches!(provider, AnyProvider::Router(_)),
+        assert_matches!(
+            provider,
+            AnyProvider::Router(_),
             "Ema routing must produce a Router-wrapped provider"
         );
 
@@ -975,8 +978,9 @@ mod tests {
 
         let provider =
             create_provider_from_pool(&config).expect("router construction must succeed");
-        assert!(
-            matches!(provider, AnyProvider::Router(_)),
+        assert_matches!(
+            provider,
+            AnyProvider::Router(_),
             "Cascade routing must produce a Router-wrapped provider"
         );
 
@@ -1055,8 +1059,9 @@ mod tests {
 
         let provider =
             create_provider_from_pool(&config).expect("triage router construction must succeed");
-        assert!(
-            matches!(provider, AnyProvider::Triage(_)),
+        assert_matches!(
+            provider,
+            AnyProvider::Triage(_),
             "routing = \"triage\" must produce a Triage-wrapped provider"
         );
 

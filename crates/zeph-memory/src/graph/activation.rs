@@ -745,6 +745,7 @@ mod tests {
     use crate::graph::GraphStore;
     use crate::graph::types::EntityType;
     use crate::store::SqliteStore;
+    use std::assert_matches;
 
     async fn setup_store() -> GraphStore {
         let store = SqliteStore::new(":memory:").await.unwrap();
@@ -1320,8 +1321,9 @@ mod tests {
         )
         .await;
 
-        assert!(
-            matches!(result, Err(MemoryError::Timeout(_))),
+        assert_matches!(
+            result,
+            Err(MemoryError::Timeout(_)),
             "expected Err(MemoryError::Timeout), got {result:?}"
         );
     }

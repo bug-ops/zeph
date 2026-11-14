@@ -30,6 +30,7 @@ crates/zeph-agent-persistence/src/hydrate.rs VERIFIED # INV-SP-1 log-first hydra
 crates/zeph-agent-persistence/src/legacy_bootstrap.rs FOLLOW_UP # verify it cannot resurrect unverified history as trusted (critic S-new-3)
 crates/zeph-agent-persistence/src/reconcile.rs VERIFIED # projection reconcile reads through SessionEventLog
 crates/zeph-agent-persistence/src/session_sink.rs VERIFIED # log-first append path; reads for reconciliation are chain-verified
+crates/zeph-core/src/agent/context/assembly.rs DISPLAY_ONLY # match is a #[cfg(test)] StatusScope cancellation test that opens a SessionEventLog fixture; production code in this file does not read persisted history
 crates/zeph-core/src/agent/durable_bootstrap.rs CALLER_CONTEXT # durable backend construction, not a JSONL reader
 crates/zeph-core/src/agent/plan.rs VERIFIED # orchestration plan replay reads TranscriptReader::load
 crates/zeph-core/src/agent/scheduler_loop.rs VERIFIED # scheduler-triggered subagent transcript reload via TranscriptReader

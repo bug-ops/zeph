@@ -62,8 +62,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .rev()
             .find(|m| m.role == Role::User)
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
+            .map_or_default(|m| m.content.clone());
 
         tracing::debug!(turn_id, "self-check: running pipeline");
 

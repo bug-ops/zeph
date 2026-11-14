@@ -303,6 +303,7 @@ fn replace_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_common::memory::AnchoredSummary;
 
     fn envelope(seq: u64, kind: SessionEvent) -> SessionEventEnvelope {
@@ -408,15 +409,12 @@ mod tests {
         let assistant = &state.messages[1];
         assert_eq!(assistant.role, Role::Assistant);
         assert_eq!(assistant.parts.len(), 1);
-        assert!(matches!(assistant.parts[0], MessagePart::ToolUse { .. }));
+        assert_matches!(assistant.parts[0], MessagePart::ToolUse { .. });
 
         let tool_result_msg = &state.messages[2];
         assert_eq!(tool_result_msg.role, Role::User);
         assert_eq!(tool_result_msg.parts.len(), 1);
-        assert!(matches!(
-            tool_result_msg.parts[0],
-            MessagePart::ToolResult { .. }
-        ));
+        assert_matches!(tool_result_msg.parts[0], MessagePart::ToolResult { .. });
     }
 
     #[test]
@@ -548,10 +546,7 @@ mod tests {
         // The two condensed messages collapse into one summary message, followed by the new one.
         assert_eq!(state.messages.len(), 2);
         assert_eq!(state.messages[0].role, Role::System);
-        assert!(matches!(
-            state.messages[0].parts[0],
-            MessagePart::Summary { .. }
-        ));
+        assert_matches!(state.messages[0].parts[0], MessagePart::Summary { .. });
         assert_eq!(state.messages[1].role, Role::User);
     }
 

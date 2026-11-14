@@ -659,6 +659,7 @@ pub(crate) async fn forward_tool_events_to_tui(
 #[cfg(all(test, feature = "tui"))]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn forward_status_to_tui_delivers_messages() {
@@ -692,13 +693,13 @@ mod tests {
         status_tx.set("busy").unwrap();
         assert!(is_background_set(&agent_rx.recv().await.unwrap(), "busy"));
         status_tx.clear().unwrap();
-        assert!(matches!(
+        assert_matches!(
             agent_rx.recv().await,
             Some(zeph_tui::AgentEvent::LaneStatus {
                 lane: ProducerLane::Background,
                 update: zeph_tui::event::LaneUpdate::Clear,
             })
-        ));
+        );
     }
 
     fn is_background_set(event: &zeph_tui::AgentEvent, expected: &str) -> bool {
@@ -748,10 +749,10 @@ mod tests {
         status_tx.notice("url-a").unwrap();
         status_tx.notice("url-b").unwrap();
         for expected in ["url-a", "url-b"] {
-            assert!(matches!(
+            assert_matches!(
                 agent_rx.recv().await,
                 Some(zeph_tui::AgentEvent::Notice(s)) if s == expected
-            ));
+            );
         }
     }
 
@@ -822,8 +823,9 @@ mod tests {
             1,
             "expected exactly one event (OutputChunk)"
         );
-        assert!(
-            matches!(received[0], zeph_tui::AgentEvent::ToolOutputChunk { .. }),
+        assert_matches!(
+            received[0],
+            zeph_tui::AgentEvent::ToolOutputChunk { .. },
             "expected ToolOutputChunk, got {:?}",
             received[0]
         );

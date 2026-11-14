@@ -336,6 +336,7 @@ pub fn escape_delimiter_tags<'a>(content: &'a str, tags: &[DelimiterTag]) -> Cow
 mod tests {
     use proptest::prelude::*;
     use regex::Regex;
+    use std::assert_matches;
 
     use super::*;
     use crate::sanitize::strip_control_chars_preserve_whitespace;
@@ -430,10 +431,10 @@ mod tests {
     #[test]
     fn runtime_note_is_not_in_untrusted_set() {
         let s = "<runtime-note id=\"n\">x</runtime-note>";
-        assert!(matches!(
+        assert_matches!(
             escape_delimiter_tags(s, &DelimiterTag::UNTRUSTED_CONTENT),
             Cow::Borrowed(_)
-        ));
+        );
     }
 
     #[test]
@@ -451,10 +452,10 @@ mod tests {
             "<tool>x</tool>",
             "日本語 <p>",
         ] {
-            assert!(matches!(
+            assert_matches!(
                 escape_delimiter_tags(s, &DelimiterTag::ALL),
                 Cow::Borrowed(_)
-            ));
+            );
         }
     }
 

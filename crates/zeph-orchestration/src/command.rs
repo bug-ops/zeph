@@ -472,8 +472,7 @@ mod tests {
     #[test]
     fn parse_list_with_args_returns_error() {
         let err = PlanCommand::parse("/plan list all modules").unwrap_err();
-        assert!(
-            matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("no arguments")),
+        assert_matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("no arguments"),
             "expected no-arguments error, got: {err:?}"
         );
     }
@@ -521,8 +520,7 @@ mod tests {
     #[test]
     fn parse_empty_after_prefix_returns_error() {
         let err = PlanCommand::parse("/plan").unwrap_err();
-        assert!(
-            matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("usage")),
+        assert_matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("usage"),
             "expected usage error, got: {err:?}"
         );
     }
@@ -573,8 +571,7 @@ mod tests {
     #[test]
     fn parse_confirm_with_trailing_args_returns_error() {
         let err = PlanCommand::parse("/plan confirm abc-123").unwrap_err();
-        assert!(
-            matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("no arguments")),
+        assert_matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("no arguments"),
             "expected no-arguments error, got: {err:?}"
         );
     }
@@ -583,8 +580,7 @@ mod tests {
     fn parse_confirm_with_phrase_returns_error() {
         // "/plan confirm the test results" should error, not silently Confirm.
         let err = PlanCommand::parse("/plan confirm the test results").unwrap_err();
-        assert!(
-            matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("no arguments")),
+        assert_matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("no arguments"),
             "expected no-arguments error, got: {err:?}"
         );
     }

@@ -570,8 +570,7 @@ impl Scheduler {
         let next = schedule
             .after(now)
             .next()
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_default();
+            .map_or_default(|dt| dt.to_rfc3339());
         self.store
             .record_run(name, &now.to_rfc3339(), &next)
             .await?;
@@ -896,8 +895,7 @@ impl Scheduler {
                                 let next = schedule
                                     .after(&now)
                                     .next()
-                                    .map(|dt| dt.to_rfc3339())
-                                    .unwrap_or_default();
+                                    .map_or_default(|dt| dt.to_rfc3339());
                                 if let Err(e) = self
                                     .store
                                     .record_run(&task.name, &now.to_rfc3339(), &next)

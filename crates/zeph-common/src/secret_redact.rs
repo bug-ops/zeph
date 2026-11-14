@@ -315,6 +315,7 @@ pub fn scrub_content(text: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     const GITHUB_TAIL: &str = "mNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ01234567";
 
@@ -345,19 +346,16 @@ mod tests {
             "mygithub_pat_rotation_schedule_doc",
             "github_pat_short_token",
         ] {
-            assert!(
-                matches!(redact_prefixed_secrets(text), Cow::Borrowed(_)),
-                "{text}"
-            );
+            assert_matches!(redact_prefixed_secrets(text), Cow::Borrowed(_), "{text}");
         }
     }
 
     #[test]
     fn clean_text_is_not_allocated() {
-        assert!(matches!(
+        assert_matches!(
             redact_prefixed_secrets("task-runner-for-k8s-clusters"),
             Cow::Borrowed(_)
-        ));
+        );
     }
 
     const AWS_SECRET: &str = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
@@ -437,9 +435,110 @@ mod tests {
     }
 
     #[test]
+    fn csi_colon_sgr_and_lowercase_qp_boundaries_are_redacted() {
+        let sts = "ASIAIOSFODNN7EXAMPLE";
+        let ghp = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[01;31m\x1b[K{ghp}\x1b[m")),
+            "\x1b[01;31m\x1b[K[REDACTED]\x1b[m"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[38:5:1m{ghp}")),
+            "\x1b[38:5:1m[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[?25l{ghp}")),
+            "\x1b[?25l[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("key=3d{ghp}")),
+            "key=3d[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[K{sts}")),
+            "\x1b[K[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("x=3d{sts} end")),
+            "x=3d[REDACTED] end"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("secret_access_key=\x1b[K{secret}")),
+            "secret_access_key=\x1b[K[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn token_split_by_csi_runs_is_redacted_whole() {
+        assert_eq!(
+            scrub_secret_shapes("sk-\x1b[m\x1b[Kproj0123456789abcdef"),
+            "[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes("a sk-abc\x1b[1mdef\x1b[0m done"),
+            "a [REDACTED]\x1b[0m done"
+        );
+        assert_eq!(
+            scrub_secret_shapes("sk-abc\x1b[0m tail"),
+            "[REDACTED]\x1b[0m tail"
+        );
+    }
+
+    #[test]
+    fn only_qp_equals_three_d_is_a_boundary() {
+        for text in [
+            "PKG=dask-ml",
+            "--type=cask-fonts",
+            "x=3Fdisk-usage",
+            "a=ABtask-list",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert!(matches!(result, Cow::Borrowed(_)), "{text} -> {result}");
+        }
+        assert_eq!(scrub_secret_shapes("k=3Dsk-short"), "k=3D[REDACTED]");
+    }
+
+    #[test]
+    fn csi_with_intermediate_and_private_bytes_is_a_boundary() {
+        let ghp = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+        for csi in ["\x1b[2 q", "\x1b[>4;1m", "\x1b[<u", "\x1b[?1;2$p"] {
+            assert_eq!(
+                scrub_secret_shapes(&format!("{csi}{ghp}")),
+                format!("{csi}[REDACTED]"),
+                "{csi:?}"
+            );
+        }
+        assert_eq!(scrub_secret_shapes("\x1b[2 qsk-abc"), "\x1b[2 q[REDACTED]");
+    }
+
+    #[test]
+    fn aws_secret_key_tolerates_csi_around_the_separator() {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        assert_eq!(
+            scrub_secret_shapes(&format!(
+                "aws_secret_access_key\x1b[01;31m\x1b[K=\x1b[0m\x1b[33m{secret}\x1b[m"
+            )),
+            "aws_secret_access_key\x1b[01;31m\x1b[K=\x1b[0m\x1b[33m[REDACTED]\x1b[m"
+        );
+    }
+
+    #[test]
+    fn non_sgr_csi_does_not_trigger_on_plain_words() {
+        for text in [
+            "\x1b[Kdisk-usage ok",
+            "\x1b[38:5:1mtask-list",
+            "x=3dtask-list",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert_matches!(result, Cow::Borrowed(_), "{text} -> {result}");
+        }
+    }
+
+    #[test]
     fn ansi_boundary_leaves_plain_text_intact() {
         let result = scrub_secret_shapes("\x1b[32mdisk-usage ok\x1b[0m");
-        assert!(matches!(result, Cow::Borrowed(_)), "{result}");
+        assert_matches!(result, Cow::Borrowed(_), "{result}");
     }
 
     #[test]
@@ -451,7 +550,7 @@ mod tests {
             "pid 12345:AA is not a token",
         ] {
             let result = scrub_secret_shapes(text);
-            assert!(matches!(result, Cow::Borrowed(_)), "{text} -> {result}");
+            assert_matches!(result, Cow::Borrowed(_), "{text} -> {result}");
         }
     }
 
@@ -528,8 +627,9 @@ mod tests {
             "https://host:443?email=a@b.com",
             "http://localhost:3000?email=me@x.com",
         ] {
-            assert!(
-                matches!(scrub_secrets(text), Cow::Borrowed(_)),
+            assert_matches!(
+                scrub_secrets(text),
+                Cow::Borrowed(_),
                 "{text} -> {}",
                 scrub_secrets(text)
             );
@@ -539,15 +639,15 @@ mod tests {
     #[test]
     fn compact_json_with_url_and_email_is_not_mangled() {
         let text = r#"{"u":"https://example.com","e":"alice@x.com"}"#;
-        assert!(matches!(scrub_secrets(text), Cow::Borrowed(_)));
+        assert_matches!(scrub_secrets(text), Cow::Borrowed(_));
         let authors = r#"{"homepage":"https://example.com","authors":["a@x.org","b@y.org"]}"#;
-        assert!(matches!(scrub_secrets(authors), Cow::Borrowed(_)));
+        assert_matches!(scrub_secrets(authors), Cow::Borrowed(_));
         assert_eq!(
             scrub_secrets("redis://:hunter2@host"),
             "redis://[REDACTED]@host"
         );
         let long = r#"{"u":"https://example.com","e":"alice.longname.abcdefgh@x.com"}"#;
-        assert!(matches!(scrub_secrets(long), Cow::Borrowed(_)));
+        assert_matches!(scrub_secrets(long), Cow::Borrowed(_));
     }
 
     #[test]
@@ -573,8 +673,9 @@ mod tests {
             "https://host/a:b@c",
             "https://example.com?email=someone.with.a.long.name@example.com",
         ] {
-            assert!(
-                matches!(scrub_secrets(text), Cow::Borrowed(_)),
+            assert_matches!(
+                scrub_secrets(text),
+                Cow::Borrowed(_),
                 "{text} -> {}",
                 scrub_secrets(text)
             );
@@ -593,10 +694,10 @@ mod tests {
     #[test]
     fn clean_text_is_borrowed_by_every_layer() {
         let text = "nothing sensitive here";
-        assert!(matches!(scrub_secret_shapes(text), Cow::Borrowed(_)));
-        assert!(matches!(scrub_secrets(text), Cow::Borrowed(_)));
-        assert!(matches!(sanitize_paths(text), Cow::Borrowed(_)));
-        assert!(matches!(scrub_content(text), Cow::Borrowed(_)));
+        assert_matches!(scrub_secret_shapes(text), Cow::Borrowed(_));
+        assert_matches!(scrub_secrets(text), Cow::Borrowed(_));
+        assert_matches!(sanitize_paths(text), Cow::Borrowed(_));
+        assert_matches!(scrub_content(text), Cow::Borrowed(_));
     }
 
     #[test]

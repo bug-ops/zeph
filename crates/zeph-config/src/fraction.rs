@@ -312,6 +312,7 @@ pub type UnitUpperClosed64 = Fraction<UpperClosed, f64>;
 #[cfg(test)]
 mod tests {
     use schemars::JsonSchema as _;
+    use std::assert_matches;
 
     use super::*;
 
@@ -371,14 +372,14 @@ mod tests {
     #[allow(clippy::float_cmp)] // parsed literal must round-trip exactly
     fn from_str_parses_and_validates() {
         assert_eq!("0.25".parse::<UnitOpen>().unwrap().get(), 0.25);
-        assert!(matches!(
+        assert_matches!(
             "1.0".parse::<UnitOpen>(),
             Err(ParseFractionError::OutOfRange(_))
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             "abc".parse::<UnitOpen>(),
             Err(ParseFractionError::NotANumber(_))
-        ));
+        );
         assert_eq!(UnitOpen::literal(0.5).to_string(), "0.5");
     }
 

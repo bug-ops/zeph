@@ -139,8 +139,7 @@ async fn handle_run_baseline(
         let off_writer = ResultWriter::new(output.join("baseline").join("memory-off"))?;
         off_writer
             .load_existing()?
-            .map(|r| r.completed_ids())
-            .unwrap_or_default()
+            .map_or_default(|r| r.completed_ids())
     } else {
         std::collections::HashSet::new()
     };
@@ -425,8 +424,7 @@ async fn handle_run(
     let completed_ids = if resume {
         writer
             .load_existing()?
-            .map(|r| r.completed_ids())
-            .unwrap_or_default()
+            .map_or_default(|r| r.completed_ids())
     } else {
         std::collections::HashSet::new()
     };

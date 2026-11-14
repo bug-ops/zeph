@@ -870,7 +870,7 @@ Upgrade Note (1.2.0 → 2.0.0)".
 | I9 | Shell timeout hardcoded | 10+ sites in `terminal.rs` with 120s | `[acp.timeouts]` config section | P3 |
 | I10 | Logout method | **Stable** — degated in 0.14.0 bump | ✓ Done | — |
 | I11 | Agent telemetry export | Local tracing only | Follow upstream RFD (not yet in schema) | P4 |
-| I12 | IDE-provided MCP servers | **Implemented** — wired into `do_new_session` (#4444) | ✓ Done | — |
+| I12 | IDE-provided MCP servers | **Implemented** — one helper `attach_ide_mcp_servers` on all four session paths (`new`, `load`, `fork`, `resume`); servers get a session-scoped `McpServerId` (`{ide_id}-{first 8 chars of the session id}`) and each session owns its `McpToolList` and `McpToolExecutor` (#7073, #4444). A drop guard `IdeMcpLease` releases the servers through a supervised drain task on close, delete, idle reap and LRU eviction; the drain removes a server only while its `LeaseId` is still the registered owner, so a re-attach of the same scoped id after close is never undone; recovery from `ServerAlreadyConnected` removes only an id this connection's owner map already held. On HTTP/WS and stdio the connection teardown releases all leases before the per-connection runtime drops (`release_ide_mcp_on_close`). **Tools are exposed only when an allowlist exists:** IDE servers are converted as `Untrusted` with no `tool_allowlist`, so they stay fail-closed and expose zero tools; no allowlist source is supplied today (follow-up) | ✓ Done | — |
 | I13 | Blocking awaits in handlers | **Fixed** — bounded with configurable timeouts (#4538) | ✓ Done | — |
 | I14 | SDK upgrade 0.12.1 → 0.14.0 | **Implemented** | ✓ Done | — |
 | I15 | Remove `session/set_model` handler | **Implemented** | ✓ Done | — |

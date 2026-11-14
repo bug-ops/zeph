@@ -206,8 +206,7 @@ pub fn resolve_vault_paths(
     let default_dir = zeph_core::vault::default_vault_dir();
     let (resolved_key, resolved_vault) =
         parse_vault_args(config, cli_backend, cli_key_path, cli_vault_path)
-            .map(|va| (va.key_path, va.vault_path))
-            .unwrap_or_default();
+            .map_or_default(|va| (va.key_path, va.vault_path));
     (
         resolved_key.map_or_else(|| default_dir.join("vault-key.txt"), PathBuf::from),
         resolved_vault.map_or_else(|| default_dir.join("secrets.age"), PathBuf::from),

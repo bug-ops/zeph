@@ -4,6 +4,7 @@
 use crate::channel::create_channel;
 use crate::cli::{Cli, Command, DurableCommand, VaultCommand};
 use clap::Parser;
+use std::assert_matches;
 use std::path::{Path, PathBuf};
 use zeph_channels::{AnyChannel, CliChannel};
 use zeph_core::channel::Channel;
@@ -13,7 +14,7 @@ use zeph_core::config::{Config, ProviderKind};
 async fn create_channel_returns_cli_when_no_telegram() {
     let config = Config::load(Path::new("/nonexistent/config.toml")).unwrap();
     let channel = create_channel(&config).await.unwrap();
-    assert!(matches!(channel, AnyChannel::Cli(_)));
+    assert_matches!(channel, AnyChannel::Cli(_));
 }
 
 #[test]
@@ -85,7 +86,7 @@ async fn create_channel_no_telegram_config() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.telegram = None;
     let channel = create_channel(&config).await.unwrap();
-    assert!(matches!(channel, AnyChannel::Cli(_)));
+    assert_matches!(channel, AnyChannel::Cli(_));
 }
 
 #[tokio::test]
@@ -106,7 +107,7 @@ async fn create_channel_telegram_without_token() {
         allowed_tools: None,
     });
     let channel = create_channel(&config).await.unwrap();
-    assert!(matches!(channel, AnyChannel::Cli(_)));
+    assert_matches!(channel, AnyChannel::Cli(_));
 }
 
 #[test]
@@ -147,7 +148,7 @@ async fn create_channel_telegram_with_token() {
         allowed_tools: None,
     });
     let channel = create_channel(&config).await.unwrap();
-    assert!(matches!(channel, AnyChannel::Telegram(_)));
+    assert_matches!(channel, AnyChannel::Telegram(_));
 }
 
 /// Regression for the `guest_mode`/`bot_to_bot` wiring gap found in review (issue #6541):
@@ -173,7 +174,7 @@ async fn create_channel_telegram_wires_guest_mode_and_bot_to_bot_from_config() {
         allowed_tools: None,
     });
     let channel = create_channel(&config).await.unwrap();
-    assert!(matches!(channel, AnyChannel::Telegram(_)));
+    assert_matches!(channel, AnyChannel::Telegram(_));
     let debug = format!("{channel:?}");
     assert!(debug.contains("guest_mode: true"), "debug: {debug}");
     assert!(debug.contains("bot_to_bot: true"), "debug: {debug}");
@@ -196,7 +197,7 @@ async fn create_channel_discord_without_token_falls_through() {
     });
     config.telegram = None;
     let channel = create_channel(&config).await.unwrap();
-    assert!(matches!(channel, AnyChannel::Cli(_)));
+    assert_matches!(channel, AnyChannel::Cli(_));
 }
 
 #[cfg(feature = "slack")]
@@ -215,7 +216,7 @@ async fn create_channel_slack_without_token_falls_through() {
     });
     config.telegram = None;
     let channel = create_channel(&config).await.unwrap();
-    assert!(matches!(channel, AnyChannel::Cli(_)));
+    assert_matches!(channel, AnyChannel::Cli(_));
 }
 
 #[tokio::test]

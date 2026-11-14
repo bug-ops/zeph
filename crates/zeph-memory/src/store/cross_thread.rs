@@ -747,6 +747,7 @@ fn escape_like(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     async fn store() -> SqliteStore {
         SqliteStore::new(":memory:").await.unwrap()
@@ -892,7 +893,7 @@ mod tests {
             .store_put("local", "ns", "k", "v3", opts().with_expected_version(1))
             .await
             .unwrap_err();
-        assert!(matches!(err, MemoryError::VersionConflict { .. }));
+        assert_matches!(err, MemoryError::VersionConflict { .. });
 
         // The rejected write must not have applied.
         let fetched = s.store_get("local", "ns", "k").await.unwrap().unwrap();
@@ -913,7 +914,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, MemoryError::VersionConflict { .. }));
+        assert_matches!(err, MemoryError::VersionConflict { .. });
     }
 
     #[tokio::test]
@@ -923,7 +924,7 @@ mod tests {
             .store_put("local", "ns", "k", "0123456789", StorePutOptions::new(5, 0))
             .await
             .unwrap_err();
-        assert!(matches!(err, MemoryError::InvalidInput(_)));
+        assert_matches!(err, MemoryError::InvalidInput(_));
 
         // The rejected write must not have created a row.
         assert!(s.store_get("local", "ns", "k").await.unwrap().is_none());
@@ -1427,7 +1428,7 @@ mod tests {
             .store_put("local", "ns", "b", "v1", capped.with_expected_version(1))
             .await
             .unwrap_err();
-        assert!(matches!(err, MemoryError::VersionConflict { .. }));
+        assert_matches!(err, MemoryError::VersionConflict { .. });
 
         assert!(
             s.store_get("local", "ns", "a").await.unwrap().is_some(),
@@ -1539,7 +1540,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, MemoryError::VersionConflict { .. }));
+        assert_matches!(err, MemoryError::VersionConflict { .. });
         assert!(
             !logs_contain("cross-thread store row overwritten"),
             "a stale CAS that never applied must not log a false-positive overwrite warning"

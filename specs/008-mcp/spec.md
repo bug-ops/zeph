@@ -77,6 +77,9 @@ Config migration step 50 adds these fields. Both live under `[[mcp.servers]]`.
 - Semantic discovery: Qdrant-backed search by description
 - Namespacing: `{server_id}__{tool_name}` to prevent collisions
 - Per-message pruning: filter tools by relevance before LLM exposure
+- **Single writer (#7075, #7072, #7074)**: `McpToolList::new(tools)` returns a non-`Clone` `McpToolListWriter` and a `Clone` `McpToolListReader`. The writer owns the exposed tool list and the `McpToolIds` registry (`zeph_tools::McpToolIds`: sanitized tool id to `McpServerId`); `publish_full` replaces both atomically, `publish_pruned` replaces only the exposed list with a subset, so the executor list is always a subset of the registry. The executor holds the reader. The trust gate, shadow sentinel, policy gate, inline and sub-agent loops read the registry through `McpToolIdsHandle::snapshot()` (`McpToolIdsHandle` has no `Default`; it is built only with `with_writer`). When no writer is attached (embedders, tests) classification falls back to `McpToolIds::from_definitions` over the live executor definitions. No `:`-split server id derivation remains; the server id is read from the registry.
+- `McpServerId` (`zeph_common::types`, `Arc<str>` identity newtype, no `Default`, no validation) is used by `McpTool.server_id`, `ToolDef.server_id`, `McpToolIds`, `ToolResultSource::Mcp`, `ToolCollision` and the audit entry. The boundary stays `String`/`&str`: `McpManager` maps and its `&str` API, `ServerEntry`/`McpServerConfig.id`.
+- `sanitized_id()` is pure (no logging). The over-length truncation WARN is emitted once per tool-list change by the manager diagnostic pass, which also records MCP-vs-MCP id collisions; `McpManager::tool_collisions()` returns them and `/mcp list` shows a "Shadowed tools" section. Dispatch stays first-server-wins.
 
 ### Protocol Invariants (MCP 2025-11-25)
 - JSON-RPC 2.0 over stdio or HTTP+SSE

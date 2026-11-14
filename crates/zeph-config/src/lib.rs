@@ -99,6 +99,7 @@ pub mod mcp_security;
 pub mod memory;
 pub mod metrics;
 pub mod migrate;
+pub mod non_negative;
 pub mod notifications;
 pub mod plugins;
 pub mod providers;
@@ -181,6 +182,7 @@ pub use memory::{
     TreeConfig, TypedPagesConfig, TypedPagesEnforcement, VectorBackend,
 };
 pub use metrics::MetricsConfig;
+pub use non_negative::{NonNegativeF64, NonNegativeF64Error};
 pub use notifications::NotificationsConfig;
 pub use plugins::{PluginsConfig, ReputationConfig, ReputationEnforcement};
 pub use providers::DEFAULT_SEMANTIC_CACHE_THRESHOLD;

@@ -813,6 +813,7 @@ impl SkillExecutionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     const PILOT: &str = "\
 state:
@@ -881,10 +882,10 @@ state:
     #[test]
     fn schema_rejects_excess_nesting() {
         let deep = "a:\n type: list\n items:\n  type: list\n  items:\n   type: list\n   items:\n    type: list\n    items:\n     type: string\n";
-        assert!(matches!(
+        assert_matches!(
             SkillStateSchema::from_yaml_block(deep),
             Err(SchemaError::TooDeep(_))
-        ));
+        );
     }
 
     #[test]
@@ -923,7 +924,7 @@ state:
         let err = state()
             .prepare_patch(&json!({"audited": [{"skill": "a", "rating": 0}]}))
             .expect_err("rating below min");
-        assert!(matches!(&err, PatchError::Invalid { path, .. } if path == "audited[0].rating"));
+        assert_matches!(&err, PatchError::Invalid { path, .. } if path == "audited[0].rating");
     }
 
     #[test]
@@ -950,10 +951,10 @@ state:
         .expect("schema");
         let s = SkillExecutionState::new(SkillName::parse("demo").unwrap(), Arc::new(schema));
         let items: Vec<String> = (0..64).map(|_| "y".repeat(1024)).collect();
-        assert!(matches!(
+        assert_matches!(
             s.prepare_patch(&json!({"big": items})),
             Err(PatchError::StateTooLarge { .. })
-        ));
+        );
     }
 
     #[test]
@@ -978,10 +979,10 @@ state:
         let s = SkillExecutionState::new(SkillName::parse("demo").unwrap(), Arc::new(schema));
         // 64 * 600 raw bytes fit 16 KiB raw, but each '<' renders as 6 bytes.
         let items: Vec<String> = (0..64).map(|_| "<".repeat(600)).collect();
-        assert!(matches!(
+        assert_matches!(
             s.prepare_patch(&json!({"big": items})),
             Err(PatchError::StateTooLarge { .. })
-        ));
+        );
     }
 
     #[test]
@@ -1001,12 +1002,12 @@ state:
 
     #[test]
     fn strict_parse_reports_invalid_blocks() {
-        assert!(matches!(parse_state_strict("name: x\n"), Ok(None)));
+        assert_matches!(parse_state_strict("name: x\n"), Ok(None));
         assert!(parse_state_strict("state:\n  Bad:\n    type: string\n").is_err());
-        assert!(matches!(
+        assert_matches!(
             parse_state_strict("state:\n  a:\n    type: string\n"),
             Ok(Some(_))
-        ));
+        );
     }
 
     #[test]

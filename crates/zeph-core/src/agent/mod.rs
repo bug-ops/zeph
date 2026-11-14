@@ -1521,8 +1521,7 @@ impl<C: Channel> Agent<C> {
                 .lifecycle
                 .shell_executor_handle
                 .as_ref()
-                .map(|e| e.background_runs_snapshot())
-                .unwrap_or_default()
+                .map_or_default(|e| e.background_runs_snapshot())
                 .into_iter()
                 .map(|s| crate::metrics::ShellBackgroundRunRow {
                     run_id: truncate_shell_run_id(&s.run_id),

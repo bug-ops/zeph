@@ -95,7 +95,9 @@ pub use manager::{
 pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;
 pub use state::SubAgentState;
-pub use transcript::{TranscriptMeta, TranscriptReader, TranscriptWriter, sweep_old_transcripts};
+pub use transcript::{
+    TranscriptMeta, TranscriptReader, TranscriptWriter, max_message_trust, sweep_old_transcripts,
+};
 /// Async callback type for spawning an external ACP sub-agent by shell command.
 ///
 /// Returns the sub-agent's text output on success or an error string on failure.

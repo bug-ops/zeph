@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -299,8 +300,9 @@ async fn gonka_context_length_error_on_400() {
     let provider = make_provider(&server.uri());
     let messages = user_message("very long text");
     let result = provider.chat(&messages).await;
-    assert!(
-        matches!(result, Err(crate::error::LlmError::ContextLengthExceeded)),
+    assert_matches!(
+        result,
+        Err(crate::error::LlmError::ContextLengthExceeded),
         "expected ContextLengthExceeded, got: {result:?}"
     );
 }
@@ -437,8 +439,9 @@ async fn gonka_embed_unsupported_without_model() {
     assert!(!provider.supports_embeddings());
 
     let result = provider.embed("test").await;
-    assert!(
-        matches!(result, Err(crate::error::LlmError::EmbedUnsupported { .. })),
+    assert_matches!(
+        result,
+        Err(crate::error::LlmError::EmbedUnsupported { .. }),
         "expected EmbedUnsupported, got: {result:?}"
     );
 }

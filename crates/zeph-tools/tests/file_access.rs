@@ -6,6 +6,7 @@
 //! All tests use `tempfile::TempDir` for FS isolation and exercise the public
 //! `FileExecutor::new` / `execute_file_tool` API from outside the crate.
 
+use std::assert_matches;
 use std::path::PathBuf;
 
 use tempfile::TempDir;
@@ -141,8 +142,9 @@ async fn disallowed_path_blocks_all_operations() {
 
     for (tool, params) in cases {
         let result = exec.execute_file_tool(tool, params).await;
-        assert!(
-            matches!(result, Err(ToolError::SandboxViolation { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::SandboxViolation { .. }),
             "tool '{tool}': expected SandboxViolation for outside-sandbox path, got: {result:?}"
         );
     }
@@ -167,8 +169,9 @@ async fn symlink_escape_blocked() {
     let exec = sandbox(&sandbox_dir);
     let params = make_params(&[("path", serde_json::json!(link.to_str().unwrap()))]);
     let result = exec.execute_file_tool("read", &params).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "expected SandboxViolation when reading a symlink that escapes the sandbox, \
          got: {result:?}"
     );
@@ -192,8 +195,9 @@ async fn nested_symlink_chain_blocked() {
     let exec = sandbox(&sandbox_dir);
     let params = make_params(&[("path", serde_json::json!(link1.to_str().unwrap()))]);
     let result = exec.execute_file_tool("read", &params).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "expected SandboxViolation for multi-hop symlink chain escaping sandbox, got: {result:?}"
     );
 }
@@ -224,8 +228,9 @@ async fn parent_traversal_blocked() {
     let exec = sandbox(&sandbox_dir);
     let params = make_params(&[("path", serde_json::json!(traversal.to_str().unwrap()))]);
     let result = exec.execute_file_tool("read", &params).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "expected SandboxViolation for path traversal ({}), got: {result:?}",
         traversal.display()
     );
@@ -286,8 +291,9 @@ async fn multiple_allowed_paths() {
             &make_params(&[("path", serde_json::json!(outside_file.to_str().unwrap()))]),
         )
         .await;
-    assert!(
-        matches!(outside_result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        outside_result,
+        Err(ToolError::SandboxViolation { .. }),
         "expected SandboxViolation for outside_dir (not in allowed_paths), got: {outside_result:?}"
     );
 }
@@ -341,8 +347,9 @@ async fn tilde_in_allowed_paths_regression() {
             &make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
         )
         .await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "expected SandboxViolation when allowed_paths contains only a literal tilde path \
          (tilde not expanded — #2115), got: {result:?}"
     );
@@ -416,8 +423,9 @@ async fn delete_sandbox_root_blocked() {
         ("recursive", serde_json::json!(true)),
     ]);
     let result = exec.execute_file_tool("delete_path", &params).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "expected SandboxViolation when attempting to delete the sandbox root, got: {result:?}"
     );
     assert!(
@@ -454,8 +462,9 @@ async fn cross_boundary_move_blocked() {
             ]),
         )
         .await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "move sandbox->outside: expected SandboxViolation, got: {result:?}"
     );
 
@@ -472,8 +481,9 @@ async fn cross_boundary_move_blocked() {
             ]),
         )
         .await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "move outside->sandbox: expected SandboxViolation, got: {result:?}"
     );
 
@@ -490,8 +500,9 @@ async fn cross_boundary_move_blocked() {
             ]),
         )
         .await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "copy sandbox->outside: expected SandboxViolation, got: {result:?}"
     );
 
@@ -508,8 +519,9 @@ async fn cross_boundary_move_blocked() {
             ]),
         )
         .await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "copy outside->sandbox: expected SandboxViolation, got: {result:?}"
     );
 }
@@ -560,8 +572,9 @@ async fn grep_path_validated() {
         ),
     ]);
     let result = exec.execute_file_tool("grep", &params).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "expected SandboxViolation when grep path is outside sandbox, got: {result:?}"
     );
 }
@@ -627,8 +640,9 @@ async fn grep_default_path_stays_in_sandbox() {
     // No "path" key — defaults to "."
     let params = make_params(&[("pattern", serde_json::json!("anything"))]);
     let result = exec.execute_file_tool("grep", &params).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "grep without path param defaults to CWD which is outside sandbox — \
          expected SandboxViolation, got: {result:?}"
     );

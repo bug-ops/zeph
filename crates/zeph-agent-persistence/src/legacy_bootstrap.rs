@@ -99,6 +99,7 @@ pub async fn bootstrap_legacy_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_llm::any::AnyProvider;
 
     async fn make_env() -> (SemanticMemory, SessionStore, tempfile::TempDir) {
@@ -174,10 +175,7 @@ mod tests {
 
         let events = log.read_all().await.unwrap();
         assert_eq!(events.len(), 2);
-        assert!(matches!(
-            events[0].kind,
-            SessionEvent::SessionStarted { .. }
-        ));
+        assert_matches!(events[0].kind, SessionEvent::SessionStarted { .. });
         let SessionEvent::Condensation {
             replaced_seq_range,
             ref summary,

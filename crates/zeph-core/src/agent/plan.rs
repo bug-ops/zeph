@@ -217,8 +217,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
 
         let max_concurrent = self.services.orchestration.subagent_config.max_concurrent;
         let max_parallel = self
@@ -820,8 +819,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
 
         // A1 fix: replan DAG also needs admission control, same as the primary DAG.
         let partial_admission_gate = {
@@ -1010,7 +1008,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     m.completion_tokens += aggr_completion;
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
-                self.record_background_cost(aggr_prompt, aggr_completion);
+                self.record_background_cost(aggr_prompt, aggr_completion, aggregator.provider());
                 self.record_successful_task();
                 // Issue #6549: background call, no persisted conversational message —
                 // message_id stays None. Written immediately (no pending-snapshot roundtrip
@@ -1184,7 +1182,11 @@ impl<C: crate::channel::Channel> Agent<C> {
             m.orchestration.tasks_total += task_count;
             m.orchestration_graph = Some(snapshot);
         });
-        self.record_background_cost(planner_prompt, planner_completion);
+        // A plan-cache hit made no LLM call: billing would fold the provider's stale last-response
+        // cache counters into a call that never happened.
+        if usage.is_some() {
+            self.record_background_cost(planner_prompt, planner_completion, planner_provider);
+        }
         self.record_successful_task();
 
         // Issue #6549: `usage` is `None` on a plan-cache hit — no LLM call was made, so no
@@ -1225,8 +1227,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
         let confirm_before_execute = self
             .services
             .orchestration
@@ -2105,8 +2106,7 @@ mod tests {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
         let mut scheduler = DagScheduler::resume_from(
             graph,
             &agent.services.orchestration.orchestration_config,
@@ -2164,8 +2164,7 @@ mod tests {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
         let mut scheduler = DagScheduler::resume_from(
             graph,
             &agent.services.orchestration.orchestration_config,
@@ -2272,6 +2271,39 @@ mod tests {
             expected > 0.0,
             "gpt-4o must be a priced model — a zero-cost test proves nothing"
         );
+    }
+
+    /// A plan-cache hit makes no LLM call, so `record_plan_metrics(.., None, ..)` must not bill
+    /// the serving provider's stale last-response counters.
+    #[tokio::test]
+    async fn plan_cache_hit_bills_nothing() {
+        use crate::agent::agent_tests::*;
+
+        let mut agent = crate::agent::Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_cost_tracker(crate::cost::CostTracker::new(true, 1000.0));
+        "gpt-4o".clone_into(&mut agent.runtime.config.model_name);
+
+        let planner_provider = agent.provider.clone();
+        let graph = zeph_orchestration::TaskGraph::new("goal");
+        agent
+            .record_plan_metrics(&graph, None, &planner_provider, 0)
+            .await;
+
+        let spend = agent
+            .runtime
+            .metrics
+            .cost_tracker
+            .as_ref()
+            .unwrap()
+            .current_spend();
+        assert!(spend.abs() < f64::EPSILON, "cache hit billed {spend}");
     }
 
     /// Gating: when cost tracking is disabled (`[cost] enabled = false`, `cost_tracker` is

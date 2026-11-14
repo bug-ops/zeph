@@ -195,8 +195,9 @@ mod tests {
             .run("input".into())
             .await;
         assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), PipelineError::Llm(_)),
+        assert_matches!(
+            result.unwrap_err(),
+            PipelineError::Llm(_),
             "expected PipelineError::Llm"
         );
     }

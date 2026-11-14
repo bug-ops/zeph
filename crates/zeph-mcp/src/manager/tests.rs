@@ -66,8 +66,7 @@ async fn shutdown_all_shared_clears_connected_server_ids() {
 async fn remove_server_not_found_returns_error() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let err = mgr.remove_server("nonexistent").await.unwrap_err();
-    assert!(
-        matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "nonexistent")
+    assert_matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "nonexistent"
     );
     assert!(err.to_string().contains("nonexistent"));
 }
@@ -462,8 +461,9 @@ async fn call_tool_uses_tool_timeout_branch_when_configured() {
         .call_tool("missing", "tool", serde_json::json!({}))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, McpError::ServerNotFound { .. }),
+    assert_matches!(
+        err,
+        McpError::ServerNotFound { .. },
         "expected ServerNotFound, got: {err}"
     );
 
@@ -568,8 +568,7 @@ async fn commit_added_server_rejects_duplicate() {
         .commit_added_server(&entry, second, vec![make_tool("srv1", "t2")], None)
         .await
         .expect_err("duplicate commit must fail");
-    assert!(
-        matches!(err, McpError::ServerAlreadyConnected { ref server_id } if server_id == "srv1"),
+    assert_matches!(err, McpError::ServerAlreadyConnected { ref server_id } if server_id == "srv1",
         "unexpected error: {err:?}"
     );
 
@@ -1850,8 +1849,7 @@ async fn remove_server_cleans_up_trust_and_tools_when_client_present() {
     // but the trust/tools cleanup added by the fix happens AFTER the client removal.
     // This test confirms that injected state does not prevent graceful error return.
     let err = mgr.remove_server("real-srv").await.unwrap_err();
-    assert!(
-        matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "real-srv"),
+    assert_matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "real-srv",
         "expected ServerNotFound, got: {err:?}"
     );
 
@@ -2180,8 +2178,9 @@ async fn retry_loop_cancels_before_first_attempt() {
         !called,
         "attempt_fn must not be called when shutdown is pre-cancelled"
     );
-    assert!(
-        matches!(result, Err(McpError::ManagerShuttingDown { .. })),
+    assert_matches!(
+        result,
+        Err(McpError::ManagerShuttingDown { .. }),
         "expected ManagerShuttingDown, got {result:?}"
     );
 }
@@ -2218,8 +2217,9 @@ async fn retry_loop_cancels_during_backoff_sleep() {
         1,
         "only the first attempt should run before cancellation"
     );
-    assert!(
-        matches!(result, Err(McpError::ManagerShuttingDown { .. })),
+    assert_matches!(
+        result,
+        Err(McpError::ManagerShuttingDown { .. }),
         "expected ManagerShuttingDown, got {result:?}"
     );
 }
@@ -2246,8 +2246,9 @@ async fn retry_loop_stops_on_non_retryable_error() {
         1,
         "non-retryable error must stop after first attempt"
     );
-    assert!(
-        matches!(result, Err(McpError::CommandNotAllowed { .. })),
+    assert_matches!(
+        result,
+        Err(McpError::CommandNotAllowed { .. }),
         "last error should be propagated"
     );
 }
@@ -2275,8 +2276,9 @@ async fn retry_loop_exhausts_all_attempts_for_retryable_error() {
         3,
         "should exhaust all 3 attempts for retryable errors"
     );
-    assert!(
-        matches!(result, Err(McpError::Connection { .. })),
+    assert_matches!(
+        result,
+        Err(McpError::Connection { .. }),
         "last error should be propagated"
     );
 }
@@ -2345,4 +2347,72 @@ async fn spawn_refresh_task_with_supervisor_registers_task() {
     );
 
     cancel.cancel();
+}
+
+#[tokio::test]
+async fn diagnostic_pass_publishes_and_replaces_collision_report() {
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+    assert_eq!(mgr.tool_collisions(), []);
+
+    let tools = [make_tool("a.b", "c"), make_tool("a", "b_c")];
+    mgr.record_tool_diagnostics(&tools).await;
+    let cols = mgr.tool_collisions();
+    assert_eq!(cols.len(), 1);
+    assert_eq!(cols[0].sanitized_id, "a_b_c");
+
+    mgr.record_tool_diagnostics(&tools[..1]).await;
+    assert_eq!(mgr.tool_collisions(), []);
+}
+
+#[tokio::test]
+async fn refresh_task_publishes_collision_report() {
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+    let mut rx = mgr.subscribe_tool_changes();
+    mgr.spawn_refresh_task(None);
+    mgr.inject_server_trust_for_test("a.b", McpTrustLevel::Trusted)
+        .await;
+    mgr.inject_server_trust_for_test("a", McpTrustLevel::Trusted)
+        .await;
+
+    let tx = mgr.clone_refresh_tx().unwrap();
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "a.b".into(),
+        tools: vec![make_tool("a.b", "c")],
+    })
+    .unwrap();
+    rx.changed().await.unwrap();
+    assert_eq!(mgr.tool_collisions(), []);
+
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "a".into(),
+        tools: vec![make_tool("a", "b_c")],
+    })
+    .unwrap();
+    rx.changed().await.unwrap();
+    assert_eq!(mgr.tool_collisions().len(), 1);
+}
+
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn truncation_warns_once_per_diagnostic_pass_not_per_id_call() {
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+    let long = make_tool(&"a".repeat(100), &"b".repeat(100));
+    for _ in 0..5 {
+        let _ = long.sanitized_id();
+    }
+    assert!(!logs_contain("exceeds 128 chars"));
+
+    mgr.record_tool_diagnostics(std::slice::from_ref(&long))
+        .await;
+    logs_assert(|lines: &[&str]| {
+        let n = lines
+            .iter()
+            .filter(|l| l.contains("exceeds 128 chars"))
+            .count();
+        if n == 1 {
+            Ok(())
+        } else {
+            Err(format!("expected one truncation warning, got {n}"))
+        }
+    });
 }

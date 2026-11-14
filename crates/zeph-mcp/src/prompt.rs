@@ -20,7 +20,7 @@ use crate::tool::McpTool;
 /// use zeph_mcp::prompt::format_mcp_tools_prompt;
 ///
 /// let tools = vec![McpTool {
-///     server_id: "github".to_owned(),
+///     server_id: "github".into(),
 ///     name: "create_issue".to_owned(),
 ///     description: "Create a GitHub issue".to_owned(),
 ///     input_schema: serde_json::json!({"type": "object"}),

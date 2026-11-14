@@ -505,8 +505,9 @@ mod tests {
         let (_, inner) = MockInner::new();
         let gate = AdversarialPolicyGateExecutor::new(inner, make_validator(false), Arc::new(llm));
         let result = gate.execute_tool_call_confirmed(&make_call("shell")).await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. }),
             "confirmed path must also enforce adversarial policy"
         );
     }

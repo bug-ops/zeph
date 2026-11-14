@@ -359,10 +359,7 @@ fn merge_table_commented(
         } else {
             // Scalar/array value — check if already present (as value or as comment).
             if !user_table.contains_key(key) {
-                let raw_value = ref_item
-                    .as_value()
-                    .map(value_to_toml_string)
-                    .unwrap_or_default();
+                let raw_value = ref_item.as_value().map_or_default(value_to_toml_string);
                 if !raw_value.is_empty() {
                     let comment_line = format!("# {key} = {raw_value}\n");
                     // Scope the guard to the target section body so that an identical key

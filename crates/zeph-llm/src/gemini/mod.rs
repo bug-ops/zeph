@@ -502,10 +502,7 @@ impl GeminiProvider {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             tracing::debug!(status = %status, body = %body, "Gemini list_models_remote error");
-            return Err(LlmError::ApiError {
-                provider: "gemini".into(),
-                status: status.as_u16(),
-            });
+            return Err(LlmError::api_error("gemini", status.as_u16(), &body));
         }
 
         let list: GeminiModelList = response.json().await?;
@@ -546,14 +543,8 @@ fn parse_gemini_error(body: &str, status: reqwest::StatusCode) -> LlmError {
         if crate::error::body_is_context_length_error(&err_resp.error.message) {
             return LlmError::ContextLengthExceeded;
         }
-        tracing::error!(
-            code = err_resp.error.code,
-            status = %err_resp.error.status,
-            "Gemini API error: {}", err_resp.error.message
-        );
-    } else {
-        tracing::error!("Gemini API request failed (status {status}): {body}");
     }
+    crate::http::log_api_error_body("gemini", status, body);
     crate::http::map_error_response(status, body, "gemini")
 }
 
@@ -1279,7 +1270,6 @@ struct GeminiErrorResponse {
 
 #[derive(Deserialize)]
 struct GeminiErrorDetail {
-    code: u16,
     message: String,
     status: String,
 }

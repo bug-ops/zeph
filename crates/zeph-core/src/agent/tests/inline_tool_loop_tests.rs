@@ -1045,6 +1045,8 @@ fn github_mcp_inline_agent(
         5,
         CallableToolExecutor::new(vec![outcome]),
     );
+    let (writer, _reader) = zeph_mcp::McpToolList::new(Vec::new());
+    agent.services.mcp.tool_list = Some(writer);
     agent
         .services
         .mcp

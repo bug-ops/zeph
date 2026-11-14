@@ -580,6 +580,7 @@ impl JobStore {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     async fn test_pool() -> DbPool {
         zeph_db::DbConfig {
@@ -919,8 +920,7 @@ mod tests {
                 "second",
             )
             .await;
-        assert!(
-            matches!(result, Err(SchedulerError::DuplicateJob(ref n)) if n == "dup_job"),
+        assert_matches!(result, Err(SchedulerError::DuplicateJob(ref n)) if n == "dup_job",
             "expected DuplicateJob, got {result:?}"
         );
     }

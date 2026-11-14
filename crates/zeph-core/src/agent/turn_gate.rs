@@ -333,6 +333,7 @@ impl Drop for TurnToolSetScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn def(name: &str) -> ToolDefinition {
         ToolDefinition {
@@ -383,7 +384,7 @@ mod tests {
     #[test]
     fn turn_set_rejects_unknown_tool() {
         let err = set(&["read"]).check("write").unwrap_err();
-        assert!(matches!(err, GateRejection::NotInTurnSet { .. }));
+        assert_matches!(err, GateRejection::NotInTurnSet { .. });
     }
 
     #[test]
@@ -435,14 +436,14 @@ mod tests {
         let scope = set(&["write"]);
         let requires = RequiresGate::snapshot(Some(&g), &done(&[]), &done(&[]), None);
         let gate = DispatchGate::new(scope, requires);
-        assert!(matches!(
+        assert_matches!(
             gate.check("missing").unwrap_err(),
             GateRejection::NotInTurnSet { .. }
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             gate.check("write").unwrap_err(),
             GateRejection::UnmetRequires { .. }
-        ));
+        );
     }
 
     #[test]

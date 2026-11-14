@@ -75,8 +75,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .rev()
             .find(|m| m.role == super::super::Role::User)
-            .map(|m| m.content.chars().take(512).collect::<String>())
-            .unwrap_or_default();
+            .map_or_default(|m| m.content.chars().take(512).collect::<String>());
         let status = self
             .services
             .session

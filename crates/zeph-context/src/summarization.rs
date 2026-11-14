@@ -603,11 +603,9 @@ pub fn remove_tool_responses_middle_out(mut messages: Vec<Message>, fraction: f3
                 MessagePart::ToolOutput {
                     body, compacted_at, ..
                 } if compacted_at.is_none() => {
-                    let ref_notice = extract_overflow_ref(body)
-                        .map(|uuid| {
-                            format!("[tool output pruned; use read_overflow {uuid} to retrieve]")
-                        })
-                        .unwrap_or_default();
+                    let ref_notice = extract_overflow_ref(body).map_or_default(|uuid| {
+                        format!("[tool output pruned; use read_overflow {uuid} to retrieve]")
+                    });
                     *body = ref_notice;
                     *compacted_at = Some(
                         std::time::SystemTime::now()

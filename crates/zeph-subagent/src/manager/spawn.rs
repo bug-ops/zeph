@@ -31,6 +31,7 @@ use crate::hooks::HookAgentCtx;
 use crate::hooks::fire_hooks;
 use crate::memory::{ensure_memory_dir, escape_memory_content, load_memory_content};
 use crate::state::SubAgentState;
+use crate::transcript::max_message_trust;
 
 use super::{CredentialScrub, SpawnContext};
 use crate::durable::{DurableResolverSeat, resolve_durable_promise};
@@ -347,9 +348,7 @@ pub(crate) async fn build_system_prompt_with_memory(
 ) -> String {
     let orchestrator_header = build_orchestrator_header(ctx);
 
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
+    let cwd = std::env::current_dir().map_or_default(|p| p.display().to_string());
     let cwd_line = if cwd.is_empty() {
         String::new()
     } else {
@@ -483,9 +482,7 @@ pub(crate) fn sanitize_identity_field(s: &str) -> String {
 pub(crate) fn resolve_resume_exfiltration_guard_config(
     spawn_context: Option<&SpawnContext>,
 ) -> zeph_config::ExfiltrationGuardConfig {
-    spawn_context
-        .map(|ctx| ctx.exfiltration_guard.clone())
-        .unwrap_or_default()
+    spawn_context.map_or_default(|ctx| ctx.exfiltration_guard.clone())
 }
 
 pub(crate) fn apply_context_injection(
@@ -766,21 +763,16 @@ impl SubAgentManager {
         let agent_hooks = def.hooks.clone();
         let agent_name_clone = def.name.clone();
         let spawn_depth = ctx.spawn_depth;
-        let mut mcp_tool_names = ctx.mcp_tool_names.clone();
-        let before_merge = mcp_tool_names.len();
-        for srv in &ctx.session_mcp_servers {
-            if !mcp_tool_names.contains(&srv.id) {
-                mcp_tool_names.push(srv.id.clone());
-            }
-        }
-        let added = mcp_tool_names.len() - before_merge;
-        tracing::debug!(
-            added,
-            total = mcp_tool_names.len(),
-            "mcp_tool_names merged session_mcp_servers"
-        );
-        let handle_mcp_tool_names = mcp_tool_names.clone();
+        let mcp_tool_ids = ctx.mcp_tool_ids.clone();
         let parent_messages = ctx.parent_messages;
+        // Fold the tags of the messages actually handed over, so a context built without the
+        // parent's own floor (an embedder) still records what it inherited.
+        let inherited_trust = ctx
+            .inherited_trust
+            .into_iter()
+            .chain(max_message_trust(&parent_messages))
+            .max();
+        let block_sink = ctx.block_sink.clone();
         // INV-9: extract the resolver seat here so it enters only the background task closure.
         // It MUST NOT be accessible from the agent loop, tool executor, or LLM surface.
         let durable_resolver: Option<DurableResolverSeat> = ctx.durable_resolver;
@@ -883,6 +875,7 @@ impl SubAgentManager {
             &def.name,
             None,
             TranscriptTrustSchema::PerResult,
+            inherited_trust,
         );
 
         // Captured before `ctx.content_isolation` is moved into `agent_loop_args` below
@@ -901,6 +894,7 @@ impl SubAgentManager {
         let tool_gates = ToolGates::new(
             Arc::clone(&ctx.pre_execution_verifiers),
             zeph_sanitizer::exfiltration::ExfiltrationGuard::new(ctx.exfiltration_guard.clone()),
+            block_sink,
         );
         let agent_loop_args = AgentLoopArgs {
             provider,
@@ -922,7 +916,7 @@ impl SubAgentManager {
             initial_messages: parent_messages,
             transcript_writer,
             spawn_depth: spawn_depth + 1,
-            mcp_tool_names,
+            mcp_tool_ids,
             content_isolation: ctx.content_isolation,
             credential_scrub: ctx.credential_scrub,
             llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
@@ -1028,9 +1022,9 @@ impl SubAgentManager {
             secret_tx,
             started_at_str: crate::transcript::utc_now(),
             transcript_dir: handle_transcript_dir,
-            mcp_tool_names: handle_mcp_tool_names,
             peer: peer_registration,
             trust_schema: TranscriptTrustSchema::PerResult,
+            inherited_trust,
             resumed_from: None,
         };
 
@@ -1414,30 +1408,25 @@ impl SubAgentManager {
         let tool_grants_for_loop = Arc::clone(&grants);
 
         let trust_schema = meta.trust_schema;
+        // Floor of everything the resumed session starts from: the original session's own
+        // floor, the parent's current one, and the tags on the replayed history.
+        let inherited_trust = meta
+            .inherited_trust
+            .into_iter()
+            .chain(spawn_context.and_then(|ctx| ctx.inherited_trust))
+            .chain(max_message_trust(&initial_messages))
+            .max();
         let transcript_writer = self.create_transcript_writer(
             config,
             &new_task_id,
             &def.name,
             Some(&original_id),
             trust_schema,
+            inherited_trust,
         );
 
-        let original_tool_count = meta.mcp_tool_names.len();
-        let resumed_mcp_tool_names: Vec<String> = meta
-            .mcp_tool_names
-            .into_iter()
-            .filter(|s| s.len() <= 256 && s.chars().all(|c| c.is_ascii_graphic() || c == ' '))
-            .collect();
-        let dropped = original_tool_count - resumed_mcp_tool_names.len();
-        if dropped > 0 {
-            tracing::warn!(
-                agent_id = %original_id,
-                dropped,
-                "mcp_tool_names sanitization dropped entries on resume"
-            );
-        }
+        let resumed_mcp_tool_ids = spawn_context.and_then(|ctx| ctx.mcp_tool_ids.clone());
         let new_task_id_for_loop = new_task_id.clone();
-        let resumed_mcp_tool_names_for_handle = resumed_mcp_tool_names.clone();
         let llm_timeout = std::time::Duration::from_secs(config.llm_timeout_secs);
         // Cloned out of the `&SpawnContext` reference before the `move` closure below —
         // `spawn_context` itself is borrowed for this method call only and cannot be
@@ -1466,6 +1455,7 @@ impl SubAgentManager {
             zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
                 resolve_resume_exfiltration_guard_config(spawn_context),
             ),
+            spawn_context.and_then(|ctx| ctx.block_sink.clone()),
         );
         let join_handle = self.spawn_agent_task(Arc::from(new_task_id.as_str()), move || {
             run_agent_loop(AgentLoopArgs {
@@ -1488,7 +1478,7 @@ impl SubAgentManager {
                 initial_messages,
                 transcript_writer,
                 spawn_depth: 0,
-                mcp_tool_names: resumed_mcp_tool_names,
+                mcp_tool_ids: resumed_mcp_tool_ids,
                 content_isolation: ContentIsolationConfig::default(),
                 credential_scrub: resumed_credential_scrub,
                 llm_timeout,
@@ -1522,9 +1512,9 @@ impl SubAgentManager {
             secret_tx,
             started_at_str: crate::transcript::utc_now(),
             transcript_dir: resume_handle_transcript_dir,
-            mcp_tool_names: resumed_mcp_tool_names_for_handle,
             peer: peer_registration,
             trust_schema,
+            inherited_trust,
             resumed_from: Some(original_id.clone()),
         };
 

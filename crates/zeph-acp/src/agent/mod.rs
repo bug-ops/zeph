@@ -112,6 +112,13 @@ pub struct AcpContext {
     /// Shared diagnostics cache — written by the LSP notification handler in `ZephAcpAgent`
     /// and read by the agent loop context builder to inject diagnostics into the system prompt.
     pub diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
+    /// Tools of the MCP servers the IDE attached to this session (`mcpServers` in
+    /// `session/new`, `session/load`, `session/fork`, `session/resume`).
+    ///
+    /// Empty when the IDE sent none or no MCP manager is configured. The spawner must add them
+    /// to the session's own tool list: the servers are registered on the shared manager under
+    /// session-scoped ids and are released when the session ends.
+    pub ide_mcp_tools: Vec<zeph_mcp::McpTool>,
     /// Handle for proactively notifying the client outside of the prompt-drain path.
     ///
     /// See [`SessionStatusNotifier`] for why this exists alongside `LoopbackChannel::send_status`.
@@ -331,6 +338,9 @@ pub(crate) struct SessionEntry {
     /// safety net for the other entry-removal path (LRU eviction in `do_fork_session`/
     /// `do_resume_session`), mirroring `elicitation_bridge_handle`'s existing pattern.
     pub(crate) agent_loop_handle: Mutex<Option<JoinHandle<()>>>,
+    /// Releases this session's IDE-provided MCP servers when the entry is dropped (close,
+    /// delete, idle reaping, LRU eviction). `None` when the IDE sent no `mcpServers`.
+    pub(crate) ide_mcp_lease: Option<ide_mcp::IdeMcpLease>,
     /// Join handle for the elicitation bridge task spawned in `do_new_session`.
     ///
     /// Aborted on session close / reap for clean shutdown. `None` when the IDE
@@ -410,6 +420,8 @@ pub struct ZephAcpAgentState {
     available_models: SharedAvailableModels,
     /// Shared MCP manager for `ext_method` add/remove/list.
     pub(crate) mcp_manager: Option<Arc<McpManager>>,
+    /// Ownership map and release queue for IDE-provided MCP servers on this connection.
+    ide_mcp: Arc<ide_mcp::IdeMcpRegistry>,
     /// Project rule file paths advertised in `new_session` `_meta`.
     project_rules: Vec<std::path::PathBuf>,
     /// Maximum characters for auto-generated session titles.
@@ -555,6 +567,7 @@ impl ZephAcpAgentState {
             parent_tool_use_id: None,
             lsp_provider,
             diagnostics_cache: Arc::clone(&self.diagnostics_cache),
+            ide_mcp_tools: Vec::new(),
             status_notifier: SessionStatusNotifier::new(notify_tx, session_id.clone()),
             #[cfg(feature = "unstable-elicitation")]
             elicitation_bridge: elicitation_tx.map(|tx| elicitation::ElicitationBridge {
@@ -1025,6 +1038,7 @@ use zeph_common::text::xml_escape;
 pub(crate) mod handlers;
 
 mod builder;
+mod ide_mcp;
 mod lsp_events;
 mod mcp_ext;
 mod model;
@@ -1305,6 +1319,7 @@ mod session_status_notifier_tests {
 #[cfg(test)]
 mod session_event_replay_tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn user_message_becomes_user_message_chunk() {
@@ -1313,10 +1328,10 @@ mod session_event_replay_tests {
             image_refs: Vec::new(),
         });
         assert_eq!(updates.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             updates[0],
             acp::schema::v1::SessionUpdate::UserMessageChunk(_)
-        ));
+        );
     }
 
     #[test]
@@ -1327,10 +1342,10 @@ mod session_event_replay_tests {
             }],
         });
         assert_eq!(updates.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             updates[0],
             acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
-        ));
+        );
     }
 
     #[test]
@@ -1343,10 +1358,7 @@ mod session_event_replay_tests {
             }],
         });
         assert_eq!(updates.len(), 1);
-        assert!(matches!(
-            updates[0],
-            acp::schema::v1::SessionUpdate::ToolCall(_)
-        ));
+        assert_matches!(updates[0], acp::schema::v1::SessionUpdate::ToolCall(_));
     }
 
     #[test]
@@ -1364,14 +1376,11 @@ mod session_event_replay_tests {
             ],
         });
         assert_eq!(updates.len(), 2);
-        assert!(matches!(
-            updates[0],
-            acp::schema::v1::SessionUpdate::ToolCall(_)
-        ));
-        assert!(matches!(
+        assert_matches!(updates[0], acp::schema::v1::SessionUpdate::ToolCall(_));
+        assert_matches!(
             updates[1],
             acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
-        ));
+        );
     }
 
     #[test]
@@ -1453,9 +1462,9 @@ mod session_event_replay_tests {
             ],
         });
         assert_eq!(updates.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             updates[0],
             acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
-        ));
+        );
     }
 }

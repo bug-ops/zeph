@@ -732,8 +732,7 @@ impl App {
         self.cached_task_snapshots = self
             .task_supervisor
             .as_ref()
-            .map(TaskSupervisor::snapshot)
-            .unwrap_or_default();
+            .map_or_default(TaskSupervisor::snapshot);
     }
 
     /// Return a truncated label for active `TaskSupervisor` tasks, or `None` when idle.
@@ -1747,6 +1746,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use tokio::sync::mpsc;
 
     use super::{App, Panel};
@@ -1868,10 +1868,7 @@ mod tests {
         // spinner is visible immediately (#5984).
         let mut app = make_app();
         let result = app.apply_theme("my-custom-theme");
-        assert!(
-            matches!(result, Ok(false)),
-            "user-file branch defers via Ok(false)"
-        );
+        assert_matches!(result, Ok(false), "user-file branch defers via Ok(false)");
         assert_eq!(
             app.status_label(),
             Some("loading theme..."),

@@ -1489,8 +1489,9 @@ mod tests {
             .match_skills(refs.len(), "query", 5, false, embed_fn_fail)
             .await;
 
-        assert!(
-            matches!(result, MatchResult::InfraError),
+        assert_matches!(
+            result,
+            MatchResult::InfraError,
             "embed failure must produce InfraError"
         );
     }
@@ -1508,8 +1509,7 @@ mod tests {
             .await;
 
         // Must be Scored, not InfraError — empty list is a valid scorer outcome.
-        assert!(
-            matches!(result, MatchResult::Scored(ref v) if v.is_empty()),
+        assert_matches!(result, MatchResult::Scored(ref v) if v.is_empty(),
             "successful match with limit=0 must produce Scored([])"
         );
     }
@@ -1530,8 +1530,7 @@ mod tests {
             .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
             .await;
 
-        assert!(
-            matches!(result, MatchResult::Scored(ref v) if !v.is_empty()),
+        assert_matches!(result, MatchResult::Scored(ref v) if !v.is_empty(),
             "successful match with results must produce Scored([…])"
         );
     }

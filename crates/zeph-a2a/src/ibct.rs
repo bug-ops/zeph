@@ -562,8 +562,9 @@ mod tests {
         let err = token
             .verify(&[key], "https://agent.example.com", "task-expired")
             .unwrap_err();
-        assert!(
-            matches!(err, IbctError::Expired { .. }),
+        assert_matches!(
+            err,
+            IbctError::Expired { .. },
             "expected Expired, got {err:?}"
         );
     }

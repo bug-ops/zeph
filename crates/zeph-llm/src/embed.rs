@@ -144,8 +144,9 @@ mod tests {
         let boundary = EMBED_HEAD_BYTES + EMBED_TAIL_BYTES + EMBED_TRUNCATION_MARKER.len();
         let input = "c".repeat(boundary);
         let result = truncate_for_embed(&input);
-        assert!(
-            matches!(result, Cow::Borrowed(_)),
+        assert_matches!(
+            result,
+            Cow::Borrowed(_),
             "text at the overlap guard boundary must be returned borrowed"
         );
     }
@@ -156,8 +157,9 @@ mod tests {
         let boundary = EMBED_HEAD_BYTES + EMBED_TAIL_BYTES + EMBED_TRUNCATION_MARKER.len();
         let input = "d".repeat(boundary + 1);
         let result = truncate_for_embed(&input);
-        assert!(
-            matches!(result, Cow::Owned(_)),
+        assert_matches!(
+            result,
+            Cow::Owned(_),
             "text one byte past the overlap guard must be truncated (Cow::Owned)"
         );
         assert!(result.contains("...[truncated]..."));

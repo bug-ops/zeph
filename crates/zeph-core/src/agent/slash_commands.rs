@@ -22,52 +22,14 @@ use crate::channel::Channel;
 
 /// Returns a formatted overlay summary string for slash/TUI display.
 ///
-/// Resolves the active plugin overlay against a scratch `Config::default()`.
-/// Source and skipped plugin lists are accurate; merged config values (e.g.,
-/// `allowed_commands`) are not shown because they depend on the live config base.
+/// The rendered summary depends only on the plugins directory, not on config values, so a
+/// scratch config is enough to drive the resolution.
 pub(crate) fn format_overlay_section(plugins_dir: &std::path::Path) -> String {
     let mut cfg = zeph_config::Config::default();
     match zeph_plugins::apply_plugin_config_overlays(&mut cfg, plugins_dir) {
         Err(e) => format!("overlay resolution failed: {e}"),
-        Ok(overlay) => render_overlay(&overlay),
+        Ok(overlay) => overlay.render(),
     }
-}
-
-fn render_overlay(overlay: &zeph_plugins::ResolvedOverlay) -> String {
-    if overlay.source_plugins.is_empty()
-        && overlay.skipped_plugins.is_empty()
-        && overlay.unverified_plugins.is_empty()
-    {
-        return "No plugin overlay active.".to_owned();
-    }
-    let mut out = String::from("Active plugin overlay:\n");
-    if overlay.source_plugins.is_empty() {
-        out.push_str("  Source plugins:  (none)\n");
-    } else {
-        out.push_str("  Source plugins:  ");
-        out.push_str(&overlay.source_plugins.join(", "));
-        out.push('\n');
-    }
-    if overlay.skipped_plugins.is_empty() {
-        out.push_str("  Skipped plugins: (none)\n");
-    } else {
-        out.push_str("  Skipped plugins:\n");
-        for reason in &overlay.skipped_plugins {
-            out.push_str("    - ");
-            out.push_str(reason);
-            out.push('\n');
-        }
-    }
-    if !overlay.unverified_plugins.is_empty() {
-        out.push_str("  Unverified plugins (applied without an integrity digest):\n");
-        for reason in &overlay.unverified_plugins {
-            out.push_str("    - ");
-            out.push_str(reason);
-            out.push('\n');
-        }
-    }
-    out.push_str("  Note: overlay values shown against default config, not the live config.");
-    out
 }
 
 impl<C: crate::channel::Channel> Agent<C> {
@@ -214,8 +176,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().iter().map(|d| d.name.clone()).collect());
         match zeph_subagent::AgentCommand::parse(trimmed, &known) {
             Ok(cmd) => {
                 if let Some(msg) = self.handle_agent_command(cmd).await
@@ -465,10 +426,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         base_shell_allowed: Vec<String>,
         ephemeral_plugin_names: Vec<String>,
         reputation_cfg: &zeph_config::plugins::ReputationConfig,
+        plugins_dir: std::path::PathBuf,
     ) -> String {
-        // Use the canonical default so CLI and TUI always reference the same directory.
-        let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
-
         let (subcmd, rest) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
 
         // Overlay subcommand does not need PluginManager; resolve early to avoid moving plugins_dir.
@@ -1541,26 +1500,6 @@ mod tests {
     }
 
     #[test]
-    fn render_overlay_lists_unverified_plugins_only_when_present() {
-        let mut overlay = zeph_plugins::ResolvedOverlay::default();
-        overlay.source_plugins.push("p".to_owned());
-        let without = render_overlay(&overlay);
-        assert!(!without.contains("Unverified plugins"), "{without}");
-
-        overlay
-            .unverified_plugins
-            .push("p: no integrity digest recorded; run `zeph plugin add` again".to_owned());
-        let with = render_overlay(&overlay);
-        assert!(
-            with.contains("Unverified plugins (applied without an integrity digest):\n    - p: no integrity digest"),
-            "{with}"
-        );
-
-        overlay.source_plugins.clear();
-        assert_ne!(render_overlay(&overlay), "No plugin overlay active.");
-    }
-
-    #[test]
     fn format_overlay_section_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let out = format_overlay_section(tmp.path());
@@ -1586,7 +1525,7 @@ blocked_commands = ["curl"]
         assert!(out.contains("Active plugin overlay:"));
         assert!(out.contains("myplugin"));
         assert!(out.contains("Source plugins:"));
-        assert!(out.contains("Note:"));
+        assert!(!out.contains("Note:"));
     }
 
     #[test]

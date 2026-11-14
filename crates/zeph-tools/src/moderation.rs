@@ -505,8 +505,9 @@ mod tests {
             }),
         );
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(
-            matches!(err, ToolError::InvalidParams { .. }),
+        assert_matches!(
+            err,
+            ToolError::InvalidParams { .. },
             "expected InvalidParams, got {err:?}"
         );
     }
@@ -524,8 +525,9 @@ mod tests {
             }),
         );
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(
-            matches!(err, ToolError::InvalidParams { .. }),
+        assert_matches!(
+            err,
+            ToolError::InvalidParams { .. },
             "expected InvalidParams, got {err:?}"
         );
     }
@@ -639,8 +641,7 @@ mod tests {
             }),
         );
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(
-            matches!(err, ToolError::InvalidParams { ref message } if message.contains("empty")),
+        assert_matches!(err, ToolError::InvalidParams { ref message } if message.contains("empty"),
             "expected empty reaction error, got {err:?}"
         );
     }
@@ -659,8 +660,7 @@ mod tests {
             }),
         );
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(
-            matches!(err, ToolError::InvalidParams { ref message } if message.contains("too long")),
+        assert_matches!(err, ToolError::InvalidParams { ref message } if message.contains("too long"),
             "expected too long error, got {err:?}"
         );
     }

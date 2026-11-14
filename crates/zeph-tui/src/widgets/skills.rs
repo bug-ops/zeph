@@ -87,6 +87,12 @@ pub(crate) fn sections(
                     Style::default().fg(Color::Yellow),
                 ));
             }
+            if srv.shadowed_tools > 0 {
+                spans.push(Span::styled(
+                    format!(" shadowed:{}", srv.shadowed_tools),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
             mcp_lines.push(Line::from(spans));
         }
         for t in &metrics.active_mcp_tools {
@@ -325,6 +331,34 @@ mod tests {
     }
 
     #[test]
+    fn mcp_section_marks_servers_with_shadowed_tools() {
+        use crate::metrics::McpServerConnectionStatus;
+        use zeph_core::metrics::McpServerStatus;
+
+        let metrics = MetricsSnapshot {
+            mcp_tool_count: 2,
+            mcp_servers: vec![McpServerStatus {
+                id: "srv1".into(),
+                status: McpServerConnectionStatus::Connected,
+                tool_count: 2,
+                error: String::new(),
+                input_schemas_dropped: 0,
+                output_schemas_dropped: 0,
+                shadowed_tools: 2,
+            }],
+            ..MetricsSnapshot::default()
+        };
+        let theme = crate::theme::Theme::default();
+        let output = render_to_string(60, 8, |frame, area| {
+            super::render(&metrics, frame, area, &theme);
+        });
+        assert!(
+            output.contains("shadowed:2"),
+            "collision marker missing, got:\n{output}"
+        );
+    }
+
+    #[test]
     fn mcp_section_shows_overflow_indicator_instead_of_vanishing_under_pressure() {
         let metrics = MetricsSnapshot {
             active_skills: vec![
@@ -377,6 +411,7 @@ mod tests {
                 error: String::new(),
                 input_schemas_dropped: 0,
                 output_schemas_dropped: 0,
+                shadowed_tools: 0,
             }],
             ..MetricsSnapshot::default()
         };

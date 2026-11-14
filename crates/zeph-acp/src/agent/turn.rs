@@ -43,10 +43,7 @@ const SUPPORTED_IMAGE_MIMES: &[&str] = &[
 
 /// Maximum bytes fetched from an HTTP resource link.
 const MAX_RESOURCE_BYTES: usize = 1_048_576; // 1 MiB
-const MAX_RESOURCE_LIMIT: BodyLimit = match BodyLimit::new(MAX_RESOURCE_BYTES) {
-    Some(limit) => limit,
-    None => panic!("resource limit must be non-zero"),
-};
+const MAX_RESOURCE_LIMIT: BodyLimit = BodyLimit::from_const(MAX_RESOURCE_BYTES);
 /// Timeout for HTTP resource link fetch.
 const RESOURCE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -183,27 +180,37 @@ async fn resolve_resource_link(
             )));
         }
 
-        let buf = read_capped(resp, MAX_RESOURCE_LIMIT)
-            .await
-            .map_err(|e| match e {
-                BodyReadError::TooLarge { limit } => crate::error::AcpError::ResourceLink(format!(
-                    "HTTP content exceeds size limit ({limit} bytes): {uri}"
-                )),
-                BodyReadError::Transport(e) => {
-                    crate::error::AcpError::ResourceLink(format!("HTTP read error: {e}"))
-                }
-            })?;
-
-        String::from_utf8(buf).map_err(|_| {
-            crate::error::AcpError::ResourceLink(format!(
-                "HTTP response body is not valid UTF-8: {uri}"
-            ))
-        })
+        read_text_body(resp, MAX_RESOURCE_LIMIT, uri).await
     } else {
         Err(crate::error::AcpError::ResourceLink(format!(
             "unsupported URI scheme in ResourceLink: {uri}"
         )))
     }
+}
+
+/// Read a `ResourceLink` HTTP body as UTF-8 text, enforcing `limit` while streaming.
+///
+/// Separate from the SSRF-guarded fetch in [`resolve_resource_link`] so the size cap and
+/// encoding checks can be tested against a local server; the address checks stay on the fetch path.
+async fn read_text_body(
+    resp: reqwest::Response,
+    limit: BodyLimit,
+    uri: &str,
+) -> Result<String, crate::error::AcpError> {
+    let buf = read_capped(resp, limit).await.map_err(|e| match e {
+        BodyReadError::TooLarge { limit } => crate::error::AcpError::ResourceLink(format!(
+            "HTTP content exceeds size limit ({limit} bytes): {uri}"
+        )),
+        BodyReadError::Transport(e) => {
+            crate::error::AcpError::ResourceLink(format!("HTTP read error: {e}"))
+        }
+    })?;
+
+    String::from_utf8(buf).map_err(|_| {
+        crate::error::AcpError::ResourceLink(format!(
+            "HTTP response body is not valid UTF-8: {uri}"
+        ))
+    })
 }
 
 /// Return value of [`ZephAcpAgentState::drain_agent_events`].
@@ -780,6 +787,7 @@ mod prompt_injection_detection_tests {
 /// enclosing task being aborted mid-turn) may permanently wedge a session's `output_rx`.
 #[cfg(test)]
 mod output_rx_leak_regression_tests {
+    use std::assert_matches;
     use std::sync::Arc;
 
     use parking_lot::RwLock;
@@ -1007,8 +1015,7 @@ mod output_rx_leak_regression_tests {
             .await
             .expect("reloaded session's output_rx must not have been clobbered by the stale guard")
             .expect("reloaded session's channel must not be closed");
-        assert!(
-            matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh marker"),
+        assert_matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh marker",
             "expected the reloaded session's own event, got: {event:?}"
         );
     }
@@ -1123,8 +1130,7 @@ mod output_rx_leak_regression_tests {
             .await
             .expect("restored receiver must still be connected to the live channel")
             .expect("restored receiver's channel must not be closed");
-        assert!(
-            matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh after restore"),
+        assert_matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh after restore",
             "expected the post-restore event, got: {event:?}"
         );
     }
@@ -1200,5 +1206,61 @@ mod output_rx_leak_regression_tests {
                  other prompt for input {text:?}, got: {err}"
             );
         }
+    }
+}
+
+/// Tests for the `ResourceLink` HTTP body reader (#7064).
+#[cfg(test)]
+mod read_text_body_tests {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    async fn respond_with(body: &'static [u8]) -> reqwest::Response {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            sock.write_all(head.as_bytes()).await.unwrap();
+            sock.write_all(body).await.unwrap();
+        });
+        reqwest::get(format!("http://{addr}/")).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn body_over_limit_is_rejected_with_size_message() {
+        let resp = respond_with(b"0123456789").await;
+        let err = read_text_body(resp, BodyLimit::from_const(4), "http://x/")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds size limit (4 bytes)"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn body_within_limit_is_returned_as_text() {
+        let resp = respond_with(b"hello").await;
+        let text = read_text_body(resp, BodyLimit::from_const(16), "http://x/")
+            .await
+            .unwrap();
+        assert_eq!(text, "hello");
+    }
+
+    #[tokio::test]
+    async fn non_utf8_body_is_rejected() {
+        let resp = respond_with(&[0xff, 0xfe, 0xfd]).await;
+        let err = read_text_body(resp, BodyLimit::from_const(16), "http://x/")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "got: {err}");
     }
 }

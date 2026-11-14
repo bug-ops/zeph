@@ -559,7 +559,7 @@ pub(crate) fn github_mcp_tool_ids() -> (String, zeph_tools::McpToolIds) {
     let id = tool.sanitized_id();
     assert_eq!(id, "github_create_issue");
     let mut ids = zeph_tools::McpToolIds::default();
-    ids.insert(id.clone(), Some(tool.server_id));
+    ids.insert(id.as_str().into(), tool.server_id);
     (id, ids)
 }
 
@@ -582,7 +582,7 @@ pub(crate) fn mcp_tool_def(id: &str, server_id: &str) -> zeph_tools::registry::T
         schema: schemars::Schema::default(),
         invocation: zeph_tools::registry::InvocationHint::ToolCall,
         output_schema: None,
-        server_id: Some(server_id.to_owned()),
+        server_id: Some(server_id.into()),
     }
 }
 

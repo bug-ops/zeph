@@ -296,8 +296,9 @@ async fn classified_exit_failures_write_exactly_one_audit_error() {
         let dir = tempfile::tempdir().unwrap();
         let (executor, log_path) = audited_executor(&dir).await;
         let result = executor.execute_tool_call(&bash_call(command)).await;
-        assert!(
-            matches!(result, Err(ToolError::Shell { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Shell { .. }),
             "{command}: {result:?}"
         );
         let content = tokio::fs::read_to_string(&log_path).await.unwrap();
@@ -369,13 +370,13 @@ async fn sandbox_launch_failure_is_shell_permanent_failure_error() {
         .classify_and_audit("x", &out, BashTermination::LaunchFailed, 1, 0)
         .await
         .expect("launch failure must be an error");
-    assert!(matches!(
+    assert_matches!(
         err,
         ToolError::Shell {
             category: crate::error_taxonomy::ToolErrorCategory::PermanentFailure,
             ..
         }
-    ));
+    );
 }
 
 #[tokio::test]
@@ -2066,11 +2067,9 @@ async fn blocklist_not_bypassed_by_permissive_policy() {
     };
     let executor = ShellExecutor::new(&config).with_permissions(permissive_policy);
     let result = executor.execute("```bash\ndanger-cmd --force\n```").await;
-    assert!(
-        matches!(
-            result,
-            Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-        ),
+    assert_matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. }),
         "blocked command must be rejected even with a permissive PermissionPolicy"
     );
 }
@@ -2090,11 +2089,9 @@ async fn default_blocked_not_bypassed_by_full_autonomy_policy() {
     ] {
         let response = format!("```bash\n{cmd}\n```");
         let result = executor.execute(&response).await;
-        assert!(
-            matches!(
-                result,
-                Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-            ),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. }),
             "DEFAULT_BLOCKED command `{cmd}` must be rejected even with Full autonomy"
         );
     }
@@ -2111,8 +2108,9 @@ async fn confirm_commands_still_work_without_policy() {
     };
     let executor = ShellExecutor::new(&config);
     let result = executor.execute("```bash\ngit push origin main\n```").await;
-    assert!(
-        matches!(result, Err(ToolError::ConfirmationRequired { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::ConfirmationRequired { .. }),
         "confirm_patterns must still trigger ConfirmationRequired when no PermissionPolicy is set"
     );
 }
@@ -2625,11 +2623,9 @@ async fn snapshot_failure_aborts_when_required() {
     // Restore permissions for cleanup
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-    assert!(
-        matches!(
-            result,
-            Err(crate::executor::ToolError::SnapshotFailed { .. })
-        ),
+    assert_matches!(
+        result,
+        Err(crate::executor::ToolError::SnapshotFailed { .. }),
         "expected SnapshotFailed, got {result:?}"
     );
 }
@@ -3092,11 +3088,9 @@ async fn spawn_background_cap_enforcement() {
 
     // Second spawn: must be blocked because max_background_runs=1 is already at capacity.
     let second = executor.spawn_background("sleep 60").await;
-    assert!(
-        matches!(
-            second,
-            Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-        ),
+    assert_matches!(
+        second,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. }),
         "second spawn should return Blocked, got: {second:?}"
     );
 
@@ -3225,6 +3219,7 @@ async fn background_runs_snapshot_returns_active_run() {
 // ============================================================
 
 mod resolve_context {
+    use std::assert_matches;
     use std::collections::{BTreeMap, HashMap};
 
     use tempfile::TempDir;
@@ -3297,11 +3292,9 @@ mod resolve_context {
         let outside_canonical = outside.path().canonicalize().unwrap();
         let ctx = ExecutionContext::new().with_cwd(outside_canonical);
         let result = executor.resolve_context(Some(&ctx));
-        assert!(
-            matches!(
-                result,
-                Err(crate::executor::ToolError::SandboxViolation { .. })
-            ),
+        assert_matches!(
+            result,
+            Err(crate::executor::ToolError::SandboxViolation { .. }),
             "cwd outside allowed_paths must be SandboxViolation, got: {result:?}"
         );
     }
@@ -3770,8 +3763,9 @@ async fn supervised_background_run_limit_still_enforced() {
     let _id = executor.spawn_background("sleep 10").await.unwrap();
     // Second spawn must be rejected regardless of supervisor presence.
     let err = executor.spawn_background("sleep 10").await.unwrap_err();
-    assert!(
-        matches!(err, ToolError::Blocked { .. }),
+    assert_matches!(
+        err,
+        ToolError::Blocked { .. },
         "cap must be enforced with supervisor wired; got: {err:?}"
     );
 

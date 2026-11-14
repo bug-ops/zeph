@@ -226,16 +226,14 @@ fail_closed = false
 "#;
         let cfg: HooksConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.cwd_changed.len(), 1);
-        assert!(
-            matches!(&cfg.cwd_changed[0].action, HookAction::Command { command } if command == "echo changed")
+        assert_matches!(&cfg.cwd_changed[0].action, HookAction::Command { command } if command == "echo changed"
         );
         let fc = cfg.file_changed.as_ref().unwrap();
         assert_eq!(fc.watch_paths.len(), 2);
         assert_eq!(fc.debounce_ms, 300);
         assert_eq!(fc.hooks.len(), 1);
         assert_eq!(cfg.permission_denied.len(), 1);
-        assert!(
-            matches!(&cfg.permission_denied[0].action, HookAction::Command { command } if command == "echo denied")
+        assert_matches!(&cfg.permission_denied[0].action, HookAction::Command { command } if command == "echo denied"
         );
     }
 
@@ -403,8 +401,7 @@ fail_closed = false
 "#;
         let cfg: HooksConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.cwd_changed.len(), 1, "expected 1 cwd_changed hook");
-        assert!(
-            matches!(&cfg.cwd_changed[0].action, HookAction::Command { command } if command == "echo 'CWD_CHANGED_HOOK_FIRED'")
+        assert_matches!(&cfg.cwd_changed[0].action, HookAction::Command { command } if command == "echo 'CWD_CHANGED_HOOK_FIRED'"
         );
         let fc = cfg
             .file_changed

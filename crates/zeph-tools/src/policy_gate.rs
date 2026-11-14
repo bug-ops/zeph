@@ -20,7 +20,7 @@ use tracing::debug;
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::policy::{PolicyContext, PolicyDecision, PolicyEnforcer};
-use crate::registry::ToolDef;
+use crate::registry::{McpToolIdsHandle, ToolDef};
 
 /// Shared risk level from spec 050 `TrajectorySentinel`.
 ///
@@ -57,6 +57,8 @@ pub struct PolicyGateExecutor<T: ToolExecutor> {
     trajectory_risk: Option<TrajectoryRiskSlot>,
     /// Optional signal queue — `PolicyDeny` codes are pushed here; drained by `begin_turn()`.
     signal_queue: Option<RiskSignalQueue>,
+    /// Live MCP tool-id registry used to label audit rows with the serving MCP server.
+    mcp_tool_ids: Option<McpToolIdsHandle>,
 }
 
 impl<T: ToolExecutor + std::fmt::Debug> std::fmt::Debug for PolicyGateExecutor<T> {
@@ -82,7 +84,15 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
             audit: None,
             trajectory_risk: None,
             signal_queue: None,
+            mcp_tool_ids: None,
         }
+    }
+
+    /// Attach the live MCP tool-id registry so audit rows of MCP calls carry the server id.
+    #[must_use]
+    pub fn with_mcp_tool_ids(mut self, handle: McpToolIdsHandle) -> Self {
+        self.mcp_tool_ids = Some(handle);
+        self
     }
 
     /// Attach an audit logger to record every policy decision.
@@ -320,48 +330,43 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         self.check_policy(call).await?;
         let result = self.inner.execute_tool_call(call).await;
-        // Populate mcp_server_id in audit when the inner executor produces MCP output.
-        // MCP tool outputs use qualified_name() format: "server_id:tool_name".
-        if let Ok(Some(ref output)) = result
-            && let Some(colon) = output.tool_name.as_str().find(':')
+        if let Ok(Some(_)) = &result
+            && let Some(audit) = &self.audit
+            && let Some(server_id) = self
+                .mcp_tool_ids
+                .as_ref()
+                .and_then(|ids| ids.snapshot().server_id(call.tool_id.as_str()).cloned())
         {
-            #[expect(
-                clippy::string_slice,
-                reason = "colon comes from find on the same string"
-            )]
-            let server_id = output.tool_name.as_str()[..colon].to_owned();
-            if let Some(audit) = &self.audit {
-                let entry = AuditEntry {
-                    source_kind: None,
-                    trust_level: None,
-                    timestamp: chrono_now(),
-                    tool: call.tool_id.clone(),
-                    command: truncate_params(&call.params),
-                    result: AuditResult::Success,
-                    duration_ms: 0,
-                    error_category: None,
-                    error_domain: None,
-                    error_phase: None,
-                    claim_source: None,
-                    mcp_server_id: Some(server_id),
-                    injection_flagged: false,
-                    embedding_anomalous: false,
-                    cross_boundary_mcp_to_acp: false,
-                    adversarial_policy_decision: None,
-                    exit_code: None,
-                    truncated: false,
-                    caller_id: call.caller_id.clone(),
-                    skill_name: call.skill_name.clone(),
-                    policy_match: None,
-                    correlation_id: None,
-                    vigil_risk: None,
-                    execution_env: None,
-                    resolved_cwd: None,
-                    scope_at_definition: None,
-                    scope_at_dispatch: None,
-                };
-                audit.log(&entry).await;
-            }
+            let entry = AuditEntry {
+                source_kind: None,
+                trust_level: None,
+                timestamp: chrono_now(),
+                tool: call.tool_id.clone(),
+                command: truncate_params(&call.params),
+                result: AuditResult::Success,
+                duration_ms: 0,
+                error_category: None,
+                error_domain: None,
+                error_phase: None,
+                claim_source: None,
+                mcp_server_id: Some(server_id),
+                injection_flagged: false,
+                embedding_anomalous: false,
+                cross_boundary_mcp_to_acp: false,
+                adversarial_policy_decision: None,
+                exit_code: None,
+                truncated: false,
+                caller_id: call.caller_id.clone(),
+                skill_name: call.skill_name.clone(),
+                policy_match: None,
+                correlation_id: None,
+                vigil_risk: None,
+                execution_env: None,
+                resolved_cwd: None,
+                scope_at_definition: None,
+                scope_at_dispatch: None,
+            };
+            audit.log(&entry).await;
         }
         result
     }
@@ -836,8 +841,9 @@ mod tests {
         let gate = make_gate(&config);
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
         let result = gate.execute_tool_call(&make_call("shell")).await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. }),
             "Quarantined context must not satisfy a Verified trust threshold allow rule"
         );
     }
@@ -884,8 +890,9 @@ mod tests {
         let slot: TrajectoryRiskSlot = Arc::new(RwLock::new(3u8)); // Critical
         let gate = make_gate(&config).with_trajectory_risk(slot);
         let result = gate.execute_tool_call(&make_call("builtin:shell")).await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. }),
             "Critical trajectory must block even policy-allowed tool calls"
         );
         // LLM isolation: error message must not reveal risk level.

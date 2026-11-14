@@ -403,6 +403,7 @@ mod tests {
     use super::*;
     use crate::executor::{ToolError, ToolOutput};
     use crate::{ToolCall, ToolExecutor};
+    use std::assert_matches;
     use zeph_common::ToolName;
 
     struct AllowProbe;
@@ -772,7 +773,7 @@ mod tests {
 
         let call = make_call_with_skills("bash", &["disk-usage"]);
         let result = exec.execute_tool_call(&call).await;
-        assert!(matches!(result, Err(ToolError::SafetyDenied { .. })));
+        assert_matches!(result, Err(ToolError::SafetyDenied { .. }));
 
         let recorded = probe.recorded.lock().unwrap();
         assert_eq!(
@@ -803,7 +804,7 @@ mod tests {
 
         let call = make_call_with_skills("bash", &["disk-usage"]);
         let result = exec.execute_tool_call_confirmed(&call).await;
-        assert!(matches!(result, Err(ToolError::SafetyDenied { .. })));
+        assert_matches!(result, Err(ToolError::SafetyDenied { .. }));
         assert_eq!(probe.recorded.lock().unwrap().len(), 1);
     }
 
@@ -920,10 +921,7 @@ mod tests {
         );
 
         let result = exec.execute_tool_call(&make_call("builtin:shell")).await;
-        assert!(matches!(
-            result,
-            Err(ToolError::ConfirmationRequired { .. })
-        ));
+        assert_matches!(result, Err(ToolError::ConfirmationRequired { .. }));
         assert!(
             probe.recorded.lock().unwrap().is_empty(),
             "ConfirmationRequired must not be recorded — the confirmed re-run records instead"

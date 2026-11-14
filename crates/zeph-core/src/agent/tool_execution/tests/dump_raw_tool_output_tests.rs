@@ -72,14 +72,12 @@ async fn dump_dir_filenames(base_dir: &Path) -> Vec<String> {
     else {
         return Vec::new();
     };
-    std::fs::read_dir(session_entry.path())
-        .map(|entries| {
-            entries
-                .filter_map(std::result::Result::ok)
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read_dir(session_entry.path()).map_or_default(|entries| {
+        entries
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    })
 }
 
 #[tokio::test]

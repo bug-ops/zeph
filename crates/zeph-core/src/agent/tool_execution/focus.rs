@@ -493,12 +493,11 @@ impl<C: Channel> Agent<C> {
             .messages
             .iter()
             .rposition(|m| m.role == Role::Assistant)
-            .map(|turn_start| {
+            .map_or_default(|turn_start| {
                 zeph_llm::tool_pairing::resolved_tool_result_ids(
                     zeph_llm::tool_pairing::next_non_system(&self.msg.messages, turn_start),
                 )
-            })
-            .unwrap_or_default();
+            });
 
         let result_parts: Vec<MessagePart> = tool_calls
             .iter()

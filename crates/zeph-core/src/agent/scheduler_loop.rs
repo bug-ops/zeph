@@ -1372,36 +1372,50 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     .ensemble_members
                                                     .iter()
                                                     .find(|(name, _)| name == &usage.member);
-                                                let (provider_kind, model) = member_provider
-                                                    .map_or(
-                                                        ("cloud", usage.member.as_str()),
-                                                        |(_, p)| {
-                                                            (
-                                                                p.provider_kind_str(),
-                                                                p.model_identifier(),
-                                                            )
-                                                        },
-                                                    );
-                                                tracker.record_usage(
-                                                    &usage.member,
-                                                    provider_kind,
-                                                    model,
+                                                let member_usage = member_provider
+                                                    .and_then(|(_, p)| p.last_response_usage())
+                                                    .map(|u| zeph_llm::provider::ResponseUsage {
+                                                        auxiliary: None,
+                                                        ..u
+                                                    });
+                                                let target = member_provider.map_or(
+                                                    super::utils::CostTarget {
+                                                        provider_name: &usage.member,
+                                                        kind: "cloud",
+                                                        model: usage.member.as_str(),
+                                                    },
+                                                    |(_, p)| {
+                                                        super::utils::CostTarget::serving(
+                                                            &usage.member,
+                                                            p,
+                                                        )
+                                                    },
+                                                );
+                                                let model = target.model;
+                                                self.record_cost_for(
+                                                    target,
                                                     usage.input_tokens,
-                                                    0,
-                                                    0,
                                                     usage.output_tokens,
-                                                    zeph_config::ServiceSpeed::Standard,
+                                                    member_usage,
                                                 );
 
                                                 // Issue #6549: durable ledger row, priced via
-                                                // the exact same tracker.price_of used above.
+                                                // the exact same tracker.price_of the fold used.
+                                                let zeph_llm::provider::CacheUsage {
+                                                    creation: cache_write,
+                                                    read: cache_read,
+                                                } = member_usage
+                                                    .and_then(|u| u.cache)
+                                                    .unwrap_or_default();
+                                                let speed = member_usage
+                                                    .map_or_else(Default::default, |u| u.speed);
                                                 let cost_cents = tracker.price_of(
                                                     model,
                                                     usage.input_tokens,
-                                                    0,
-                                                    0,
+                                                    cache_read,
+                                                    cache_write,
                                                     usage.output_tokens,
-                                                    zeph_config::ServiceSpeed::Standard,
+                                                    speed,
                                                 );
                                                 let (ttft_ms, reasoning_tokens) = member_provider
                                                     .map_or((None, None), |(_, p)| {
@@ -1424,8 +1438,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     model_name: model.to_owned(),
                                                     input_tokens: usage.input_tokens,
                                                     output_tokens: usage.output_tokens,
-                                                    cache_read_tokens: 0,
-                                                    cache_write_tokens: 0,
+                                                    cache_read_tokens: cache_read,
+                                                    cache_write_tokens: cache_write,
                                                     reasoning_tokens,
                                                     cost_cents,
                                                     latency_ms: verify_latency_ms,
@@ -2035,10 +2049,10 @@ impl<C: crate::channel::Channel> Agent<C> {
             let prompt = format!(
                 "Sub-agent requests secret '{}'. Allow?{}",
                 crate::text::truncate_to_chars(&req.secret_key, 100),
-                req.reason
-                    .as_deref()
-                    .map(|r| format!(" Reason: {}", crate::text::truncate_to_chars(r, 200)))
-                    .unwrap_or_default()
+                req.reason.as_deref().map_or_default(|r| format!(
+                    " Reason: {}",
+                    crate::text::truncate_to_chars(r, 200)
+                ))
             );
             let approved = tokio::select! {
                 result = self.channel.confirm(&prompt) => result.unwrap_or(false),
@@ -2092,6 +2106,7 @@ mod tests {
         determine_task_outcome, lookahead_effective_depth, network_denied_for_task,
         task_tool_allowlist_for_task, tool_trace_from_messages,
     };
+    use std::assert_matches;
 
     #[test]
     fn fidelity_none_returns_zero() {
@@ -2332,10 +2347,7 @@ mod tests {
             Some(vec![]),
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Completed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Completed { .. });
     }
 
     #[tokio::test]
@@ -2352,10 +2364,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
     }
 
     #[tokio::test]
@@ -2374,8 +2383,9 @@ mod tests {
             None,
         )
         .await;
-        assert!(
-            matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. }),
+        assert_matches!(
+            outcome,
+            zeph_orchestration::TaskOutcome::Failed { .. },
             "expected Failed, got {outcome:?}"
         );
 
@@ -2408,10 +2418,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
     }
 
     #[tokio::test]
@@ -2428,10 +2435,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
     }
 
     #[tokio::test]
@@ -2500,8 +2504,9 @@ mod tests {
             None,
         )
         .await;
-        assert!(
-            matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. }),
+        assert_matches!(
+            outcome,
+            zeph_orchestration::TaskOutcome::Failed { .. },
             "expected Failed, got {outcome:?}"
         );
 
@@ -2541,10 +2546,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
 
         let namespace = format!("orch/{graph_id}");
         let items = ctx
@@ -2576,10 +2578,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
     }
 
     #[tokio::test]
@@ -3768,9 +3767,9 @@ mod tests {
             secret_tx,
             started_at_str: String::new(),
             transcript_dir: None,
-            mcp_tool_names: Vec::new(),
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
             resumed_from: None,
         };
         (handle, status_tx)

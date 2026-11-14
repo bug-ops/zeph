@@ -125,6 +125,22 @@ impl RouterState {
         });
     }
 
+    /// Fold the usage of a `CoE` shadow call into the served response as `auxiliary`.
+    ///
+    /// The primary counters stay those of the single response that was served; the shadow
+    /// call is billed but never counted toward context size. Does nothing when no response
+    /// has been recorded yet.
+    pub(crate) fn record_shadow_usage(&self, shadow: crate::provider::ResponseUsage) {
+        let mut guard = self.last_served.lock();
+        let Some(served) = guard.as_mut() else {
+            return;
+        };
+        let snapshot = served.snapshot.get_or_insert_with(Default::default);
+        let mut aux = snapshot.auxiliary.unwrap_or_default();
+        aux.add(crate::provider::AuxiliaryUsage::from(shadow));
+        snapshot.auxiliary = Some(aux);
+    }
+
     /// Like [`Self::record_served`] for a stream that is still being consumed.
     ///
     /// Backends that publish usage when the stream ends (Claude) share their tracker across

@@ -439,6 +439,7 @@ fn attach_metrics_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[cfg(feature = "prometheus")]
     #[tokio::test]
@@ -702,7 +703,7 @@ mod tests {
             .serve()
             .await
             .expect_err("must refuse to start without a token");
-        assert!(matches!(err, GatewayError::MissingAuthToken));
+        assert_matches!(err, GatewayError::MissingAuthToken);
     }
 
     /// #6268/#6487: a token that resolves to an empty string (e.g. a blank vault secret) must
@@ -716,7 +717,7 @@ mod tests {
             .serve()
             .await
             .expect_err("empty token must be treated as missing");
-        assert!(matches!(err, GatewayError::MissingAuthToken));
+        assert_matches!(err, GatewayError::MissingAuthToken);
     }
 
     /// #6487 (critic M2): a whitespace-only token must be treated exactly like no token at
@@ -733,7 +734,7 @@ mod tests {
             .serve()
             .await
             .expect_err("whitespace-only token must be treated as missing");
-        assert!(matches!(err, GatewayError::MissingAuthToken));
+        assert_matches!(err, GatewayError::MissingAuthToken);
     }
 
     /// #6487: a legitimate deployment that configures a real `auth_token` must be unaffected by

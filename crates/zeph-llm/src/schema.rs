@@ -43,8 +43,7 @@ pub(crate) fn walk_schema(
     let prop_keys: Vec<String> = obj
         .get("properties")
         .and_then(|p| p.as_object())
-        .map(|p| p.keys().cloned().collect())
-        .unwrap_or_default();
+        .map_or_default(|p| p.keys().cloned().collect());
 
     for key in prop_keys {
         if let Some(serde_json::Value::Object(props)) = obj.get_mut("properties")

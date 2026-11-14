@@ -1020,8 +1020,7 @@ mod tests {
 
         let persisted = rebuild_persisted(&cache);
 
-        assert!(
-            matches!(persisted.tools.get("web_scrape"), Some(ToolPermission::Simple(s)) if s == "deny"),
+        assert_matches!(persisted.tools.get("web_scrape"), Some(ToolPermission::Simple(s)) if s == "deny",
             "Simple deny for web_scrape was lost: {:?}",
             persisted.tools
         );

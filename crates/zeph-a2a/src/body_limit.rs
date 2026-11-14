@@ -16,21 +16,14 @@ use zeph_common::http::{BodyLimit, BodyReadError};
 
 use crate::error::A2aError;
 
-const fn limit(bytes: usize) -> BodyLimit {
-    match BodyLimit::new(bytes) {
-        Some(l) => l,
-        None => panic!("body limit must be non-zero"),
-    }
-}
-
 /// Agent card served at `/.well-known/agent.json`: 256 KiB.
-pub const AGENT_CARD: BodyLimit = limit(256 * 1024);
+pub const AGENT_CARD: BodyLimit = BodyLimit::from_const(256 * 1024);
 /// JSON-RPC response body: 16 MiB.
-pub const RPC_RESPONSE: BodyLimit = limit(16 * 1024 * 1024);
+pub const RPC_RESPONSE: BodyLimit = BodyLimit::from_const(16 * 1024 * 1024);
 /// One server-sent event, from its first byte to the terminating blank line: 4 MiB.
-pub const SSE_EVENT: BodyLimit = limit(4 * 1024 * 1024);
+pub const SSE_EVENT: BodyLimit = BodyLimit::from_const(4 * 1024 * 1024);
 /// Non-2xx error body kept for diagnostics: 4 KiB.
-pub const ERROR_BODY: BodyLimit = limit(4 * 1024);
+pub const ERROR_BODY: BodyLimit = BodyLimit::from_const(4 * 1024);
 
 impl From<BodyReadError> for A2aError {
     fn from(e: BodyReadError) -> Self {
@@ -138,6 +131,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn tracker(limit: usize) -> EventSizeTracker {
         EventSizeTracker::new(BodyLimit::new(limit).unwrap())
@@ -182,7 +176,7 @@ mod tests {
                 break;
             }
         }
-        assert!(matches!(result, Err(A2aError::BodyTooLarge { limit: 16 })));
+        assert_matches!(result, Err(A2aError::BodyTooLarge { limit: 16 }));
     }
 
     #[test]
@@ -206,10 +200,10 @@ mod tests {
         ));
         assert!(capped.next().await.unwrap().is_ok());
         assert!(capped.next().await.unwrap().is_ok());
-        assert!(matches!(
+        assert_matches!(
             capped.next().await.unwrap(),
             Err(A2aError::BodyTooLarge { .. })
-        ));
+        );
         assert!(capped.next().await.is_none());
     }
 }

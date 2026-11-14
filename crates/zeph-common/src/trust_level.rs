@@ -13,6 +13,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::McpServerId;
+
 /// Trust tier controlling what a skill is allowed to do.
 ///
 /// The ordering from most to least trusted is: `Trusted` → `Verified` → `Quarantined` →
@@ -492,7 +494,7 @@ pub enum ToolResultSource {
     /// MCP-served tool; `server_id` is `None` when the serving server is unknown.
     Mcp {
         /// Id of the serving MCP server, when known.
-        server_id: Option<String>,
+        server_id: Option<McpServerId>,
     },
     /// Post-sanitize context text archived at compaction time; only its tier is known.
     Archived(UntrustedTier),

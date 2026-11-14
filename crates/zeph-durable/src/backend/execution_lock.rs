@@ -108,6 +108,7 @@ impl ExecutionLock {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn second_acquire_for_same_execution_fails() {
@@ -116,8 +117,7 @@ mod tests {
 
         let _first = ExecutionLock::acquire(dir.path(), id).expect("first acquire succeeds");
         let err = ExecutionLock::acquire(dir.path(), id).expect_err("second acquire must fail");
-        assert!(
-            matches!(err, DurableError::ExecutionLocked { execution_id, .. } if execution_id == id),
+        assert_matches!(err, DurableError::ExecutionLocked { execution_id, .. } if execution_id == id,
             "expected ExecutionLocked for the same execution_id, got {err:?}"
         );
     }

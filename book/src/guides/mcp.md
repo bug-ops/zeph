@@ -122,6 +122,8 @@ Add and remove MCP servers at runtime via chat commands:
 /mcp remove filesystem
 ```
 
+`/mcp list` also prints a "Shadowed tools" section when two servers expose tools with the same sanitized id; the first server wins dispatch and the TUI shows a `shadowed:N` badge for the affected server.
+
 After adding or removing a server, Qdrant registry syncs automatically for semantic tool matching.
 
 ## MCP Server Startup and Retry

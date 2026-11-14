@@ -4,6 +4,7 @@
 //! Single resolution of a tool result's classification, shared by every agent loop.
 
 use zeph_common::trust_level::{ToolProvenance, ToolResultSource, TurnContextTrust};
+use zeph_common::types::McpServerId;
 use zeph_sanitizer::{ContentSource, content_source, native_kind};
 
 use crate::executor::ClaimSource;
@@ -35,14 +36,15 @@ pub enum BodyAuthor {
 ///
 /// ```
 /// use zeph_common::trust_level::{ToolProvenance, TurnContextTrust};
+/// use zeph_common::types::McpServerId;
 /// use zeph_tools::{BodyAuthor, McpToolIds, ResolvedToolSource};
 ///
 /// let mut ids = McpToolIds::default();
-/// ids.insert("github_create_issue".into(), Some("github".into()));
+/// ids.insert("github_create_issue".into(), "github".into());
 /// let resolved = ResolvedToolSource::resolve("github_create_issue", None, None, &ids, BodyAuthor::Tool);
 /// assert_eq!(resolved.provenance(), ToolProvenance::Mcp);
 /// assert_eq!(resolved.trust(), TurnContextTrust::ExternalUntrusted);
-/// assert_eq!(resolved.mcp_server_id(), Some("github"));
+/// assert_eq!(resolved.mcp_server_id().map(McpServerId::as_str), Some("github"));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedToolSource(ToolResultSource);
@@ -74,13 +76,10 @@ impl ResolvedToolSource {
         Self(match (provenance, base) {
             (ToolProvenance::Native, base) => base,
             (ToolProvenance::Mcp, base) => ToolResultSource::Mcp {
-                server_id: mcp_ids
-                    .server_id(tool_name)
-                    .map(str::to_owned)
-                    .or(match base {
-                        ToolResultSource::Mcp { server_id } => server_id,
-                        ToolResultSource::Native(_) | ToolResultSource::Archived(_) => None,
-                    }),
+                server_id: mcp_ids.server_id(tool_name).cloned().or(match base {
+                    ToolResultSource::Mcp { server_id } => server_id,
+                    ToolResultSource::Native(_) | ToolResultSource::Archived(_) => None,
+                }),
             },
         })
     }
@@ -105,9 +104,9 @@ impl ResolvedToolSource {
 
     /// Serving MCP server id, when the source is MCP and the server is known.
     #[must_use]
-    pub fn mcp_server_id(&self) -> Option<&str> {
+    pub fn mcp_server_id(&self) -> Option<&McpServerId> {
         match &self.0 {
-            ToolResultSource::Mcp { server_id } => server_id.as_deref(),
+            ToolResultSource::Mcp { server_id } => server_id.as_ref(),
             ToolResultSource::Native(_) | ToolResultSource::Archived(_) => None,
         }
     }
@@ -127,7 +126,7 @@ mod tests {
 
     fn github_ids() -> McpToolIds {
         let mut ids = McpToolIds::default();
-        ids.insert("github_create_issue".into(), Some("github".into()));
+        ids.insert("github_create_issue".into(), "github".into());
         ids
     }
 
@@ -206,7 +205,10 @@ mod tests {
             &github_ids(),
             BodyAuthor::Tool,
         );
-        assert_eq!(live.mcp_server_id(), Some("github"));
+        assert_eq!(
+            live.mcp_server_id().map(McpServerId::as_str),
+            Some("github")
+        );
         let none = McpToolIds::default();
         let fallback = ResolvedToolSource::resolve(
             "read_overflow",
@@ -215,7 +217,10 @@ mod tests {
             &none,
             BodyAuthor::Tool,
         );
-        assert_eq!(fallback.mcp_server_id(), Some("old"));
+        assert_eq!(
+            fallback.mcp_server_id().map(McpServerId::as_str),
+            Some("old")
+        );
     }
 
     #[test]

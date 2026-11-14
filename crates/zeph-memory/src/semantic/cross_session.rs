@@ -188,14 +188,12 @@ impl SemanticMemory {
                 field: "db_instance_id".into(),
                 value: FieldValue::Text(qdrant.db_instance_id().to_owned()),
             }],
-            must_not: exclude_conversation_id
-                .map(|cid| {
-                    vec![FieldCondition {
-                        field: "conversation_id".into(),
-                        value: FieldValue::Integer(cid.0),
-                    }]
-                })
-                .unwrap_or_default(),
+            must_not: exclude_conversation_id.map_or_default(|cid| {
+                vec![FieldCondition {
+                    field: "conversation_id".into(),
+                    value: FieldValue::Integer(cid.0),
+                }]
+            }),
         });
 
         let points = qdrant

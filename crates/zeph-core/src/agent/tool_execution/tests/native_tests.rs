@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::assert_matches;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -1254,7 +1255,7 @@ async fn failed_stream_cancels_speculation_and_retries_once_without_streaming() 
         .await
         .unwrap();
 
-    assert!(matches!(response, Some(ChatResponse::Text { .. })));
+    assert_matches!(response, Some(ChatResponse::Text { .. }));
     assert_eq!(*calls.lock().unwrap(), 1, "exactly one non-stream call");
     assert!(!engine.has_match(&test_tool_call("echo")));
     assert_eq!(engine.metrics_snapshot().cancelled, 1);
@@ -1286,7 +1287,7 @@ async fn stamp_and_send_tier_start_sets_is_mcp_from_mcp_tool_ids() {
     ];
     let mut tool_started_ats = [Instant::now(), Instant::now()];
     let mut mcp_tool_ids = zeph_tools::McpToolIds::default();
-    mcp_tool_ids.insert_id("github_search_issues".to_string());
+    mcp_tool_ids.insert("github_search_issues".into(), "github".into());
 
     agent
         .stamp_and_send_tier_start(

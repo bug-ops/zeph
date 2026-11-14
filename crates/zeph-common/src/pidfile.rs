@@ -178,6 +178,7 @@ pub fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use tempfile::TempDir;
@@ -214,8 +215,9 @@ mod tests {
 
         let _guard = PidLockGuard::acquire(&path).expect("first acquire must succeed");
         let err = PidLockGuard::acquire(&path).expect_err("second acquire must fail");
-        assert!(
-            matches!(err, PidLockError::AlreadyRunning { .. }),
+        assert_matches!(
+            err,
+            PidLockError::AlreadyRunning { .. },
             "expected AlreadyRunning, got {err:?}"
         );
     }

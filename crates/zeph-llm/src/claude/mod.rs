@@ -72,7 +72,7 @@ use crate::status::StatusSender;
 
 use self::beta::{
     BetaFeature, BetaLatches, claude_error, is_mid_conversation_system_rejection,
-    names_rejected_header,
+    names_rejected_header, names_rejected_speed,
 };
 use self::cache::{build_cache_control, log_cache_usage, split_system_into_blocks, tool_cache_key};
 use self::guard::{PrefixGuard, WireFingerprint};
@@ -367,7 +367,10 @@ pub(crate) use self::types::StreamUsage;
 
 /// Publish `usage` as the last response's usage: counters, cache counters and the compaction
 /// iterations billed on top of them.
-fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage) {
+///
+/// `configured` is the speed the request was sent with; it stands in when the response reports
+/// no `usage.speed` or one this build does not know.
+fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage, configured: ServiceSpeed) {
     tracker.record(Some(ResponseUsage {
         input: usage.input_tokens,
         output: usage.output_tokens,
@@ -377,17 +380,24 @@ fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage) {
         }),
         reasoning: None,
         auxiliary: usage.auxiliary(),
-        speed: ServiceSpeed::Standard,
+        speed: usage
+            .speed
+            .and_then(types::ResponseSpeed::service_speed)
+            .unwrap_or(configured),
     }));
 }
 
 /// Record the usage a streamed response has reported so far, after `message_start` and again
 /// after `message_delta`; the second call carries the final counters and `iterations`.
 #[tracing::instrument(name = "llm.claude.stream_usage", skip_all)]
-pub(crate) fn record_stream_usage(tracker: &UsageTracker, usage: &StreamUsage) {
+pub(crate) fn record_stream_usage(
+    tracker: &UsageTracker,
+    usage: &StreamUsage,
+    configured: ServiceSpeed,
+) {
     let api = usage.to_api_usage();
     log_cache_usage(&api);
-    record_api_usage(tracker, &api);
+    record_api_usage(tracker, &api, configured);
 }
 
 /// A tool-path wire history together with what the prefix guard decided about it.
@@ -706,6 +716,15 @@ impl ClaudeProvider {
                 retry = true;
             }
         }
+        if self.speed == ServiceSpeed::Fast
+            && names_rejected_speed(status, text)
+            && self.beta_latches.reject_speed()
+        {
+            tracing::warn!(
+                "speed parameter rejected by Claude API; falling back to standard speed"
+            );
+            retry = true;
+        }
         retry
     }
 
@@ -779,9 +798,18 @@ impl ClaudeProvider {
         self
     }
 
+    /// Configured speed unless the API rejected the `speed` parameter earlier this session.
+    fn effective_speed(&self) -> ServiceSpeed {
+        if self.beta_latches.speed_rejected() {
+            ServiceSpeed::Standard
+        } else {
+            self.speed
+        }
+    }
+
     /// Wire `speed` member for request bodies; `None` unless fast mode is active.
     fn speed_wire(&self) -> Option<SpeedWire> {
-        match self.speed {
+        match self.effective_speed() {
             ServiceSpeed::Fast => Some(SpeedWire::Fast),
             ServiceSpeed::Standard => None,
         }
@@ -943,10 +971,7 @@ impl ClaudeProvider {
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 tracing::debug!(status = %status, body = %body, "Claude list_models_remote error body");
-                return Err(LlmError::ApiError {
-                    provider: "claude".into(),
-                    status: status.as_u16(),
-                });
+                return Err(LlmError::api_error("claude", status.as_u16(), &body));
             }
 
             let page: serde_json::Value = resp.json().await?;
@@ -1149,7 +1174,7 @@ impl ClaudeProvider {
     }
 
     fn store_cache_usage(&self, usage: &types::ApiUsage) {
-        record_api_usage(&self.usage, usage);
+        record_api_usage(&self.usage, usage, self.effective_speed());
     }
 
     fn has_image_parts(messages: &[Message]) -> bool {
@@ -1496,7 +1521,7 @@ impl ClaudeProvider {
                 if self.handle_beta_rejection(status, &text, "") {
                     continue;
                 }
-                tracing::error!("Claude API error {status}: {text}");
+                crate::http::log_api_error_body("claude", status, &text);
                 return Err(claude_error(status, &text));
             }
 
@@ -1621,7 +1646,7 @@ impl ClaudeProvider {
                 {
                     continue;
                 }
-                tracing::error!("Claude API error {status}: {text}");
+                crate::http::log_api_error_body("claude", status, &text);
                 return Err(claude_error(status, &text));
             }
 
@@ -1632,6 +1657,7 @@ impl ClaudeProvider {
                 &self.stream_limits,
                 &self.provider_name,
                 Arc::clone(&self.usage),
+                self.effective_speed(),
             );
             return Ok(translate_replay_events(
                 events,
@@ -1728,7 +1754,7 @@ impl ClaudeProvider {
                     body.thinking = self.build_thinking_param().0;
                     continue;
                 }
-                tracing::error!("Claude API error {status}: {text}");
+                crate::http::log_api_error_body("claude", status, &text);
                 return Err(claude_error(status, &text));
             }
             let resp: ToolApiResponse = serde_json::from_str(&text)?;
@@ -1812,7 +1838,7 @@ impl ClaudeProvider {
                     body.thinking = self.build_thinking_param().0;
                     continue;
                 }
-                tracing::error!("Claude API error {status}: {text}");
+                crate::http::log_api_error_body("claude", status, &text);
                 return Err(claude_error(status, &text));
             }
             let resp: ToolApiResponse = serde_json::from_str(&text)?;
@@ -1857,7 +1883,7 @@ impl ClaudeProvider {
                 if self.handle_beta_rejection(status, &text, "streaming") {
                     continue;
                 }
-                tracing::error!("Claude API streaming request error {status}: {text}");
+                crate::http::log_api_error_body("claude", status, &text);
                 return Err(claude_error(status, &text));
             }
 
@@ -1899,6 +1925,7 @@ impl LlmProvider for ClaudeProvider {
             &self.stream_limits,
             &self.provider_name,
             Arc::clone(&self.usage),
+            self.effective_speed(),
         ))
     }
 
@@ -1984,10 +2011,7 @@ impl LlmProvider for ClaudeProvider {
     }
 
     fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
-        self.usage.last().map(|usage| ResponseUsage {
-            speed: self.speed,
-            ..usage
-        })
+        self.usage.last()
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {
@@ -2156,7 +2180,7 @@ impl LlmProvider for ClaudeProvider {
                 {
                     continue;
                 }
-                tracing::error!("Claude API error {status}: {text}");
+                crate::http::log_api_error_body("claude", status, &text);
                 return Err(claude_error(status, &text));
             }
 

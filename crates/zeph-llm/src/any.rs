@@ -295,19 +295,14 @@ impl AnyProvider {
                     .collect())
             }
             // Triage delegates list_models to the first tier provider (best effort).
-            AnyProvider::Triage(p) => Ok(p
-                .name()
-                .split(':')
-                .next()
-                .map(|_| {
-                    vec![crate::model_cache::RemoteModelInfo {
-                        display_name: p.name().to_owned(),
-                        id: p.name().to_owned(),
-                        context_window: p.context_window(),
-                        created_at: None,
-                    }]
-                })
-                .unwrap_or_default()),
+            AnyProvider::Triage(p) => Ok(p.name().split(':').next().map_or_default(|_| {
+                vec![crate::model_cache::RemoteModelInfo {
+                    display_name: p.name().to_owned(),
+                    id: p.name().to_owned(),
+                    context_window: p.context_window(),
+                    created_at: None,
+                }]
+            })),
             #[cfg(feature = "candle")]
             AnyProvider::Candle(_) => Ok(vec![]),
             // Gonka nodes have no model discovery API.
@@ -832,6 +827,7 @@ mod tests {
     use crate::ollama::OllamaProvider;
     use crate::provider::MessageMetadata;
     use crate::provider::Role;
+    use std::assert_matches;
 
     #[test]
     fn any_ollama_context_window_delegates() {
@@ -1350,8 +1346,9 @@ mod tests {
             presence_penalty: None,
         };
         let patched = provider.with_generation_overrides(overrides);
-        assert!(
-            matches!(patched, AnyProvider::Ollama(_)),
+        assert_matches!(
+            patched,
+            AnyProvider::Ollama(_),
             "variant must remain Ollama after with_generation_overrides"
         );
     }
@@ -1449,10 +1446,7 @@ mod tests {
             "e".into(),
         ));
         let err = provider.set_thinking_budget(Some(1024)).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::LlmError::ModelCapabilityMismatch { .. }
-        ));
+        assert_matches!(err, crate::LlmError::ModelCapabilityMismatch { .. });
         assert!(err.to_string().contains("ollama"), "{err}");
     }
 
@@ -1519,10 +1513,7 @@ mod tests {
         let err = provider
             .apply_reasoning_effort(ReasoningEffort::Low)
             .unwrap_err();
-        assert!(matches!(
-            err,
-            crate::LlmError::ModelCapabilityMismatch { .. }
-        ));
+        assert_matches!(err, crate::LlmError::ModelCapabilityMismatch { .. });
     }
 
     #[test]

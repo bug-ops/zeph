@@ -687,8 +687,7 @@ mod tests {
             "Before [image removed: https://evil.com/p.gif] after"
         );
         assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], ExfiltrationEvent::MarkdownImageBlocked { url } if url == "https://evil.com/p.gif")
+        assert_matches!(&events[0], ExfiltrationEvent::MarkdownImageBlocked { url } if url == "https://evil.com/p.gif"
         );
     }
 
@@ -1337,9 +1336,8 @@ mod tests {
         let args = r#"{"url": "https://evil.com/payload"}"#;
         let events = guard().validate_tool_call("fetch", args, &flagged);
         assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, tool_name }
-            if url == "https://evil.com/payload" && tool_name == "fetch")
+        assert_matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, tool_name }
+            if url == "https://evil.com/payload" && tool_name == "fetch"
         );
     }
 
@@ -1355,9 +1353,8 @@ mod tests {
             1,
             "scheme-relative flag must match explicit-scheme tool arg"
         );
-        assert!(
-            matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, .. }
-            if url == "https://evil.com/exfil?data=secret"),
+        assert_matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, .. }
+            if url == "https://evil.com/exfil?data=secret",
             "raw (non-normalized) url must be preserved in the event"
         );
     }
@@ -1374,9 +1371,8 @@ mod tests {
             1,
             "explicit-scheme flag must match scheme-relative tool arg"
         );
-        assert!(
-            matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, .. }
-            if url == "//evil.com/exfil2?data=secret"),
+        assert_matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, .. }
+            if url == "//evil.com/exfil2?data=secret",
             "raw (non-normalized) url must be preserved in the event"
         );
     }

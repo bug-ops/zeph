@@ -179,8 +179,7 @@ pub struct SessionEventLog {
 fn file_identity(session_dir: &Path) -> Vec<u8> {
     session_dir
         .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|s| s.to_string_lossy().into_owned())
         .into_bytes()
 }
 

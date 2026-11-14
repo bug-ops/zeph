@@ -38,6 +38,30 @@ impl BodyLimit {
         }
     }
 
+    /// Builds a limit from a compile-time constant byte count.
+    ///
+    /// In a `const` context a zero value fails the build instead of panicking at runtime.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `bytes` is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::http::BodyLimit;
+    ///
+    /// const LIMIT: BodyLimit = BodyLimit::from_const(4096);
+    /// assert_eq!(LIMIT.get(), 4096);
+    /// ```
+    #[must_use]
+    pub const fn from_const(bytes: usize) -> Self {
+        match Self::new(bytes) {
+            Some(limit) => limit,
+            None => panic!("body limit must be non-zero"),
+        }
+    }
+
     /// Wraps an already validated non-zero byte count.
     #[must_use]
     pub const fn from_non_zero(bytes: NonZeroUsize) -> Self {

@@ -398,8 +398,9 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let event = rx.try_recv().expect("warm path should produce a result");
-        assert!(
-            matches!(event.result, EmbeddingGuardResult::Normal { .. }),
+        assert_matches!(
+            event.result,
+            EmbeddingGuardResult::Normal { .. },
             "identical embedding must produce Normal result, got {:?}",
             event.result
         );
@@ -421,8 +422,9 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let event = rx.try_recv().expect("warm path should produce a result");
-        assert!(
-            matches!(event.result, EmbeddingGuardResult::Anomalous { .. }),
+        assert_matches!(
+            event.result,
+            EmbeddingGuardResult::Anomalous { .. },
             "orthogonal embedding must produce Anomalous result, got {:?}",
             event.result
         );

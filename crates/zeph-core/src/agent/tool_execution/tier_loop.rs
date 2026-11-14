@@ -444,7 +444,7 @@ impl<C: Channel> Agent<C> {
     fn prepare_tool_dispatch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
-        mcp_tool_ids: zeph_tools::McpToolIds,
+        mcp_tool_ids: std::sync::Arc<zeph_tools::McpToolIds>,
     ) -> ToolDispatchContext {
         let tafc_enabled = self.tool_orchestrator.tafc.enabled;
         // PAAC secret unmasking (#5437): resolved once per dispatch batch (Arc clone, cheap)
@@ -709,14 +709,13 @@ impl<C: Channel> Agent<C> {
                 .services
                 .speculation_engine
                 .as_ref()
-                .map(|engine| {
+                .map_or_default(|engine| {
                     tier.indices
                         .iter()
                         .copied()
                         .filter(|&idx| engine.has_match(&calls[idx]))
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             self.stamp_and_send_tier_start(
                 &tier.indices,
                 tool_calls,
@@ -1680,10 +1679,10 @@ impl<C: Channel> Agent<C> {
 
         // Extract goal_summary from causal pre-probe response before it is consumed.
         // Used by shadow memory below; empty when causal IPI is disabled (deviation_score = 0.0).
-        let goal_summary_for_shadow: String = causal_pre_response
-            .as_ref()
-            .map(|(pre, _)| zeph_common::text::truncate_to_bytes_ref(pre, 100).to_owned())
-            .unwrap_or_default();
+        let goal_summary_for_shadow: String =
+            causal_pre_response.as_ref().map_or_default(|(pre, _)| {
+                zeph_common::text::truncate_to_bytes_ref(pre, 100).to_owned()
+            });
 
         self.run_causal_ipi_post_probe(causal_pre_response, &result_parts)
             .await;
@@ -1993,7 +1992,12 @@ impl<C: Channel> Agent<C> {
         ))
     }
 
-    #[tracing::instrument(name = "core.tool.native_loop", skip_all, level = "debug", err)]
+    #[tracing::instrument(
+        name = "core.tool.native_loop",
+        skip_all,
+        level = "debug",
+        err(level = "debug")
+    )]
     pub(super) async fn process_response_native_tools(
         &mut self,
     ) -> Result<(), crate::agent::error::AgentError> {
@@ -2150,7 +2154,7 @@ impl<C: Channel> Agent<C> {
         skip_all,
         level = "debug",
         fields(iteration),
-        err
+        err(level = "debug")
     )]
     async fn process_single_native_turn(
         &mut self,

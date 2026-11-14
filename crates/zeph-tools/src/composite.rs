@@ -185,8 +185,7 @@ impl<T: ToolExecutor> ToolExecutor for OptionalExecutor<T> {
     fn tool_definitions(&self) -> Vec<ToolDef> {
         self.0
             .as_ref()
-            .map(ToolExecutor::tool_definitions)
-            .unwrap_or_default()
+            .map_or_default(ToolExecutor::tool_definitions)
     }
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
@@ -253,8 +252,7 @@ impl<T: ToolExecutor> ToolExecutor for OptionalExecutor<T> {
     fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
         self.0
             .as_ref()
-            .map(ToolExecutor::checkpoint_list)
-            .unwrap_or_default()
+            .map_or_default(ToolExecutor::checkpoint_list)
     }
 }
 

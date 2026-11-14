@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use parking_lot::Mutex;
 
-use super::coe::{CoeDecision, run_coe};
+use super::coe::{CoeDecision, CoeOutcome, CoeRouter, run_coe};
 use super::embed_cache::TurnEmbedCache;
 use super::{RouterProvider, RouterStrategy, messages_contain_image, strip_image_parts};
 use crate::embed::owned_strs;
@@ -22,6 +22,24 @@ use zeph_common::math::cosine_similarity;
 
 const EMBED_MAX_RETRIES: u32 = 3;
 const EMBED_BASE_DELAY_MS: u64 = 500;
+
+impl RouterProvider {
+    /// Apply a [`CoeOutcome`]: update quality outcomes after an escalation, fold the shadow
+    /// call's usage into the served usage as `auxiliary`, and return the final text.
+    fn finish_coe(&self, coe: &CoeRouter, outcome: CoeOutcome) -> String {
+        if matches!(
+            outcome.decision,
+            CoeDecision::EscalateIntra | CoeDecision::EscalateInter
+        ) {
+            self.record_quality_outcome(&outcome.primary_name, false);
+            self.record_quality_outcome(coe.secondary.name(), true);
+        }
+        if let Some(shadow) = outcome.shadow_usage {
+            self.state.record_shadow_usage(shadow);
+        }
+        outcome.text
+    }
+}
 
 /// Record a provider error during the fallback loop and emit a warning log.
 ///
@@ -98,10 +116,7 @@ impl LlmProvider for RouterProvider {
             let turn_cache = Mutex::new(TurnEmbedCache::default());
 
             // Pre-compute query embedding once for quality gate (fail-open on error).
-            let query_text = messages
-                .last()
-                .map(Message::to_llm_content)
-                .unwrap_or_default();
+            let query_text = messages.last().map_or_default(Message::to_llm_content);
             let query_embedding = if router.quality_gate.is_some() && !query_text.is_empty() {
                 router.embed_cached(query_text, &turn_cache).await.ok()
             } else {
@@ -117,7 +132,14 @@ impl LlmProvider for RouterProvider {
 
             for (idx, p) in providers.iter().enumerate() {
                 let start = std::time::Instant::now();
-                match p.chat_with_extras(&messages).await {
+                let result = if router.coe.is_some() {
+                    p.chat_with_extras(&messages).await
+                } else {
+                    p.chat(&messages)
+                        .await
+                        .map(|r| (r, crate::provider::ChatExtras::default()))
+                };
+                match result {
                     Ok((r, extras)) => {
                         router.state.record_served(p);
                         router.record_availability(
@@ -158,7 +180,7 @@ impl LlmProvider for RouterProvider {
 
                             // CoE: pass already-obtained primary result to avoid double call.
                             if let Some(ref coe_router) = router.coe
-                                && let Ok((final_r, pname, decision)) = run_coe(
+                                && let Ok(outcome) = run_coe(
                                     coe_router,
                                     p.name().to_owned(),
                                     r.clone(),
@@ -167,15 +189,7 @@ impl LlmProvider for RouterProvider {
                                 )
                                 .await
                             {
-                                if matches!(
-                                    decision,
-                                    CoeDecision::EscalateIntra | CoeDecision::EscalateInter
-                                ) {
-                                    router.record_quality_outcome(&pname, false);
-                                    router
-                                        .record_quality_outcome(coe_router.secondary.name(), true);
-                                }
-                                return Ok(final_r);
+                                return Ok(router.finish_coe(coe_router, outcome));
                             }
 
                             return Ok(r);
@@ -186,7 +200,7 @@ impl LlmProvider for RouterProvider {
 
                         // CoE: pass already-obtained primary result to avoid double call.
                         if let Some(ref coe_router) = router.coe
-                            && let Ok((final_r, pname, decision)) = run_coe(
+                            && let Ok(outcome) = run_coe(
                                 coe_router,
                                 p.name().to_owned(),
                                 r.clone(),
@@ -195,14 +209,7 @@ impl LlmProvider for RouterProvider {
                             )
                             .await
                         {
-                            if matches!(
-                                decision,
-                                CoeDecision::EscalateIntra | CoeDecision::EscalateInter
-                            ) {
-                                router.record_quality_outcome(&pname, false);
-                                router.record_quality_outcome(coe_router.secondary.name(), true);
-                            }
-                            return Ok(final_r);
+                            return Ok(router.finish_coe(coe_router, outcome));
                         }
 
                         return Ok(r);
@@ -267,8 +274,7 @@ impl LlmProvider for RouterProvider {
                 // this is a known pre-1.0 limitation — same as Thompson stream mode.
                 let query = messages
                     .last()
-                    .map(crate::provider::Message::to_llm_content)
-                    .unwrap_or_default();
+                    .map_or_default(crate::provider::Message::to_llm_content);
                 let p = router
                     .bandit_select_provider(query)
                     .await
@@ -672,8 +678,7 @@ impl LlmProvider for RouterProvider {
             if router.strategy == RouterStrategy::Bandit {
                 let query = messages
                     .last()
-                    .map(crate::provider::Message::to_llm_content)
-                    .unwrap_or_default();
+                    .map_or_default(crate::provider::Message::to_llm_content);
                 let p = router
                     .bandit_select_provider(query)
                     .await

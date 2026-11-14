@@ -708,14 +708,13 @@ fn session_event_envelope_to_dtos(
         zeph_session::SessionEvent::ToolCall { id, name, input } => {
             serde_json::to_string(&serde_json::json!({ "id": id, "name": name, "input": input }))
                 .ok()
-                .map(|payload| {
+                .map_or_default(|payload| {
                     vec![SessionEventDto {
                         event_type: "tool_call".to_owned(),
                         payload,
                         created_at,
                     }]
                 })
-                .unwrap_or_default()
         }
         zeph_session::SessionEvent::ToolResult { id, output, .. } => {
             vec![SessionEventDto {

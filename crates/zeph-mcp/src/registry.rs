@@ -17,6 +17,7 @@ pub use zeph_llm::provider::EmbedFuture;
 
 use crate::error::McpError;
 use crate::tool::McpTool;
+use zeph_common::types::McpServerId;
 
 const COLLECTION_NAME: &str = "zeph_mcp_tools";
 
@@ -35,7 +36,7 @@ struct McpToolOwned {
     qualified: String,
     hash: String,
     description: String,
-    server_id: String,
+    server_id: McpServerId,
     tool_name: String,
     embed_text: String,
 }
@@ -81,7 +82,7 @@ impl Embeddable for McpToolOwned {
 
 fn compute_hash(tool: &McpTool) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(tool.server_id.as_bytes());
+    hasher.update(tool.server_id.as_str().as_bytes());
     hasher.update(tool.name.as_bytes());
     hasher.update(tool.description.as_bytes());
     hasher.update(tool.input_schema.to_string().as_bytes());
@@ -223,7 +224,7 @@ impl McpToolRegistry {
         results
             .into_iter()
             .filter_map(|point| {
-                let server_id = point.payload.get("server_id")?.as_str()?.to_owned();
+                let server_id = McpServerId::from(point.payload.get("server_id")?.as_str()?);
                 let name = point.payload.get("tool_name")?.as_str()?.to_owned();
                 let description = point
                     .payload

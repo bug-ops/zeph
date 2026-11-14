@@ -18,9 +18,9 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use zeph_common::task_supervisor::BlockingHandle;
-use zeph_common::trust_level::TranscriptTrustSchema;
+use zeph_common::trust_level::{TranscriptTrustSchema, TurnContextTrust};
 use zeph_common::{SkillTrustLevel, TaskSupervisor};
-use zeph_config::{ContentIsolationConfig, McpServerConfig};
+use zeph_config::ContentIsolationConfig;
 use zeph_llm::provider::Message;
 
 use crate::def::{PermissionMode, SubAgentDef};
@@ -139,8 +139,12 @@ pub struct SpawnContext {
     pub parent_provider_name: Option<String>,
     /// Current spawn depth (0 = top-level agent).
     pub spawn_depth: u32,
-    /// MCP tool names available in the parent's tool executor (for diagnostics).
-    pub mcp_tool_names: Vec<String>,
+    /// Live MCP tool-id registry of the parent agent, the authority for classifying MCP results.
+    ///
+    /// `Some` is read per batch (`snapshot()`), so spawn and resume always see the parent's
+    /// current tool list. `None` (for example `SpawnContext::default()`) falls back to the live
+    /// executor definitions per batch, so a missing handle never classifies MCP output as native.
+    pub mcp_tool_ids: Option<zeph_tools::McpToolIdsHandle>,
     /// Seeded trajectory risk score from the parent sentinel (spec 050 §4).
     ///
     /// When `Some`, the subagent's `TrajectorySentinel` starts with this pre-seeded score
@@ -163,12 +167,6 @@ pub struct SpawnContext {
     /// Injected alongside [`orchestrator_name`][Self::orchestrator_name] when both are set.
     /// Omitted from the identity header when only `orchestrator_name` is provided.
     pub orchestrator_role: Option<String>,
-    /// Per-session MCP servers to inject into this subagent's tool name annotations.
-    ///
-    /// The parent is responsible for connecting these servers and including them in the
-    /// `tool_executor` passed to [`SubAgentManager::spawn`]. This field only carries the
-    /// server metadata so the subagent's system prompt lists the additional tool names.
-    pub session_mcp_servers: Vec<McpServerConfig>,
     /// Maximum trust level cap inherited from the parent agent or orchestration policy.
     ///
     /// When `Some(cap)`, the spawned sub-agent's effective trust level is clamped to
@@ -328,6 +326,33 @@ pub struct SpawnContext {
     /// automatically — a sub-agent that spawns its own children must clone the `Arc` from its
     /// received `SpawnContext`, or the grandchild runs without the verifiers.
     pub pre_execution_verifiers: PreExecutionVerifiers,
+
+    /// Where the sub-agent loop records a pre-dispatch verifier block, so it leaves the same
+    /// metric, security event and audit row as a block in the parent loop (#7055).
+    ///
+    /// `None` (the default) keeps blocks WARN-only: only tests and embedders without metrics or
+    /// an audit log leave it empty. `zeph-core`'s `build_spawn_context` fills it from the parent.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically — a sub-agent that spawns its own children must clone the `Arc` from its
+    /// received `SpawnContext`, or the grandchild's blocks go unrecorded.
+    pub block_sink: Option<Arc<dyn zeph_tools::PreDispatchBlockSink>>,
+
+    /// Highest trust tier tagged on the parent's full conversation context at spawn (#7027).
+    ///
+    /// Computed from the whole context, not the windowed
+    /// [`parent_messages`][Self::parent_messages], so a tagged tool result that the window
+    /// dropped still counts. Persisted in the transcript sidecar and folded into the knowledge
+    /// import trust decision. `None` when no message carried a tag.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically — a sub-agent that spawns its own children must fold its own inherited
+    /// floor into the child's context.
+    pub inherited_trust: Option<TurnContextTrust>,
 }
 
 /// Shared, immutable list of pre-execution verifiers (`FirewallVerifier`,
@@ -433,8 +458,6 @@ pub struct SubAgentHandle {
     pub started_at_str: String,
     /// Resolved transcript directory at spawn time; `None` if transcripts were disabled.
     pub transcript_dir: Option<PathBuf>,
-    /// MCP tool names available at spawn time, persisted for transcript meta on collect.
-    pub mcp_tool_names: Vec<String>,
     /// Peer-messaging route registration for this sub-agent (spec
     /// `087-subagent-peer-messaging`).
     ///
@@ -448,6 +471,11 @@ pub struct SubAgentHandle {
     /// on collect. A session resumed from a legacy transcript stays
     /// [`TranscriptTrustSchema::Legacy`]: its LLM context carries untagged tool output.
     pub trust_schema: TranscriptTrustSchema,
+    /// Trust floor this session inherited, copied into the final meta sidecar on collect.
+    ///
+    /// Carried here, not re-read from the spawn-time sidecar, so a failed sidecar write or read
+    /// can never drop the floor (a missing floor would import the transcript below it).
+    pub inherited_trust: Option<TurnContextTrust>,
     /// Full ID of the session this one was resumed from, persisted on collect.
     pub resumed_from: Option<String>,
 }
@@ -485,9 +513,9 @@ impl SubAgentHandle {
             secret_tx,
             started_at_str: String::new(),
             transcript_dir: None,
-            mcp_tool_names: Vec::new(),
             peer: None,
             trust_schema: TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
             resumed_from: None,
         }
     }

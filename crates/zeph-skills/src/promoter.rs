@@ -212,6 +212,7 @@ pub fn parse_promotion_response(response: &str) -> (PromotionRecommendation, Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn batch_hash_deterministic() {
@@ -264,8 +265,7 @@ mod tests {
         let response =
             "body_enrichment\n---\nname: code-review\ndescription: Review code.\n---\n\n# Body\n";
         let (rec, name) = parse_promotion_response(response);
-        assert!(
-            matches!(&rec, PromotionRecommendation::BodyEnrichment { integrated_body: b } if b.contains("name: code-review")),
+        assert_matches!(&rec, PromotionRecommendation::BodyEnrichment { integrated_body: b } if b.contains("name: code-review"),
             "unexpected recommendation: {rec:?}"
         );
         assert!(name.is_none());
@@ -282,8 +282,7 @@ mod tests {
         let response =
             "new_skill deploy-ci\n---\nname: deploy-ci\ndescription: Deploy CI.\n---\n\n# Body\n";
         let (rec, name) = parse_promotion_response(response);
-        assert!(
-            matches!(&rec, PromotionRecommendation::NewSkill { name: n, .. } if n == "deploy-ci"),
+        assert_matches!(&rec, PromotionRecommendation::NewSkill { name: n, .. } if n == "deploy-ci",
             "unexpected: {rec:?}"
         );
         assert_eq!(name.as_deref(), Some("deploy-ci"));

@@ -43,8 +43,7 @@ impl<C: Channel> Agent<C> {
                 let file_str = policy_config
                     .policy_file
                     .as_deref()
-                    .map(|f| format!(", file: {f}"))
-                    .unwrap_or_default();
+                    .map_or_default(|f| format!(", file: {f}"));
                 format!(
                     "Policy: {status_str}, default: {default_str}, rules: {rule_count}{file_str}"
                 )

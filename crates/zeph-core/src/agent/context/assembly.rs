@@ -92,10 +92,7 @@ impl zeph_agent_context::state::SecurityEventSink for SecuritySink<'_> {
         if let Some(tx) = &self.0 {
             let event = crate::metrics::SecurityEvent::new(category, source, detail);
             tx.send_modify(|m| {
-                if m.security_events.len() >= crate::metrics::SECURITY_EVENT_CAP {
-                    m.security_events.pop_front();
-                }
-                m.security_events.push_back(event);
+                m.push_security_event(event);
             });
         }
     }
@@ -2632,6 +2629,7 @@ impl<C: Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_context::assembler::memory_first_keep_tail;
     use zeph_llm::provider::{Message, MessagePart, Role};
 
@@ -3231,8 +3229,9 @@ mod tests {
         );
 
         // The branch should produce Grouped (similarity ≈ 0.994 > 0.50)
-        assert!(
-            matches!(group_result, GroupResult::Grouped(_)),
+        assert_matches!(
+            group_result,
+            GroupResult::Grouped(_),
             "expected Grouped when pair exceeds threshold"
         );
 
@@ -3294,8 +3293,9 @@ mod tests {
             threshold,
         );
 
-        assert!(
-            matches!(result, GroupResult::Flat(_)),
+        assert_matches!(
+            result,
+            GroupResult::Flat(_),
             "below-threshold pair must produce flat fallback"
         );
     }
@@ -3400,8 +3400,9 @@ mod tests {
             },
             0.50_f32,
         );
-        assert!(
-            matches!(result, GroupResult::Grouped(_)),
+        assert_matches!(
+            result,
+            GroupResult::Grouped(_),
             "correctly rebuilt indices must produce Grouped"
         );
 
@@ -3423,8 +3424,9 @@ mod tests {
         // The stale path looks up embedding for active_skills[0]="entry" at store-idx 0 —
         // which returns EMBED_FILTERED (orthogonal to EMBED_SUPPORT), so cosine=0 → Flat.
         // This documents the incorrect behaviour that the fix prevents.
-        assert!(
-            matches!(stale_result, GroupResult::Flat(_)),
+        assert_matches!(
+            stale_result,
+            GroupResult::Flat(_),
             "stale indices cause wrong (flat) grouping when entry/support would be grouped"
         );
     }
@@ -3625,6 +3627,121 @@ mod tests {
                 .is_none(),
             "without --keep-plan, pending_goal_embedding must be cleared"
         );
+    }
+
+    fn memcot_accumulator() -> crate::agent::memcot::SemanticStateAccumulator {
+        crate::agent::memcot::SemanticStateAccumulator::new(Arc::new(
+            zeph_config::MemCotConfig::default(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn reset_conversation_cancelled_mid_await_clears_status() {
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.session.status_tx = Some(tx);
+        let acc = memcot_accumulator();
+        let guard = acc.state_write_guard_for_test().await;
+        agent.services.memory.extraction.memcot_accumulator = Some(acc);
+
+        let mut fut = Box::pin(agent.reset_conversation(false, true));
+        assert!(
+            futures::poll!(fut.as_mut()).is_pending(),
+            "reset must be blocked on the accumulator after raising its status"
+        );
+        drop(fut);
+        drop(guard);
+
+        let update = tokio::time::timeout(std::time::Duration::from_millis(100), rx.next())
+            .await
+            .expect("dropping the reset future must clear its status");
+        assert_eq!(update, Some(zeph_llm::status::StatusUpdate::Clear));
+    }
+
+    #[tokio::test]
+    async fn load_and_resume_cancelled_mid_await_clears_status() {
+        let memory = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let log = zeph_session::SessionEventLog::open(&zeph_session::session_dir(&data_dir, "s1"))
+            .await
+            .unwrap();
+        log.append(
+            None,
+            None,
+            zeph_session::SessionEvent::SessionStarted {
+                session_id: "s1".to_owned(),
+                cwd: "/repo".to_owned(),
+                provider_name: "claude".to_owned(),
+                model: "opus".to_owned(),
+                forked_from: None,
+            },
+        )
+        .await
+        .unwrap();
+        store
+            .update_seq("s1", log.last_seq().unwrap(), 1)
+            .await
+            .unwrap();
+        drop(log);
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(Arc::new(memory), cid, 50, 5, 100)
+        .with_session_persistence_config(Some(session_config));
+        agent.services.session.status_tx = Some(tx);
+        let acc = memcot_accumulator();
+        let guard = acc.state_write_guard_for_test().await;
+        agent.services.memory.extraction.memcot_accumulator = Some(acc);
+
+        let session_id = zeph_common::SessionId::new("s1");
+        // Hydration does real I/O before the status is raised, so a single poll is not enough;
+        // the timeout drops the future once it is blocked on the held accumulator lock.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            agent.load_and_resume_conversation(&session_id, cid),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "replay must be blocked on the accumulator after raising its status"
+        );
+        drop(guard);
+
+        let update = tokio::time::timeout(std::time::Duration::from_millis(100), rx.next())
+            .await
+            .expect("dropping the replay future must clear its status");
+        assert_eq!(update, Some(zeph_llm::status::StatusUpdate::Clear));
     }
 
     #[tokio::test]
@@ -4227,6 +4344,8 @@ mod tests {
             name: "other_tool".into(),
             ..embed_dedup_mcp_tool()
         };
+        let (writer, reader) = zeph_mcp::McpToolList::new(Vec::new());
+        agent.services.mcp.tool_list = Some(writer);
         agent
             .services
             .mcp
@@ -4239,18 +4358,15 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let shared = Arc::new(parking_lot::RwLock::new(Vec::new()));
-        agent.services.mcp.shared_tools = Some(Arc::clone(&shared));
-
         let mut cache = QueryEmbedCache::default();
         agent.discover_mcp_tools_for_turn("query", &mut cache).await;
-        assert_eq!(shared.read().len(), 1);
+        assert_eq!(reader.read().len(), 1);
 
         let mut failed = QueryEmbedCache::Failed;
         agent
             .discover_mcp_tools_for_turn("query", &mut failed)
             .await;
-        let names: Vec<String> = shared.read().iter().map(|t| t.name.clone()).collect();
+        let names: Vec<String> = reader.read().iter().map(|t| t.name.clone()).collect();
         assert_eq!(
             names,
             ["mcp_tool"],

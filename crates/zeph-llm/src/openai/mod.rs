@@ -30,6 +30,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::LlmError;
 use crate::tool_desc::build_tool_description;
@@ -206,6 +208,8 @@ pub struct OpenAiProvider {
     /// tracking and provider selection can distinguish between multiple configured `OpenAI`
     /// instances (#5892).
     provider_name: String,
+    /// Set once the endpoint rejected a logprobs request; shared by clones, later calls omit it.
+    logprobs_rejected: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -234,6 +238,7 @@ impl fmt::Debug for OpenAiProvider {
             )
             .field("vision_override", &self.vision_override)
             .field("provider_name", &self.provider_name)
+            .field("logprobs_rejected", &self.logprobs_rejected)
             .finish()
     }
 }
@@ -258,6 +263,7 @@ impl Clone for OpenAiProvider {
             completion_tokens_override: self.completion_tokens_override,
             vision_override: self.vision_override,
             provider_name: self.provider_name.clone(),
+            logprobs_rejected: Arc::clone(&self.logprobs_rejected),
         }
     }
 }
@@ -288,6 +294,7 @@ impl OpenAiProvider {
             completion_tokens_override: cfg.completion_tokens_param,
             vision_override: cfg.vision,
             provider_name: "openai".to_owned(),
+            logprobs_rejected: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -498,17 +505,14 @@ impl OpenAiProvider {
     /// Returns `(temperature, top_p, frequency_penalty, presence_penalty)`.
     /// All values are `None` when no override is set.
     fn generation_params(&self) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
-        self.generation_overrides
-            .as_ref()
-            .map(|ov| {
-                (
-                    ov.temperature,
-                    ov.top_p,
-                    ov.frequency_penalty,
-                    ov.presence_penalty,
-                )
-            })
-            .unwrap_or_default()
+        self.generation_overrides.as_ref().map_or_default(|ov| {
+            (
+                ov.temperature,
+                ov.top_p,
+                ov.frequency_penalty,
+                ov.presence_penalty,
+            )
+        })
     }
 
     /// Derive a filesystem-safe cache slug from the provider's base URL hostname.
@@ -560,17 +564,14 @@ impl OpenAiProvider {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             tracing::debug!(status = %status, body = %body, "OpenAI list_models_remote error body");
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(LlmError::api_error("openai", status.as_u16(), &body));
         }
 
         let page: serde_json::Value = resp.json().await?;
         let models: Vec<crate::model_cache::RemoteModelInfo> = page
             .get("data")
             .and_then(|v| v.as_array())
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|item| {
                         let id = item.get("id")?.as_str()?.to_string();
@@ -583,8 +584,7 @@ impl OpenAiProvider {
                         })
                     })
                     .collect()
-            })
-            .unwrap_or_default();
+            });
 
         let slug = self.cache_slug();
         let cache = crate::model_cache::ModelCache::for_slug(&slug);
@@ -617,7 +617,11 @@ impl OpenAiProvider {
     }
 
     #[tracing::instrument(name = "llm.openai.send_request", skip_all)]
-    async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
+    async fn send_request_once(
+        &self,
+        messages: &[Message],
+        logprobs: bool,
+    ) -> Result<(String, Option<f64>), LlmError> {
         let reasoning_effort = self.reasoning_effort.as_deref();
 
         let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
@@ -634,6 +638,7 @@ impl OpenAiProvider {
                 top_p,
                 frequency_penalty,
                 presence_penalty,
+                logprobs,
             };
             send_with_retry(
                 "OpenAI",
@@ -659,6 +664,7 @@ impl OpenAiProvider {
                 top_p,
                 frequency_penalty,
                 presence_penalty,
+                logprobs,
             };
             send_with_retry(
                 "OpenAI",
@@ -682,12 +688,36 @@ impl OpenAiProvider {
             self.store_cache_usage(usage);
         }
 
-        resp.choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .ok_or(LlmError::EmptyResponse {
-                provider: "openai".into(),
-            })
+        let choice = resp.choices.first().ok_or(LlmError::EmptyResponse {
+            provider: "openai".into(),
+        })?;
+        let entropy = choice.logprobs.as_ref().and_then(ChatLogprobs::mean_nll);
+        Ok((choice.message.content.clone(), entropy))
+    }
+
+    /// Sends a non-streaming chat request, optionally asking for token logprobs.
+    ///
+    /// When the endpoint rejects the logprobs request, retries once without it and latches
+    /// the rejection so later calls skip the parameter.
+    async fn send_request(
+        &self,
+        messages: &[Message],
+        want_logprobs: bool,
+    ) -> Result<(String, Option<f64>), LlmError> {
+        let logprobs = want_logprobs && !self.logprobs_rejected.load(Ordering::Relaxed);
+        match self.send_request_once(messages, logprobs).await {
+            Err(e) if logprobs && crate::provider::is_logprobs_rejection(&e) => {
+                let out = self.send_request_once(messages, false).await?;
+                if !self.logprobs_rejected.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        provider = %self.provider_name,
+                        "endpoint rejected logprobs; CoE intra-entropy disabled for this provider"
+                    );
+                }
+                Ok(out)
+            }
+            other => other,
+        }
     }
 
     #[tracing::instrument(name = "llm.openai.send_stream_request", skip_all)]
@@ -710,6 +740,7 @@ impl OpenAiProvider {
             top_p,
             frequency_penalty,
             presence_penalty,
+            logprobs: false,
         };
 
         let response = send_with_retry(
@@ -729,7 +760,7 @@ impl OpenAiProvider {
 
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
-            tracing::error!("OpenAI API streaming request error {status}: {text}");
+            crate::http::log_api_error_body("openai", status, &text);
             return Err(crate::http::map_error_response(status, &text, "openai"));
         }
 
@@ -777,14 +808,15 @@ impl LlmProvider for OpenAiProvider {
         fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
-        self.send_request(messages).await
+        Ok(self.send_request(messages, false).await?.0)
     }
 
     async fn chat_with_extras(
         &self,
         messages: &[Message],
     ) -> Result<(String, ChatExtras), LlmError> {
-        Ok((self.send_request(messages).await?, ChatExtras::default()))
+        let (text, entropy) = self.send_request(messages, true).await?;
+        Ok((text, ChatExtras { entropy }))
     }
 
     #[tracing::instrument(
@@ -831,17 +863,14 @@ impl LlmProvider for OpenAiProvider {
         let (status, body_text) = crate::http::read_response_body(response).await?;
 
         if !status.is_success() {
-            tracing::error!("OpenAI embedding API error {status}: {body_text}");
+            crate::http::log_api_error_body("openai", status, &body_text);
             if status == reqwest::StatusCode::BAD_REQUEST {
                 return Err(LlmError::InvalidInput {
                     provider: "openai".into(),
                     message: body_text,
                 });
             }
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(LlmError::api_error("openai", status.as_u16(), &body_text));
         }
 
         let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -888,17 +917,14 @@ impl LlmProvider for OpenAiProvider {
         let (status, body_text) = crate::http::read_response_body(response).await?;
 
         if !status.is_success() {
-            tracing::error!("OpenAI batch embedding API error {status}: {body_text}");
+            crate::http::log_api_error_body("openai", status, &body_text);
             if status == reqwest::StatusCode::BAD_REQUEST {
                 return Err(LlmError::InvalidInput {
                     provider: "openai".into(),
                     message: body_text,
                 });
             }
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(LlmError::api_error("openai", status.as_u16(), &body_text));
         }
 
         let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -1005,6 +1031,7 @@ impl LlmProvider for OpenAiProvider {
                 top_p,
                 frequency_penalty,
                 presence_penalty,
+                logprobs: false,
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -1021,6 +1048,7 @@ impl LlmProvider for OpenAiProvider {
             top_p,
             frequency_penalty,
             presence_penalty,
+            logprobs: false,
         };
         serde_json::to_value(&body)
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
@@ -1170,7 +1198,7 @@ impl LlmProvider for OpenAiProvider {
         let (status, text) = crate::http::read_response_body(response).await?;
 
         if status == reqwest::StatusCode::BAD_REQUEST {
-            tracing::warn!("OpenAI tool chat 400 bad request: {text}");
+            crate::http::log_api_error_body("openai", status, &text);
             if crate::error::body_is_context_length_error(&text) {
                 return Err(LlmError::ContextLengthExceeded);
             }
@@ -1196,11 +1224,8 @@ impl LlmProvider for OpenAiProvider {
         }
 
         if !status.is_success() {
-            tracing::error!("OpenAI API error {status}: {text}");
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            crate::http::log_api_error_body("openai", status, &text);
+            return Err(LlmError::api_error("openai", status.as_u16(), &text));
         }
 
         self.decode_tool_chat_response(&text, "openai")
@@ -1348,6 +1373,8 @@ struct VisionChatRequest<'a> {
     frequency_penalty: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    logprobs: bool,
 }
 
 fn has_image_parts<'a>(messages: impl Into<AgentVisible<'a>>) -> bool {
@@ -1441,6 +1468,8 @@ struct ChatRequest<'a> {
     frequency_penalty: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    logprobs: bool,
 }
 
 #[derive(Serialize)]
@@ -1484,6 +1513,25 @@ struct CompletionTokensDetails {
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    #[serde(default)]
+    logprobs: Option<ChatLogprobs>,
+}
+
+#[derive(Deserialize)]
+struct ChatLogprobs {
+    #[serde(default)]
+    content: Option<Vec<TokenLogprob>>,
+}
+
+#[derive(Deserialize)]
+struct TokenLogprob {
+    logprob: f64,
+}
+
+impl ChatLogprobs {
+    fn mean_nll(&self) -> Option<f64> {
+        crate::provider::mean_negative_logprob(self.content.iter().flatten().map(|t| t.logprob))
+    }
 }
 
 #[derive(Deserialize)]
@@ -2007,8 +2055,7 @@ impl crate::schema::SchemaVisitor for OpenAiStrictVisitor {
             let prop_keys: Vec<String> = obj
                 .get("properties")
                 .and_then(|p| p.as_object())
-                .map(|p| p.keys().cloned().collect())
-                .unwrap_or_default();
+                .map_or_default(|p| p.keys().cloned().collect());
             if !prop_keys.is_empty() {
                 obj.insert(
                     "required".to_owned(),

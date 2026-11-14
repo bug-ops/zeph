@@ -159,6 +159,7 @@ pub async fn resolve_and_validate(host: &str, port: u16) -> Result<Vec<SocketAdd
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -223,14 +224,14 @@ mod tests {
     #[tokio::test]
     async fn resolve_and_validate_rejects_loopback_hostname() {
         let err = resolve_and_validate("localhost", 443).await.unwrap_err();
-        assert!(matches!(err, ResolveError::PrivateAddress { .. }));
+        assert_matches!(err, ResolveError::PrivateAddress { .. });
         assert!(err.to_string().contains("SSRF protection"));
     }
 
     #[tokio::test]
     async fn resolve_and_validate_rejects_loopback_ip_literal() {
         let err = resolve_and_validate("127.0.0.1", 443).await.unwrap_err();
-        assert!(matches!(err, ResolveError::PrivateAddress { .. }));
+        assert_matches!(err, ResolveError::PrivateAddress { .. });
     }
 
     #[test]

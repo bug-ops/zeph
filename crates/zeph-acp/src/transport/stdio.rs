@@ -166,6 +166,7 @@ pub async fn serve_stdio(
         crate::transport::OWNER_KEY_LOCAL.to_owned(),
     )
     .await;
+    let teardown_state = Arc::clone(&state);
 
     // Run the agent on a dedicated thread with a larger stack.
     // Agent session tasks use spawn_local (futures are !Send), so the thread
@@ -194,6 +195,7 @@ pub async fn serve_stdio(
                     acp::ByteStreams::new(stdout, tokio::io::stdin().compat()),
                 )))
                 .map_err(|e| AcpError::Transport(e.to_string()));
+            rt.block_on(local.run_until(teardown_state.release_ide_mcp_on_close()));
             let _ = tx.send(result);
         })
         .map_err(|e| AcpError::Transport(format!("failed to spawn stdio agent thread: {e}")))?;
@@ -230,8 +232,15 @@ where
     R: futures::AsyncRead + Unpin + Send + 'static,
 {
     let state = build_agent_state(spawner, server_config, owner_key).await;
-    tokio::task::LocalSet::new()
-        .run_until(run_agent(state, acp::ByteStreams::new(writer, reader)))
+    let local = tokio::task::LocalSet::new();
+    let result = local
+        .run_until(run_agent(
+            Arc::clone(&state),
+            acp::ByteStreams::new(writer, reader),
+        ))
         .await
-        .map_err(|e| AcpError::Transport(e.to_string()))
+        .map_err(|e| AcpError::Transport(e.to_string()));
+    // The per-connection runtime drops after this returns, so queued releases would never run.
+    local.run_until(state.release_ide_mcp_on_close()).await;
+    result
 }

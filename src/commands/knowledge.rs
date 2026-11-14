@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
 use zeph_agent_persistence::graph::build_graph_extraction_config;
-use zeph_common::trust_level::TranscriptTrustSchema;
+use zeph_common::trust_level::{TranscriptTrustSchema, TurnContextTrust};
 use zeph_core::config::Config;
 use zeph_core::vault::Secret;
 use zeph_llm::any::AnyProvider;
@@ -916,25 +916,41 @@ fn build_shared_validator(
 /// Upper bound on a transcript meta sidecar; a real one is a few hundred bytes.
 const MAX_SIDECAR_BYTES: u64 = 64 * 1024;
 
-/// Trust-marker format of a transcript, read from its meta sidecar next to the JSONL file.
+/// Trust-relevant fields of a transcript meta sidecar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SidecarTrust {
+    /// Trust-marker format of the JSONL transcript.
+    schema: TranscriptTrustSchema,
+    /// Trust floor of the context the session started from.
+    inherited: Option<TurnContextTrust>,
+}
+
+impl SidecarTrust {
+    /// What an unreadable sidecar yields: the transcript imports as external content.
+    const FAIL_CLOSED: Self = Self {
+        schema: TranscriptTrustSchema::Legacy,
+        inherited: None,
+    };
+}
+
+/// Trust data of a transcript, read from its meta sidecar next to the JSONL file.
 ///
-/// Returns the schema recorded by the sidecar. Fail closed: a missing,
-/// unreadable, oversized or unparseable sidecar, one resolving outside `root` (INV-6), one that
-/// is not a regular file, or one written before per-result trust tagging yields
-/// `Legacy` so the transcript imports as external content.
-async fn transcript_trust_schema(root: &Path, path: &Path, task_id: &str) -> TranscriptTrustSchema {
+/// Fail closed: a missing, unreadable, oversized or unparseable sidecar, one resolving outside
+/// `root` (INV-6), one that is not a regular file, or one written before per-result trust
+/// tagging yields [`SidecarTrust::FAIL_CLOSED`] (schema `Legacy`).
+async fn transcript_sidecar_trust(root: &Path, path: &Path, task_id: &str) -> SidecarTrust {
     let Some(sidecar) = path
         .parent()
         .map(|dir| dir.join(format!("{task_id}.meta.json")))
     else {
-        return TranscriptTrustSchema::Legacy;
+        return SidecarTrust::FAIL_CLOSED;
     };
     let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || read_sidecar_schema(&root, &sidecar))
+    tokio::task::spawn_blocking(move || read_sidecar_trust(&root, &sidecar))
         .await
         .ok()
         .flatten()
-        .unwrap_or(TranscriptTrustSchema::Legacy)
+        .unwrap_or(SidecarTrust::FAIL_CLOSED)
 }
 
 /// The single per-run summary line for transcripts imported without a per-result trust marker,
@@ -956,7 +972,7 @@ fn unmarked_transcripts_warning(schemas: &[TranscriptTrustSchema]) -> Option<Str
 ///
 /// The path is canonicalized (so a symlink to `/dev/zero` or a file outside the project is
 /// rejected), must be a regular file (so a FIFO never blocks) and is read through a size cap.
-fn read_sidecar_schema(root: &Path, sidecar: &Path) -> Option<TranscriptTrustSchema> {
+fn read_sidecar_trust(root: &Path, sidecar: &Path) -> Option<SidecarTrust> {
     use std::io::Read as _;
 
     let canonical = sidecar.canonicalize().ok()?;
@@ -976,7 +992,10 @@ fn read_sidecar_schema(root: &Path, sidecar: &Path) -> Option<TranscriptTrustSch
     }
     serde_json::from_slice::<zeph_subagent::TranscriptMeta>(&bytes)
         .ok()
-        .map(|meta| meta.trust_schema)
+        .map(|meta| SidecarTrust {
+            schema: meta.trust_schema,
+            inherited: meta.inherited_trust,
+        })
 }
 
 /// Execute the graph-sink ingest path for `--source subagents` (spec-067 Phase 2, FR-020..024).
@@ -1101,9 +1120,10 @@ async fn run_graph_ingest(
     for (task_id, path) in &transcript_files {
         match tokio::fs::read_to_string(path).await {
             Ok(raw) => {
-                let schema = transcript_trust_schema(root, path, task_id).await;
-                schemas.push(schema);
-                let adapter = SubagentJsonl::new(task_id.as_str(), schema);
+                let trust = transcript_sidecar_trust(root, path, task_id).await;
+                schemas.push(trust.schema);
+                let adapter = SubagentJsonl::new(task_id.as_str(), trust.schema)
+                    .with_inherited_trust(trust.inherited);
                 match adapter.parse(&raw, &batch_id) {
                     Ok(docs) => documents.extend(docs),
                     Err(e) => {
@@ -1923,7 +1943,7 @@ async fn handle_status(config_path: Option<&Path>) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    // ── transcript_trust_schema ───────────────────────────────────────────────
+    // ── transcript_sidecar_trust ───────────────────────────────────────────────
 
     fn write_sidecar(dir: &Path, id: &str, extra: &str) {
         let json = format!(
@@ -1942,16 +1962,44 @@ mod tests {
 
         let path = |id: &str| root.join(format!("{id}.jsonl"));
         assert_eq!(
-            transcript_trust_schema(&root, &path("marked"), "marked").await,
+            transcript_sidecar_trust(&root, &path("marked"), "marked")
+                .await
+                .schema,
             TranscriptTrustSchema::PerResult
         );
         for id in ["old", "broken", "missing"] {
             assert_eq!(
-                transcript_trust_schema(&root, &path(id), id).await,
-                TranscriptTrustSchema::Legacy,
+                transcript_sidecar_trust(&root, &path(id), id).await,
+                SidecarTrust::FAIL_CLOSED,
                 "{id}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn transcript_sidecar_trust_reads_inherited_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        write_sidecar(
+            &root,
+            "inh",
+            r#","trust_schema":"per_result","inherited_trust":"external_untrusted""#,
+        );
+        write_sidecar(&root, "plain", r#","trust_schema":"per_result""#);
+
+        assert_eq!(
+            transcript_sidecar_trust(&root, &root.join("inh.jsonl"), "inh").await,
+            SidecarTrust {
+                schema: TranscriptTrustSchema::PerResult,
+                inherited: Some(TurnContextTrust::ExternalUntrusted),
+            }
+        );
+        assert_eq!(
+            transcript_sidecar_trust(&root, &root.join("plain.jsonl"), "plain")
+                .await
+                .inherited,
+            None
+        );
     }
 
     #[cfg(unix)]
@@ -1970,8 +2018,8 @@ mod tests {
 
         for id in ["ext", "zero"] {
             assert_eq!(
-                transcript_trust_schema(&root, &root.join(format!("{id}.jsonl")), id).await,
-                TranscriptTrustSchema::Legacy,
+                transcript_sidecar_trust(&root, &root.join(format!("{id}.jsonl")), id).await,
+                SidecarTrust::FAIL_CLOSED,
                 "{id}"
             );
         }
@@ -1989,8 +2037,8 @@ mod tests {
         );
 
         assert_eq!(
-            transcript_trust_schema(&root, &root.join("big.jsonl"), "big").await,
-            TranscriptTrustSchema::Legacy
+            transcript_sidecar_trust(&root, &root.join("big.jsonl"), "big").await,
+            SidecarTrust::FAIL_CLOSED
         );
     }
 
@@ -2582,9 +2630,8 @@ mod tests {
         embed_provider_name: Option<&str>,
     ) -> PathBuf {
         let sqlite_path = dir.join("zeph-test.db");
-        let embedding_provider_line = embed_provider_name
-            .map(|name| format!("embedding_provider = \"{name}\"\n"))
-            .unwrap_or_default();
+        let embedding_provider_line =
+            embed_provider_name.map_or_default(|name| format!("embedding_provider = \"{name}\"\n"));
         let config_toml = format!(
             r#"
 [agent]
@@ -2883,9 +2930,8 @@ collection = "{collection}"
         embed_provider_name: Option<&str>,
     ) -> PathBuf {
         let sqlite_path = dir.join("zeph-test.db");
-        let embedding_provider_line = embed_provider_name
-            .map(|name| format!("embedding_provider = \"{name}\"\n"))
-            .unwrap_or_default();
+        let embedding_provider_line =
+            embed_provider_name.map_or_default(|name| format!("embedding_provider = \"{name}\"\n"));
         let config_toml = format!(
             r#"
 [agent]

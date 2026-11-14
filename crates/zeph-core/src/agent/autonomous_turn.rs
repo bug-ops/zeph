@@ -179,8 +179,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .rev()
             .find(|m| m.role == zeph_llm::provider::Role::Assistant)
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
+            .map_or_default(|m| m.content.clone());
 
         // Increment turn counter.
         let new_turns = {

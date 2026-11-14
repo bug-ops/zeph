@@ -798,6 +798,7 @@ mod tests {
     /// memory-consent gate's context tag (`MessageMetadata::trust_level`) when it condenses
     /// an untrusted tool-result batch into a synthetic summary message.
     mod trust_level_propagation_tests {
+        use std::assert_matches;
         use std::time::Duration;
 
         use tokio_util::sync::CancellationToken;
@@ -936,8 +937,9 @@ mod tests {
             let mut view = fixture.view();
 
             let outcome = compact_context(&mut view, None).await.unwrap();
-            assert!(
-                matches!(outcome, CompactionOutcome::Compacted { .. }),
+            assert_matches!(
+                outcome,
+                CompactionOutcome::Compacted { .. },
                 "expected compaction to run: {outcome:?}"
             );
 
@@ -962,7 +964,7 @@ mod tests {
             let mut view = fixture.view();
 
             let outcome = compact_context(&mut view, None).await.unwrap();
-            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+            assert_matches!(outcome, CompactionOutcome::Compacted { .. });
 
             assert_eq!(
                 view.messages[1].metadata.trust_level, None,
@@ -995,13 +997,13 @@ mod tests {
             let mut view = fixture.view();
 
             let outcome = compact_context(&mut view, None).await.unwrap();
-            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+            assert_matches!(outcome, CompactionOutcome::Compacted { .. });
 
             assert_eq!(context_floor(view.messages), 2);
-            assert!(matches!(
+            assert_matches!(
                 view.messages[1].parts.first(),
                 Some(MessagePart::Compaction { .. })
-            ));
+            );
             assert_eq!(
                 view.messages[2].role,
                 Role::System,
@@ -1088,7 +1090,7 @@ mod tests {
 
             let mut view = fixture.view();
             let outcome = compact_context(&mut view, None).await.unwrap();
-            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+            assert_matches!(outcome, CompactionOutcome::Compacted { .. });
 
             assert!(
                 view.messages.iter().any(|m| m
@@ -1194,7 +1196,7 @@ mod tests {
 
             let mut view = fixture.view();
             let outcome = compact_context(&mut view, None).await.unwrap();
-            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+            assert_matches!(outcome, CompactionOutcome::Compacted { .. });
 
             assert_no_orphans(&view.messages[1..]);
             assert_eq!(
@@ -1226,7 +1228,7 @@ mod tests {
 
             let mut view = fixture.view();
             let outcome = compact_context(&mut view, None).await.unwrap();
-            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+            assert_matches!(outcome, CompactionOutcome::Compacted { .. });
 
             assert!(
                 view.messages

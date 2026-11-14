@@ -156,7 +156,7 @@ pub struct AuditEntry {
     pub claim_source: Option<crate::executor::ClaimSource>,
     /// MCP server ID for tool calls routed through `McpToolExecutor`. `None` for native tools.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mcp_server_id: Option<String>,
+    pub mcp_server_id: Option<zeph_common::types::McpServerId>,
     /// Tool output was flagged by regex injection detection.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub injection_flagged: bool,
@@ -290,6 +290,66 @@ impl AuditEntry {
             skill_name: None,
             source_kind: source_kind.map(str::to_owned),
             trust_level: trust_level.map(str::to_owned),
+        }
+    }
+
+    /// Build the audit record of a call refused by a pre-execution verifier.
+    ///
+    /// Shared by the parent agent loop and sub-agent loops so a block is audited identically
+    /// wherever it is raised.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_tools::{AuditEntry, AuditResult, PreDispatchBlock};
+    ///
+    /// let block = PreDispatchBlock {
+    ///     tool: zeph_tools::ToolName::new("bash"),
+    ///     verifier: "destructive",
+    ///     reason: "rm -rf /".to_owned(),
+    ///     args_json: "{}".to_owned(),
+    ///     caller_id: None,
+    ///     skill_name: None,
+    /// };
+    /// let entry = AuditEntry::pre_execution_block(&block);
+    /// assert!(matches!(entry.result, AuditResult::Blocked { .. }));
+    /// ```
+    #[must_use]
+    pub fn pre_execution_block(block: &crate::verifier::PreDispatchBlock) -> Self {
+        Self {
+            timestamp: chrono_now(),
+            tool: block.tool.clone(),
+            command: block.args_json.clone(),
+            result: AuditResult::Blocked {
+                reason: block.detail(),
+            },
+            duration_ms: 0,
+            error_category: Some("pre_execution_block".to_owned()),
+            error_domain: Some("security".to_owned()),
+            error_phase: Some(
+                crate::error_taxonomy::ToolInvocationPhase::Setup
+                    .label()
+                    .to_owned(),
+            ),
+            claim_source: None,
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
+            caller_id: block.caller_id.clone(),
+            policy_match: None,
+            correlation_id: None,
+            vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
+            skill_name: block.skill_name.clone(),
+            source_kind: None,
+            trust_level: None,
         }
     }
 }

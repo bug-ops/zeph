@@ -106,6 +106,14 @@ impl SemanticStateAccumulator {
         self.state.write().await.buffer.clear();
     }
 
+    /// Write guard on the state buffer, to make `reset_session_counters` pend in cancellation tests.
+    #[cfg(test)]
+    pub(crate) async fn state_write_guard_for_test(
+        &self,
+    ) -> tokio::sync::OwnedRwLockWriteGuard<SemanticState> {
+        Arc::clone(&self.state).write_owned().await
+    }
+
     /// Check all cost gates and, if they pass, spawn a background distillation task.
     ///
     /// Gates checked (in order):
