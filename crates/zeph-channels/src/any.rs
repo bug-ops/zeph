@@ -12,7 +12,8 @@
 
 use zeph_core::channel::{
     AskUserOutcome, AskUserRequest, Channel, ChannelError, ChannelMessage, ElicitationRequest,
-    ElicitationResponse, SkillCatalogItem, StatusText, StopHint, ToolOutputEvent, ToolStartEvent,
+    ElicitationResponse, SkillCatalogItem, StatusText, StopHint, TokenUsage, ToolOutputEvent,
+    ToolStartEvent,
 };
 
 use crate::cli::CliChannel;
@@ -198,23 +199,11 @@ impl Channel for AnyChannel {
 
     async fn send_usage(
         &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
+        usage: TokenUsage,
         context_window: u64,
-        cache_read_tokens: u64,
-        cache_write_tokens: u64,
         cost_cents: f64,
     ) -> Result<(), ChannelError> {
-        dispatch_channel!(
-            self,
-            send_usage,
-            input_tokens,
-            output_tokens,
-            context_window,
-            cache_read_tokens,
-            cache_write_tokens,
-            cost_cents
-        )
+        dispatch_channel!(self, send_usage, usage, context_window, cost_cents)
     }
 
     async fn send_tool_start(&mut self, event: ToolStartEvent) -> Result<(), ChannelError> {
@@ -311,7 +300,19 @@ mod tests {
     #[tokio::test]
     async fn any_channel_sends_usage() {
         let mut ch = AnyChannel::Cli(CliChannel::new());
-        assert!(ch.send_usage(100, 50, 200_000, 0, 0, 0.0).await.is_ok());
+        assert!(
+            ch.send_usage(
+                TokenUsage {
+                    input: 100,
+                    output: 50,
+                    ..TokenUsage::default()
+                },
+                200_000,
+                0.0,
+            )
+            .await
+            .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -367,7 +368,17 @@ mod tests {
         // 10. send_queue_count
         ch.send_queue_count(3).await.unwrap();
         // 11. send_usage
-        ch.send_usage(10, 5, 8192, 0, 0, 0.0).await.unwrap();
+        ch.send_usage(
+            TokenUsage {
+                input: 10,
+                output: 5,
+                ..TokenUsage::default()
+            },
+            8192,
+            0.0,
+        )
+        .await
+        .unwrap();
         // 13. send_tool_start
         ch.send_tool_start(ToolStartEvent {
             tool_name: "bash".into(),

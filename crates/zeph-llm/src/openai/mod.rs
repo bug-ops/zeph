@@ -562,7 +562,7 @@ impl OpenAiProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = crate::http::read_body(resp).await.unwrap_or_default();
             tracing::debug!(status = %status, body = %body, "OpenAI list_models_remote error body");
             return Err(LlmError::api_error("openai", status.as_u16(), &body));
         }
@@ -759,7 +759,7 @@ impl OpenAiProvider {
         let status = response.status();
 
         if !status.is_success() {
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let text = crate::http::read_body(response).await?;
             crate::http::log_api_error_body("openai", status, &text);
             return Err(crate::http::map_error_response(status, &text, "openai"));
         }
@@ -865,10 +865,7 @@ impl LlmProvider for OpenAiProvider {
         if !status.is_success() {
             crate::http::log_api_error_body("openai", status, &body_text);
             if status == reqwest::StatusCode::BAD_REQUEST {
-                return Err(LlmError::InvalidInput {
-                    provider: "openai".into(),
-                    message: body_text,
-                });
+                return Err(LlmError::invalid_input_from_body("openai", &body_text));
             }
             return Err(LlmError::api_error("openai", status.as_u16(), &body_text));
         }
@@ -919,10 +916,7 @@ impl LlmProvider for OpenAiProvider {
         if !status.is_success() {
             crate::http::log_api_error_body("openai", status, &body_text);
             if status == reqwest::StatusCode::BAD_REQUEST {
-                return Err(LlmError::InvalidInput {
-                    provider: "openai".into(),
-                    message: body_text,
-                });
+                return Err(LlmError::invalid_input_from_body("openai", &body_text));
             }
             return Err(LlmError::api_error("openai", status.as_u16(), &body_text));
         }

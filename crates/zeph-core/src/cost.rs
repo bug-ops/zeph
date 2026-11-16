@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 
 use thiserror::Error;
 use zeph_config::ServiceSpeed;
-use zeph_llm::provider::AuxiliaryUsage;
+use zeph_llm::provider::TokenUsage;
 
 #[derive(Debug, Error)]
 #[error(
@@ -41,15 +41,6 @@ pub struct ModelPricing {
     pub cache_read_cents_per_1k: f64,
     /// Cache write (cache creation) price. Claude: 125% of prompt; others: 0%.
     pub cache_write_cents_per_1k: f64,
-}
-
-/// Token counts of one billed usage entry, named so the four counters cannot be reordered.
-#[derive(Clone, Copy)]
-struct UsageTokens {
-    input: u64,
-    cache_read: u64,
-    cache_write: u64,
-    output: u64,
 }
 
 struct CostState {
@@ -254,43 +245,17 @@ impl CostTracker {
     /// additionally emits a WARN/debug log for that case (it has `provider_kind`, which this
     /// pure signature does not); callers that want the log must check pricing themselves.
     #[must_use]
-    pub fn price_of(
-        &self,
-        model: &str,
-        input_tokens: u64,
-        cache_read_tokens: u64,
-        cache_write_tokens: u64,
-        output_tokens: u64,
-        speed: ServiceSpeed,
-    ) -> f64 {
+    pub fn price_of(&self, model: &str, usage: TokenUsage, speed: ServiceSpeed) -> f64 {
         let Some(pricing) = self.pricing_for(model, speed) else {
             return 0.0;
         };
         #[allow(clippy::cast_precision_loss)]
         {
-            pricing.prompt_cents_per_1k * (input_tokens as f64) / 1000.0
-                + pricing.completion_cents_per_1k * (output_tokens as f64) / 1000.0
-                + pricing.cache_read_cents_per_1k * (cache_read_tokens as f64) / 1000.0
-                + pricing.cache_write_cents_per_1k * (cache_write_tokens as f64) / 1000.0
+            pricing.prompt_cents_per_1k * (usage.input as f64) / 1000.0
+                + pricing.completion_cents_per_1k * (usage.output as f64) / 1000.0
+                + pricing.cache_read_cents_per_1k * (usage.cache_read as f64) / 1000.0
+                + pricing.cache_write_cents_per_1k * (usage.cache_write as f64) / 1000.0
         }
-    }
-
-    /// Cents billed for usage outside the top-level request counters (see [`AuxiliaryUsage`]).
-    #[must_use]
-    pub fn price_of_auxiliary(
-        &self,
-        model: &str,
-        usage: AuxiliaryUsage,
-        speed: ServiceSpeed,
-    ) -> f64 {
-        self.price_of(
-            model,
-            usage.input,
-            usage.cache_read,
-            usage.cache_creation,
-            usage.output,
-            speed,
-        )
     }
 
     /// Record auxiliary usage (for example Claude server-side compaction iterations) for the
@@ -303,22 +268,10 @@ impl CostTracker {
         provider_name: &str,
         provider_kind: &str,
         model: &str,
-        usage: AuxiliaryUsage,
+        usage: TokenUsage,
         speed: ServiceSpeed,
     ) {
-        self.add_usage(
-            provider_name,
-            provider_kind,
-            model,
-            UsageTokens {
-                input: usage.input,
-                cache_read: usage.cache_read,
-                cache_write: usage.cache_creation,
-                output: usage.output,
-            },
-            speed,
-            0,
-        );
+        self.add_usage(provider_name, provider_kind, model, usage, speed, 0);
     }
 
     /// Record token usage for a single LLM call, attributed to `provider_name`.
@@ -328,33 +281,17 @@ impl CostTracker {
     /// Local providers always have zero cost by design; the missing-pricing WARN is
     /// suppressed for them to avoid log floods on every Ollama call.
     ///
-    /// Cache token counts are optional (pass 0 when not available). Cost is computed
-    /// using model-specific pricing including cache read/write rates.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    /// Cache token counts are zero when not available. Cost is computed using
+    /// model-specific pricing including cache read/write rates.
     pub fn record_usage(
         &self,
         provider_name: &str,
         provider_kind: &str,
         model: &str,
-        input_tokens: u64,
-        cache_read_tokens: u64,
-        cache_write_tokens: u64,
-        output_tokens: u64,
+        usage: TokenUsage,
         speed: ServiceSpeed,
     ) {
-        self.add_usage(
-            provider_name,
-            provider_kind,
-            model,
-            UsageTokens {
-                input: input_tokens,
-                cache_read: cache_read_tokens,
-                cache_write: cache_write_tokens,
-                output: output_tokens,
-            },
-            speed,
-            1,
-        );
+        self.add_usage(provider_name, provider_kind, model, usage, speed, 1);
     }
 
     /// Record the usage of a prompt-cache keepalive ping and return its cost in cents.
@@ -389,21 +326,14 @@ impl CostTracker {
             return 0.0;
         }
         let cache = usage.cache.unwrap_or_default();
-        let tokens = UsageTokens {
+        let tokens = TokenUsage {
             input: usage.input,
+            output: usage.output,
             cache_read: cache.read,
             cache_write: cache.creation,
-            output: usage.output,
         };
         self.add_usage(provider_name, provider_kind, model, tokens, usage.speed, 0);
-        self.price_of(
-            model,
-            tokens.input,
-            tokens.cache_read,
-            tokens.cache_write,
-            tokens.output,
-            usage.speed,
-        )
+        self.price_of(model, tokens, usage.speed)
     }
 
     /// Shared body of [`Self::record_usage`] and [`Self::record_auxiliary_usage`].
@@ -412,16 +342,10 @@ impl CostTracker {
         provider_name: &str,
         provider_kind: &str,
         model: &str,
-        tokens: UsageTokens,
+        usage: TokenUsage,
         speed: ServiceSpeed,
         requests: u64,
     ) {
-        let UsageTokens {
-            input: input_tokens,
-            cache_read: cache_read_tokens,
-            cache_write: cache_write_tokens,
-            output: output_tokens,
-        } = tokens;
         if !self.enabled {
             return;
         }
@@ -436,24 +360,17 @@ impl CostTracker {
                 );
             }
         }
-        let cost = self.price_of(
-            model,
-            input_tokens,
-            cache_read_tokens,
-            cache_write_tokens,
-            output_tokens,
-            speed,
-        );
+        let cost = self.price_of(model, usage, speed);
 
         let mut state = self.state.lock();
         reset_if_new_day(&mut state);
         state.spent_cents += cost;
 
         let entry = state.providers.entry(provider_name.to_owned()).or_default();
-        entry.input_tokens += input_tokens;
-        entry.cache_read_tokens += cache_read_tokens;
-        entry.cache_write_tokens += cache_write_tokens;
-        entry.output_tokens += output_tokens;
+        entry.input_tokens += usage.input;
+        entry.cache_read_tokens += usage.cache_read;
+        entry.cache_write_tokens += usage.cache_write;
+        entry.output_tokens += usage.output;
         entry.cost_cents += cost;
         entry.request_count += requests;
         model.clone_into(&mut entry.model);
@@ -545,10 +462,12 @@ mod tests {
             provider,
             "cloud",
             model,
-            input,
-            0,
-            0,
-            output,
+            TokenUsage {
+                input,
+                cache_read: 0,
+                cache_write: 0,
+                output,
+            },
             ServiceSpeed::Standard,
         );
     }
@@ -659,10 +578,12 @@ mod tests {
             "local",
             "ollama",
             "totally-unknown-ollama-model",
-            5000,
-            0,
-            0,
-            5000,
+            TokenUsage {
+                input: 5000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 5000,
+            },
             ServiceSpeed::Standard,
         );
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
@@ -676,10 +597,12 @@ mod tests {
             "openai",
             "cloud",
             "totally-unknown-cloud-model",
-            5000,
-            0,
-            0,
-            5000,
+            TokenUsage {
+                input: 5000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 5000,
+            },
             ServiceSpeed::Standard,
         );
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
@@ -692,6 +615,27 @@ mod tests {
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
     }
 
+    #[test]
+    fn price_of_distinguishes_cache_read_from_cache_write() {
+        let tracker = CostTracker::new(true, 1000.0);
+        let price = |cache_read, cache_write| {
+            tracker.price_of(
+                "claude-opus-4-6",
+                TokenUsage {
+                    cache_read,
+                    cache_write,
+                    ..TokenUsage::default()
+                },
+                ServiceSpeed::Standard,
+            )
+        };
+        let read_only = price(1000, 0);
+        let write_only = price(0, 1000);
+        assert!((write_only - 0.625).abs() < 1e-9);
+        assert!(read_only < write_only);
+        assert!((price(1000, 2000) - (read_only + 2.0 * write_only)).abs() < 1e-9);
+    }
+
     /// M2 (issue #6549): `price_of` must be the exact pricing source of truth `record_usage`
     /// itself uses — a per-message ledger row computed via `price_of` must always match the
     /// cost `record_usage` folded into the daily aggregate for the same call, including the
@@ -699,7 +643,16 @@ mod tests {
     #[test]
     fn price_of_matches_record_usage_for_known_model() {
         let tracker = CostTracker::new(true, 1000.0);
-        let expected = tracker.price_of("gpt-4o", 1000, 0, 0, 1000, ServiceSpeed::Standard);
+        let expected = tracker.price_of(
+            "gpt-4o",
+            TokenUsage {
+                input: 1000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 1000,
+            },
+            ServiceSpeed::Standard,
+        );
         record(&tracker, "openai", "gpt-4o", 1000, 1000);
         assert!(
             (tracker.current_spend() - expected).abs() < 1e-9,
@@ -713,10 +666,12 @@ mod tests {
         let tracker = CostTracker::new(true, 1000.0);
         let price = tracker.price_of(
             "totally-unknown-model",
-            5000,
-            0,
-            0,
-            5000,
+            TokenUsage {
+                input: 5000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 5000,
+            },
             ServiceSpeed::Standard,
         );
         assert!(
@@ -733,7 +688,16 @@ mod tests {
         let tracker = CostTracker::new(true, 1000.0);
         // Mirrors cache_write_cost_included_in_total: claude-opus-4-6 cache_write = 125% of
         // prompt price (0.5 cents/1k) -> 1000 tokens = 0.625 cents.
-        let price = tracker.price_of("claude-opus-4-6", 0, 0, 1000, 0, ServiceSpeed::Standard);
+        let price = tracker.price_of(
+            "claude-opus-4-6",
+            TokenUsage {
+                input: 0,
+                cache_read: 0,
+                cache_write: 1000,
+                output: 0,
+            },
+            ServiceSpeed::Standard,
+        );
         assert!((price - 0.625).abs() < 0.001);
     }
 
@@ -829,10 +793,12 @@ mod tests {
             "claude",
             "cloud",
             "claude-haiku-4-5-20251001",
-            0,
-            1000,
-            0,
-            0,
+            TokenUsage {
+                input: 0,
+                cache_read: 1000,
+                cache_write: 0,
+                output: 0,
+            },
             ServiceSpeed::Standard,
         );
         let spend = tracker.current_spend();
@@ -849,10 +815,12 @@ mod tests {
             "claude-provider",
             "cloud",
             "claude-opus-4-6",
-            0,
-            0,
-            1000,
-            0,
+            TokenUsage {
+                input: 0,
+                cache_read: 0,
+                cache_write: 1000,
+                output: 0,
+            },
             ServiceSpeed::Standard,
         );
         let cost = tracker.current_spend();
@@ -862,7 +830,16 @@ mod tests {
     #[test]
     fn opus_4_8_prices_like_retained_opus_4_6() {
         let price = |model: &str| {
-            CostTracker::new(true, 1000.0).price_of(model, 1000, 0, 0, 1000, ServiceSpeed::Standard)
+            CostTracker::new(true, 1000.0).price_of(
+                model,
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 1000,
+                },
+                ServiceSpeed::Standard,
+            )
         };
         assert!((price("claude-opus-4-8") - price("claude-opus-4-6")).abs() < f64::EPSILON);
         assert!(price("claude-opus-4-8") > 0.0);
@@ -887,7 +864,16 @@ mod tests {
         ];
         for (model, input, output) in rows {
             let expected = (input + output) / 10.0;
-            let got = tracker.price_of(model, 1000, 0, 0, 1000, ServiceSpeed::Standard);
+            let got = tracker.price_of(
+                model,
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 1000,
+                },
+                ServiceSpeed::Standard,
+            );
             assert!(
                 (got - expected).abs() < 1e-9,
                 "{model}: {got} != {expected}"
@@ -898,7 +884,18 @@ mod tests {
     #[test]
     fn cache_read_ratio_is_model_specific() {
         let tracker = CostTracker::new(true, 1000.0);
-        let read = |model: &str| tracker.price_of(model, 0, 1000, 0, 0, ServiceSpeed::Standard);
+        let read = |model: &str| {
+            tracker.price_of(
+                model,
+                TokenUsage {
+                    input: 0,
+                    cache_read: 1000,
+                    cache_write: 0,
+                    output: 0,
+                },
+                ServiceSpeed::Standard,
+            )
+        };
         assert!((read("claude-sonnet-5-5") - 0.02).abs() < 1e-9);
         assert!((read("claude-opus-5-5") - 0.02).abs() < 1e-9);
         assert!((read("claude-fable-5-1") - 0.025).abs() < 1e-9);
@@ -914,22 +911,35 @@ mod tests {
         assert!(
             (tracker.price_of(
                 "claude-sonnet-5-5-20261001",
-                1000,
-                0,
-                0,
-                0,
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 0
+                },
                 ServiceSpeed::Standard
-            ) - tracker.price_of("claude-sonnet-5-5", 1000, 0, 0, 0, ServiceSpeed::Standard))
+            ) - tracker.price_of(
+                "claude-sonnet-5-5",
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 0
+                },
+                ServiceSpeed::Standard
+            ))
             .abs()
                 < f64::EPSILON
         );
         assert!(
             tracker.price_of(
                 "claude-sonnet-5-5-20261001",
-                1000,
-                0,
-                0,
-                0,
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 0
+                },
                 ServiceSpeed::Standard
             ) > 0.0
         );
@@ -937,10 +947,12 @@ mod tests {
             tracker
                 .price_of(
                     "claude-unknown-20261001",
-                    1000,
-                    0,
-                    0,
-                    0,
+                    TokenUsage {
+                        input: 1000,
+                        cache_read: 0,
+                        cache_write: 0,
+                        output: 0
+                    },
                     ServiceSpeed::Standard
                 )
                 .abs()
@@ -956,10 +968,12 @@ mod tests {
                 "p",
                 "cloud",
                 "mystery-model",
-                10,
-                0,
-                0,
-                10,
+                TokenUsage {
+                    input: 10,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 10,
+                },
                 ServiceSpeed::Standard,
             );
         }
@@ -967,10 +981,12 @@ mod tests {
             "p",
             "cloud",
             "other-mystery",
-            10,
-            0,
-            0,
-            10,
+            TokenUsage {
+                input: 10,
+                cache_read: 0,
+                cache_write: 0,
+                output: 10,
+            },
             ServiceSpeed::Standard,
         );
         let warned = tracker.unpriced_models_warned.lock();
@@ -984,17 +1000,19 @@ mod tests {
             "claude",
             "cloud",
             "claude-sonnet-5-5",
-            1000,
-            0,
-            0,
-            1000,
+            TokenUsage {
+                input: 1000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 1000,
+            },
             ServiceSpeed::Standard,
         );
         let base = tracker.current_spend();
-        let aux = AuxiliaryUsage {
+        let aux = TokenUsage {
             input: 2000,
             output: 500,
-            cache_creation: 0,
+            cache_write: 0,
             cache_read: 0,
         };
         tracker.record_auxiliary_usage(
@@ -1004,7 +1022,7 @@ mod tests {
             aux,
             ServiceSpeed::Standard,
         );
-        let expected = tracker.price_of_auxiliary("claude-sonnet-5-5", aux, ServiceSpeed::Standard);
+        let expected = tracker.price_of("claude-sonnet-5-5", aux, ServiceSpeed::Standard);
         assert!(expected > 0.0);
         assert!((tracker.current_spend() - base - expected).abs() < 1e-9);
         let breakdown = tracker.provider_breakdown();
@@ -1020,10 +1038,12 @@ mod tests {
             "claude",
             "cloud",
             "claude-haiku-4-5-20251001",
-            1000,
-            0,
-            0,
-            1000,
+            TokenUsage {
+                input: 1000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 1000,
+            },
             ServiceSpeed::Standard,
         );
         assert!(tracker.provider_breakdown().is_empty());
@@ -1070,8 +1090,25 @@ mod tests {
         let tracker = CostTracker::new(true, 1000.0);
         let std = ServiceSpeed::Standard;
         assert!(
-            (tracker.price_of("claude-mythos-5-2-20261109", 1000, 0, 0, 1000, std)
-                - tracker.price_of("claude-mythos-5-2", 1000, 0, 0, 1000, std))
+            (tracker.price_of(
+                "claude-mythos-5-2-20261109",
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 1000
+                },
+                std
+            ) - tracker.price_of(
+                "claude-mythos-5-2",
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 1000
+                },
+                std
+            ))
             .abs()
                 < f64::EPSILON
         );
@@ -1089,18 +1126,22 @@ mod tests {
             ] {
                 let std = tracker.price_of(
                     model,
-                    input,
-                    cache_read,
-                    cache_write,
-                    output,
+                    TokenUsage {
+                        input,
+                        cache_read,
+                        cache_write,
+                        output,
+                    },
                     ServiceSpeed::Standard,
                 );
                 let fast = tracker.price_of(
                     model,
-                    input,
-                    cache_read,
-                    cache_write,
-                    output,
+                    TokenUsage {
+                        input,
+                        cache_read,
+                        cache_write,
+                        output,
+                    },
                     ServiceSpeed::Fast,
                 );
                 assert!((fast - 2.0 * std).abs() < 1e-9, "{model}: {fast} vs {std}");
@@ -1113,13 +1154,24 @@ mod tests {
         let tracker = CostTracker::new(true, 1000.0);
         let std = tracker.price_of(
             "claude-sonnet-5-5",
-            1000,
-            0,
-            0,
-            1000,
+            TokenUsage {
+                input: 1000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 1000,
+            },
             ServiceSpeed::Standard,
         );
-        let fast = tracker.price_of("claude-sonnet-5-5", 1000, 0, 0, 1000, ServiceSpeed::Fast);
+        let fast = tracker.price_of(
+            "claude-sonnet-5-5",
+            TokenUsage {
+                input: 1000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 1000,
+            },
+            ServiceSpeed::Fast,
+        );
         assert!((fast - std).abs() < f64::EPSILON);
         assert!(fast > 0.0);
     }
@@ -1131,10 +1183,12 @@ mod tests {
             "p",
             "cloud",
             "claude-fable-5-2",
-            1000,
-            0,
-            0,
-            1000,
+            TokenUsage {
+                input: 1000,
+                cache_read: 0,
+                cache_write: 0,
+                output: 1000,
+            },
             ServiceSpeed::Fast,
         );
         // (1.6 + 8.0) cents

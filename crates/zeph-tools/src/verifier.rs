@@ -91,18 +91,138 @@ impl PreDispatchBlock {
     }
 }
 
-/// Receiver of [`PreDispatchBlock`]s raised outside the loop that owns the metrics and audit
+/// A warning a [`PreExecutionVerifier`] raised for a call it let through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifierWarning {
+    /// [`PreExecutionVerifier::name`] of the verifier that warned.
+    pub verifier: &'static str,
+    /// The verifier's warning text.
+    pub message: String,
+}
+
+impl VerifierWarning {
+    /// `"{verifier}: {message}"`, the detail text of the security event.
+    #[must_use]
+    pub fn detail(&self) -> String {
+        format!("{}: {}", self.verifier, self.message)
+    }
+}
+
+/// What the pre-execution verifiers decided for one tool call.
+///
+/// `warnings` holds the warnings raised before the first block (or all of them when nothing
+/// blocked), in verifier order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GateOutcome {
+    /// The first verifier block, if any; the call must not be dispatched.
+    pub block: Option<PreDispatchBlock>,
+    /// Warnings raised for the call.
+    pub warnings: Vec<VerifierWarning>,
+}
+
+/// Model-facing refusal text for a call a verifier blocked.
+///
+/// The one wording shared by the parent loop and every sub-agent loop.
+///
+/// # Examples
+///
+/// ```
+/// let text = zeph_tools::pre_execution_refusal("shell");
+/// assert!(text.contains("shell"));
+/// assert!(text.contains("blocked by pre-execution verifier"));
+/// ```
+#[must_use]
+pub fn pre_execution_refusal(tool: &str) -> String {
+    format!(
+        "[error] Tool call to {tool} was blocked by pre-execution verifier. \
+         The requested operation is not permitted."
+    )
+}
+
+/// Run `verifiers` over one tool call and collect their decision.
+///
+/// Stops at the first [`VerificationResult::Block`]. Logs every block and warning at WARN, so
+/// each loop that evaluates a call through this function logs it identically; recording the
+/// outcome (metrics, security events, audit rows) is left to the caller.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_tools::{ToolName, evaluate_pre_dispatch};
+///
+/// let outcome = evaluate_pre_dispatch(
+///     &[],
+///     &ToolName::new("shell"),
+///     &serde_json::json!({}),
+///     &zeph_tools::CallAttribution::default(),
+/// );
+/// assert!(outcome.block.is_none() && outcome.warnings.is_empty());
+/// ```
+#[must_use]
+pub fn evaluate_pre_dispatch(
+    verifiers: &[Box<dyn PreExecutionVerifier>],
+    tool: &zeph_common::ToolName,
+    args: &serde_json::Value,
+    attribution: &crate::CallAttribution,
+) -> GateOutcome {
+    let mut outcome = GateOutcome::default();
+    for verifier in verifiers {
+        match verifier.verify(tool.as_str(), args) {
+            VerificationResult::Block { reason } => {
+                tracing::warn!(
+                    tool = %tool,
+                    verifier = verifier.name(),
+                    %reason,
+                    "pre-execution verifier blocked tool call"
+                );
+                outcome.block = Some(PreDispatchBlock {
+                    tool: tool.clone(),
+                    verifier: verifier.name(),
+                    reason,
+                    args_json: serde_json::to_string(args).unwrap_or_default(),
+                    caller_id: attribution.caller_id.clone(),
+                    skill_name: attribution.skill_name.clone(),
+                });
+                break;
+            }
+            VerificationResult::Warn { message } => {
+                tracing::warn!(
+                    tool = %tool,
+                    verifier = verifier.name(),
+                    %message,
+                    "pre-execution verifier warning (not blocked)"
+                );
+                outcome.warnings.push(VerifierWarning {
+                    verifier: verifier.name(),
+                    message,
+                });
+            }
+            _ => {}
+        }
+    }
+    outcome
+}
+
+/// Receiver of the gate telemetry raised outside the loop that owns the metrics and audit
 /// handles, such as a sub-agent loop recording into its parent agent's channels.
 ///
-/// Implementors record every block they receive and must not fail the caller: recording is
-/// best effort and never changes the refusal the model sees. Callers may assume `record` is
-/// cheap enough to await on the tool-dispatch path.
+/// Covers every signal the parent loop records for a pre-dispatch gate: a verifier
+/// [`PreDispatchBlock`], a verifier [`VerifierWarning`] and a count of exfiltration URL flags.
+/// Implementors record what they receive and must not fail the caller: recording is best
+/// effort and never changes the refusal the model sees. Callers may assume every method is
+/// cheap enough to call on the tool-dispatch path.
 pub trait PreDispatchBlockSink: Send + Sync {
     /// Record one block.
     fn record(
         &self,
         block: PreDispatchBlock,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+
+    /// Record one verifier warning raised for a call that was not blocked.
+    fn record_warning(&self, tool: &zeph_common::ToolName, warning: &VerifierWarning);
+
+    /// Record `count` flagged exfiltration URLs found in the arguments of a call to `tool`.
+    fn record_exfil_flags(&self, tool: &zeph_common::ToolName, count: usize);
 }
 
 // ---------------------------------------------------------------------------

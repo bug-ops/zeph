@@ -31,6 +31,7 @@ pub mod llm_response;
 pub mod math;
 pub mod memory;
 pub mod monotonic;
+pub mod native_tools;
 pub mod net;
 pub mod path_guard;
 pub mod patterns;

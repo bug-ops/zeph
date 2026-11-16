@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::confirm::Inbox;
 use crate::markdown::markdown_to_telegram_with_config;
 use crate::streaming::StreamingBuffer;
 use crate::telegram_api_ext::{BotAccessSettings, GuestMessage, TelegramApiClient};
@@ -262,7 +263,7 @@ impl TelegramAllowlist {
 pub struct TelegramChannel {
     bot: Bot,
     chat_id: Option<ChatId>,
-    rx: mpsc::Receiver<IncomingMessage>,
+    rx: Inbox<IncomingMessage>,
     allowlist: Arc<TelegramAllowlist>,
     buffer: StreamingBuffer,
     message_id: Option<MessageId>,
@@ -352,7 +353,7 @@ impl TelegramChannel {
         Self {
             bot,
             chat_id: None,
-            rx,
+            rx: rx.into(),
             allowlist: Arc::new(allowlist),
             buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,
@@ -531,7 +532,7 @@ impl TelegramChannel {
         }
 
         let (tx, rx) = mpsc::channel::<IncomingMessage>(64);
-        self.rx = rx;
+        self.rx.replace_receiver(rx);
 
         // Guest Mode: spawn a transparent axum proxy on a local ephemeral port.
         // The proxy intercepts `getUpdates` responses to extract `guest_message` entries
@@ -633,7 +634,7 @@ impl TelegramChannel {
         let channel = Self {
             bot: Bot::new("test_token"),
             chat_id: None,
-            rx,
+            rx: rx.into(),
             allowlist: Arc::new(allowlist),
             buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,
@@ -1301,7 +1302,11 @@ impl crate::confirm::ConfirmLoop for TelegramChannel {
     }
 
     fn confirm_receiver(&mut self) -> &mut mpsc::Receiver<IncomingMessage> {
-        &mut self.rx
+        self.rx.receiver_mut()
+    }
+
+    fn confirm_defer(&mut self, incoming: IncomingMessage) {
+        self.rx.defer([incoming]);
     }
 
     fn confirm_accepts(&self, incoming: &IncomingMessage) -> bool {
@@ -1339,7 +1344,7 @@ impl Channel for TelegramChannel {
     ///
     /// [`send`]: TelegramChannel::send
     fn try_recv(&mut self) -> Option<ChannelMessage> {
-        self.rx.try_recv().ok().map(|incoming| {
+        self.rx.try_recv().map(|incoming| {
             self.chat_id = Some(incoming.chat_id);
             let is_guest = incoming.guest_query_id.is_some();
             self.guest_query_id.clone_from(&incoming.guest_query_id);
@@ -1893,7 +1898,7 @@ mod tests {
         let channel = TelegramChannel {
             bot,
             chat_id: Some(ChatId(1)),
-            rx,
+            rx: rx.into(),
             allowlist: Arc::new(allowlist),
             buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,

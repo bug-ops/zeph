@@ -313,6 +313,11 @@ pub(crate) async fn build_agent_factory(
             zeph_tools::DynExecutor(final_tool_executor),
         )
         .apply_session_config(deps.session_config)
+        .with_task_supervisor(Arc::new(
+            deps.shell_ingredients
+                .task_supervisor
+                .scoped(session_id.as_str()),
+        ))
         .with_skill_config(zeph_core::SkillConfigParams {
             disambiguation_threshold: deps.skill_disambiguation_threshold,
             two_stage_matching: deps.skill_two_stage_matching,

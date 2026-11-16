@@ -19,8 +19,8 @@ use super::*;
 const SESSION: &str = "0123456789";
 
 fn stdio_grant(command: &str, args: &[&str], env_keys: &[&str], tools: &[&str]) -> AcpIdeMcpGrant {
-    AcpIdeMcpGrant {
-        target: AcpIdeMcpTarget::Stdio {
+    AcpIdeMcpGrant::new(
+        AcpIdeMcpTarget::Stdio {
             command: command.to_owned(),
             args: args.iter().map(|s| (*s).to_owned()).collect(),
             env_keys: env_keys
@@ -28,17 +28,19 @@ fn stdio_grant(command: &str, args: &[&str], env_keys: &[&str], tools: &[&str]) 
                 .map(|s| (*s).to_owned())
                 .collect::<BTreeSet<_>>(),
         },
-        tools: tools.iter().map(|s| (*s).to_owned()).collect(),
-    }
+        tools.iter().map(|s| (*s).to_owned()).collect(),
+    )
+    .expect("valid test grant")
 }
 
 fn http_grant(url: &str, tools: &[&str]) -> AcpIdeMcpGrant {
-    AcpIdeMcpGrant {
-        target: AcpIdeMcpTarget::Http {
+    AcpIdeMcpGrant::new(
+        AcpIdeMcpTarget::Http {
             url: url.to_owned(),
         },
-        tools: tools.iter().map(|s| (*s).to_owned()).collect(),
-    }
+        tools.iter().map(|s| (*s).to_owned()).collect(),
+    )
+    .expect("valid test grant")
 }
 
 fn config(cap: usize, grants: Vec<(&str, AcpIdeMcpGrant)>) -> AcpIdeMcpConfig {
@@ -348,4 +350,39 @@ async fn second_connection_attach_of_same_scoped_id_leaves_first_connection_inta
     first_conn.release(&host, request).await;
     assert!(!host.connected.lock().contains("ide-01234567"));
     assert_eq!(*host.removed.lock(), ["ide-01234567"]);
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn scoped_entries_cap_truncation_logs_requested_cap_and_dropped() {
+    let servers = [
+        McpServer::Http(McpServerHttp::new("a", "https://a.example.com")),
+        McpServer::Http(McpServerHttp::new("b", "https://b.example.com")),
+        McpServer::Http(McpServerHttp::new("c", "https://c.example.com")),
+    ];
+    let entries = scoped_entries(&servers, SESSION, 120, &config(1, Vec::new()));
+    assert_eq!(entries.len(), 1);
+    assert!(logs_contain("exceed [acp.ide_mcp].max_servers_per_session"));
+    assert!(logs_contain("requested=3"));
+    assert!(logs_contain("cap=1"));
+    assert!(logs_contain("dropped=2"));
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn granted_allowlist_mismatch_logs_warning_with_server_name() {
+    let cfg = config(
+        10,
+        vec![(
+            "docs",
+            http_grant("https://mcp.example.com/mcp", &["search"]),
+        )],
+    );
+    let servers = [McpServer::Http(McpServerHttp::new(
+        "docs",
+        "https://evil.example.com/mcp",
+    ))];
+    assert_eq!(allowlist_of(&servers, &cfg), None);
+    assert!(logs_contain("does not match its operator grant"));
+    assert!(logs_contain("server=docs"));
 }

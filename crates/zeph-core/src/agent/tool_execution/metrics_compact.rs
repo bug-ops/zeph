@@ -219,11 +219,15 @@ impl<C: Channel> Agent<C> {
         let Some(usage) = self.provider.last_response_usage() else {
             return;
         };
-        let (input_tokens, output_tokens) = (usage.input, usage.output);
         let context_window =
             u64::try_from(self.provider.context_window().unwrap_or(0)).unwrap_or(0);
         let cache = usage.cache.unwrap_or_default();
-        let (cache_read_tokens, cache_write_tokens) = (cache.read, cache.creation);
+        let tokens = zeph_llm::provider::TokenUsage {
+            input: usage.input,
+            output: usage.output,
+            cache_read: cache.read,
+            cache_write: cache.creation,
+        };
         // Read cumulative cost after record_cost_and_cache updated the metrics snapshot.
         let cost_cents = self
             .runtime
@@ -233,14 +237,7 @@ impl<C: Channel> Agent<C> {
             .map_or(0.0, |tx| tx.borrow().cost_spent_cents);
         let _ = self
             .channel
-            .send_usage(
-                input_tokens,
-                output_tokens,
-                context_window,
-                cache_read_tokens,
-                cache_write_tokens,
-                cost_cents,
-            )
+            .send_usage(tokens, context_window, cost_cents)
             .await;
     }
 }

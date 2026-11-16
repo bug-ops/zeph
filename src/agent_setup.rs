@@ -540,9 +540,9 @@ pub(crate) async fn build_tool_setup(
     if config.tools.audit.tool_risk_summary {
         zeph_tools::log_tool_risk_summary(&[
             "shell",
-            "web_scrape",
-            "fetch",
-            "web_search",
+            zeph_common::native_tools::WEB_SCRAPE_ID,
+            zeph_common::native_tools::FETCH_ID,
+            zeph_common::native_tools::WEB_SEARCH_ID,
             "file_read",
             "file_write",
         ]);
@@ -625,14 +625,9 @@ pub(crate) async fn build_tool_setup(
         result
     };
 
-    // Subscribe before spawning the refresh task so no events are missed.
-    let mcp_tool_rx = mcp_manager.subscribe_tool_changes();
+    let mcp_tool_rx = start_mcp_tool_refresh(&mcp_manager, supervisor, !bare && !safe_mode);
     // Take the elicitation receiver before Arc-wrapping the manager.
     let mcp_elicitation_rx = mcp_manager.take_elicitation_rx();
-    if !bare && !safe_mode {
-        // Spawn the background task that processes tools/list_changed events.
-        mcp_manager.spawn_refresh_task(supervisor);
-    }
 
     let (mcp_tool_list, mcp_tool_reader) = zeph_mcp::McpToolList::new(mcp_tools.clone());
     let mut mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_tool_reader);
@@ -3268,6 +3263,70 @@ fn format_quota_status_message(status: &zeph_worktree::QuotaStatus) -> String {
     )
 }
 
+/// Subscribe to MCP tool-list changes, then start the refresh task that feeds them.
+///
+/// Subscribing first closes the race with the refresh task: a `tools/list_changed` event cannot
+/// be published before the receiver exists. `spawn_refresh_task` is idempotent, so entry points
+/// that share one manager (runner, ACP, daemon) may all call this. With `enabled == false`
+/// (bare or safe mode, where no servers connect) only the receiver is returned.
+pub(crate) fn start_mcp_tool_refresh(
+    manager: &zeph_mcp::McpManager,
+    supervisor: Option<&zeph_common::TaskSupervisor>,
+    enabled: bool,
+) -> tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>> {
+    let rx = manager.subscribe_tool_changes();
+    if enabled {
+        manager.spawn_refresh_task(supervisor);
+    }
+    rx
+}
+
+/// Test support (#7111, #7126): drive `agent` through one plain-text turn and return the MCP tool
+/// count it reported.
+///
+/// The loop refreshes the tool list from the agent's MCP watch before it handles the message, so
+/// the count shows whether the entry point wired `with_mcp_tool_rx` (and with which scope). The
+/// turn itself also spawns the agent's cancel-bridge task on the agent's task supervisor.
+#[cfg(all(test, any(feature = "a2a", feature = "acp")))]
+pub(crate) async fn mcp_tool_count_after_turn(
+    agent: zeph_core::agent::Agent<zeph_core::LoopbackChannel>,
+    mut handle: zeph_core::LoopbackHandle,
+) -> usize {
+    let (metrics_tx, metrics_rx) =
+        tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+    let mut agent = agent.with_metrics(metrics_tx);
+    let message = zeph_core::ChannelMessage {
+        text: "hello".to_owned(),
+        attachments: Vec::new(),
+        is_guest_context: false,
+        is_from_bot: false,
+        owner_key: None,
+    };
+    let driver = async move {
+        handle
+            .input_tx
+            .send(message)
+            .await
+            .expect("agent loop is receiving");
+        while let Some(event) = handle.output_rx.recv().await {
+            if matches!(
+                event,
+                zeph_core::LoopbackEvent::Flush | zeph_core::LoopbackEvent::FullMessage(_)
+            ) {
+                break;
+            }
+        }
+        drop(handle.input_tx);
+    };
+    let (run, ()) = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        tokio::join!(agent.run(), driver)
+    })
+    .await
+    .expect("agent turn must finish");
+    run.expect("agent loop ends cleanly when input closes");
+    metrics_rx.borrow().mcp_tool_count
+}
+
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
@@ -4988,5 +5047,56 @@ mod tests {
             1,
             "dropping the Agent must release its clone of the shadow sentinel"
         );
+    }
+
+    fn mcp_tool(server: &str, name: &str) -> zeph_mcp::McpTool {
+        zeph_mcp::McpTool {
+            server_id: server.into(),
+            name: name.to_owned(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: zeph_mcp::ToolSecurityMeta::default(),
+        }
+    }
+
+    /// #7111: the entry points (runner, daemon, ACP) rely on this helper to subscribe before the
+    /// refresh task starts and to register that task on the session supervisor.
+    #[tokio::test]
+    async fn start_mcp_tool_refresh_subscribes_and_registers_the_refresh_task() {
+        let manager =
+            crate::bootstrap::create_mcp_manager_with_vault(&Config::default(), false, None);
+        let supervisor =
+            zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+
+        let mut rx = start_mcp_tool_refresh(&manager, Some(&supervisor), true);
+
+        assert!(
+            supervisor
+                .snapshot()
+                .iter()
+                .any(|t| &*t.name == "mcp.refresh_task"),
+            "refresh task must be registered on the supervisor"
+        );
+        manager.publish_tools_for_testing(vec![mcp_tool("srv", "t")]);
+        assert!(
+            rx.has_changed().unwrap(),
+            "receiver must see later publishes"
+        );
+        assert_eq!(rx.borrow_and_update().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn start_mcp_tool_refresh_disabled_still_subscribes_but_spawns_nothing() {
+        let manager =
+            crate::bootstrap::create_mcp_manager_with_vault(&Config::default(), false, None);
+        let supervisor =
+            zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+
+        let rx = start_mcp_tool_refresh(&manager, Some(&supervisor), false);
+
+        assert_eq!(supervisor.active_count(), 0);
+        manager.publish_tools_for_testing(vec![mcp_tool("srv", "t")]);
+        assert!(rx.has_changed().unwrap());
     }
 }

@@ -88,7 +88,8 @@ impl ToolKind {
                 Self::Explore
             }
             "write_file" | "edit_file" | "patch" | "Write" | "Edit" => Self::Edit,
-            "web_search" | "web_scrape" | "fetch" | "WebSearch" | "WebFetch" => Self::Web,
+            "WebSearch" | "WebFetch" => Self::Web,
+            id if zeph_common::native_tools::is_web_egress_tool(id) => Self::Web,
             _ => Self::Other,
         }
     }

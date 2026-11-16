@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StatusText,
-    StopHint, ToolOutputEvent, ToolStartEvent,
+    StopHint, TokenUsage, ToolOutputEvent, ToolStartEvent,
 };
 use zeph_core::json_event_sink::{JsonEvent, JsonEventSink};
 
@@ -282,11 +282,8 @@ impl Channel for JsonCliChannel {
     /// No-op: `JsonEventLayer` emits `cost` from its `after_chat` hook.
     fn send_usage(
         &mut self,
-        _input_tokens: u64,
-        _output_tokens: u64,
+        _usage: TokenUsage,
         _context_window: u64,
-        _cache_read_tokens: u64,
-        _cache_write_tokens: u64,
         _cost_cents: f64,
     ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
         std::future::ready(Ok(()))
@@ -526,7 +523,19 @@ mod tests {
             .await
             .is_ok()
         );
-        assert!(ch.send_usage(100, 50, 200_000, 0, 0, 0.0).await.is_ok());
+        assert!(
+            ch.send_usage(
+                TokenUsage {
+                    input: 100,
+                    output: 50,
+                    ..TokenUsage::default()
+                },
+                200_000,
+                0.0,
+            )
+            .await
+            .is_ok()
+        );
         assert!(ch.send_stop_hint(StopHint::MaxTokens).await.is_ok());
     }
 

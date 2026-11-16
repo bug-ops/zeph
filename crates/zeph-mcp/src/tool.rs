@@ -201,6 +201,60 @@ pub fn detect_collisions<S: std::hash::BuildHasher>(
     collisions
 }
 
+/// An MCP tool whose `sanitized_id` equals a native tool id.
+///
+/// The native tool wins dispatch and is the one the model sees, so the MCP tool is unreachable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeToolShadow {
+    /// The shared sanitized id.
+    pub sanitized_id: String,
+    /// Server that registered the unreachable MCP tool.
+    pub server_id: McpServerId,
+    /// `"server_id:name"` of the unreachable MCP tool.
+    pub qualified: String,
+}
+
+/// Find the MCP tools in `tools` whose `sanitized_id` is one of `native_ids`.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashSet;
+/// use zeph_common::ToolName;
+/// use zeph_mcp::tool::{McpTool, ToolSecurityMeta, detect_native_shadows};
+///
+/// let tool = McpTool {
+///     server_id: "memory".into(),
+///     name: "search".to_owned(),
+///     description: String::new(),
+///     input_schema: serde_json::json!({"type": "object"}),
+///     output_schema: None,
+///     security_meta: ToolSecurityMeta::default(),
+/// };
+/// let native: HashSet<ToolName> = [ToolName::new("memory_search")].into();
+/// let shadows = detect_native_shadows(&[tool], &native);
+/// assert_eq!(shadows[0].qualified, "memory:search");
+/// ```
+#[must_use]
+pub fn detect_native_shadows<S: std::hash::BuildHasher>(
+    tools: &[McpTool],
+    native_ids: &std::collections::HashSet<zeph_common::ToolName, S>,
+) -> Vec<NativeToolShadow> {
+    tools
+        .iter()
+        .filter_map(|t| {
+            let sanitized_id = t.sanitized_id();
+            native_ids
+                .contains(sanitized_id.as_str())
+                .then(|| NativeToolShadow {
+                    sanitized_id,
+                    server_id: t.server_id.clone(),
+                    qualified: t.qualified_name(),
+                })
+        })
+        .collect()
+}
+
 /// Maximum length of [`McpTool::sanitized_id`] accepted by LLM APIs.
 const MAX_SANITIZED_ID_LEN: usize = 128;
 

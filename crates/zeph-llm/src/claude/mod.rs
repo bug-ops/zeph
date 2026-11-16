@@ -78,7 +78,9 @@ use self::beta::{
 };
 use self::cache::{build_cache_control, log_cache_usage, split_system_into_blocks, tool_cache_key};
 use self::guard::{PrefixGuard, WireFingerprint};
-use self::model::{CLAUDE_DEFAULT_WINDOW_CEILING, ClaudeModel, ModelCapabilities};
+use self::model::{
+    CLAUDE_DEFAULT_WINDOW_CEILING, ClaudeModel, ModelCapabilities, retired_model_replacement,
+};
 use self::request::{
     DirectiveRendering, SplitHistory, SplitOptions, WireHistory, parse_tool_response,
 };
@@ -481,7 +483,13 @@ impl ClaudeProvider {
     /// those identifiers may be retired or superseded by a newer default.
     #[must_use]
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
-        if let Some(suggestion) = stale_model_suggestion(&model) {
+        if let Some(replacement) = retired_model_replacement(&model) {
+            tracing::warn!(
+                model = %model,
+                "configured Claude model is retired or scheduled for retirement; \
+                switch to {replacement} (run --migrate-config to rewrite it)",
+            );
+        } else if let Some(suggestion) = stale_model_suggestion(&model) {
             tracing::warn!(
                 model = %model,
                 "configured Claude model is not a current release and may be retired or \
@@ -975,7 +983,7 @@ impl ClaudeProvider {
 
             let status = resp.status();
             if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
+                let body = crate::http::read_body(resp).await.unwrap_or_default();
                 tracing::debug!(status = %status, body = %body, "Claude list_models_remote error body");
                 return Err(LlmError::api_error("claude", status.as_u16(), &body));
             }
@@ -1646,7 +1654,7 @@ impl ClaudeProvider {
 
             let status = response.status();
             if !status.is_success() {
-                let text = response.text().await.map_err(LlmError::Http)?;
+                let text = crate::http::read_body(response).await?;
                 if self.handle_beta_rejection(status, &text, "tool stream")
                     || self.latch_mid_conversation_system(status, &text, &history)
                 {
@@ -1885,7 +1893,7 @@ impl ClaudeProvider {
 
             let status = response.status();
             if !status.is_success() {
-                let text = response.text().await.map_err(LlmError::Http)?;
+                let text = crate::http::read_body(response).await?;
                 if self.handle_beta_rejection(status, &text, "streaming") {
                     continue;
                 }

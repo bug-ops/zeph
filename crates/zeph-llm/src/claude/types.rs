@@ -618,19 +618,17 @@ impl ApiUsage {
     /// Sum of the compaction iterations, billed in addition to the top-level counters.
     ///
     /// Returns `None` when there are none. Unknown iteration kinds are not billed.
-    pub(super) fn auxiliary(&self) -> Option<crate::provider::AuxiliaryUsage> {
-        let mut total: Option<crate::provider::AuxiliaryUsage> = None;
+    pub(super) fn auxiliary(&self) -> Option<crate::provider::TokenUsage> {
+        let mut total: Option<crate::provider::TokenUsage> = None;
         for it in &self.iterations {
             match it.kind {
                 IterationKind::Compaction => {
-                    total.get_or_insert_with(Default::default).add(
-                        crate::provider::AuxiliaryUsage {
-                            input: it.input,
-                            output: it.output,
-                            cache_creation: it.cache_creation,
-                            cache_read: it.cache_read,
-                        },
-                    );
+                    *total.get_or_insert_with(Default::default) += crate::provider::TokenUsage {
+                        input: it.input,
+                        output: it.output,
+                        cache_write: it.cache_creation,
+                        cache_read: it.cache_read,
+                    };
                 }
                 IterationKind::Message => {}
                 IterationKind::Other => {

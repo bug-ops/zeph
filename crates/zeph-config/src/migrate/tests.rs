@@ -10,8 +10,8 @@ use std::assert_matches;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        118,
-        "MIGRATIONS registry must contain all 118 sequential steps"
+        119,
+        "MIGRATIONS registry must contain all 119 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2205,7 +2205,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 118);
+    assert_eq!(MIGRATIONS.len(), 119);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2435,6 +2435,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_claude_speed",
         "migrate_acp_ide_mcp_config",
         "migrate_interaction_config",
+        "migrate_retired_claude_sonnet_model",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -5782,6 +5783,40 @@ fn migrate_claude_speed_adds_hint_once_to_claude_entries_only() {
     let second = migrate_claude_speed(&first.output).unwrap();
     assert_eq!(second.changed_count, 0);
     assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_retired_claude_sonnet_model_rewrites_claude_entries_only() {
+    let src = "[[llm.providers]]\ntype = \"claude\"\nmodel = \"claude-sonnet-4-5-20250929\" # keep\n\n[[llm.providers]]\ntype = \"openai\"\nmodel = \"claude-sonnet-4-5-20250929\"\n";
+    let first = migrate_retired_claude_sonnet_model(src).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let parsed: toml::Value = toml::from_str(&first.output).unwrap();
+    assert_eq!(
+        parsed["llm"]["providers"][0]["model"].as_str(),
+        Some("claude-sonnet-5-5")
+    );
+    assert_eq!(
+        parsed["llm"]["providers"][1]["model"].as_str(),
+        Some("claude-sonnet-4-5-20250929")
+    );
+    assert!(first.output.contains("# keep"));
+    let second = migrate_retired_claude_sonnet_model(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn reference_default_toml_names_no_retired_claude_sonnet_model() {
+    let reference = include_str!("../../config/default.toml");
+    assert!(!reference.contains("claude-sonnet-4-5-20250929"));
+}
+
+#[test]
+fn migrate_retired_claude_sonnet_model_noop_without_providers() {
+    let src = "[agent]\nname = \"z\"\n";
+    let r = migrate_retired_claude_sonnet_model(src).unwrap();
+    assert_eq!(r.changed_count, 0);
+    assert_eq!(r.output, src);
 }
 
 #[test]

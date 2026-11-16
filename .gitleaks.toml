@@ -22,6 +22,7 @@ regexes = [
   '''sk-abc123def''',
   '''sk-abc123xyz''',
   '''sk-test-abc123def456''',
+  '''sk-test-abcdefghijklmnop1234''',
   '''AKIA1234567890ABCDEF''',
   '''AIzaSyA1234567890abcdefghijklmnop''',
   '''sk_live_abcdef123456''',

@@ -222,10 +222,10 @@ pub use telemetry::{TelemetryBackend, TelemetryConfig};
 pub use tools::{AuditDestination, SandboxBackend, ToolCompressionConfig};
 pub use ui::{
     ACP_AUTH_CLIENT_ID_DEFAULT, ACP_AUTH_CLIENT_ID_LOCAL, AcpAuthClient, AcpAuthMethod, AcpConfig,
-    AcpIdeMcpConfig, AcpIdeMcpGrant, AcpIdeMcpTarget, AcpLspConfig, AcpModelConfigConfig,
-    AcpSubagentsConfig, AcpTemperaturePreset, AcpTimeoutsConfig, AcpTransport, AdditionalDir,
-    AdditionalDirError, ColorMode, DelightsConfig, FleetConfig, Motion, PanelSizingMode,
-    SubagentPresetConfig, ThemeConfig, ToolDensity, TuiConfig,
+    AcpIdeMcpConfig, AcpIdeMcpGrant, AcpIdeMcpGrantError, AcpIdeMcpTarget, AcpLspConfig,
+    AcpModelConfigConfig, AcpSubagentsConfig, AcpTemperaturePreset, AcpTimeoutsConfig,
+    AcpTransport, AdditionalDir, AdditionalDirError, ColorMode, DelightsConfig, FleetConfig,
+    Motion, PanelSizingMode, SubagentPresetConfig, ThemeConfig, ToolDensity, TuiConfig,
 };
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 pub use vigil::VigilConfig;

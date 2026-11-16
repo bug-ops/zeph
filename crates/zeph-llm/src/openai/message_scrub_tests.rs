@@ -103,3 +103,85 @@ async fn chat_with_tools_invalid_input_message_is_scrubbed_and_capped() {
         other => panic!("expected InvalidInput, got {other:?}"),
     }
 }
+
+async fn embed_provider_returning_400(body: String) -> OpenAiProvider {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(body))
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: server.uri(),
+        model: "gpt-5.4-mini".into(),
+        max_tokens: 256,
+        embedding_model: Some("text-embedding-3-small".into()),
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    std::mem::forget(server);
+    provider
+}
+
+fn assert_invalid_input_scrubbed(err: LlmError) {
+    match err {
+        LlmError::InvalidInput { message, .. } => {
+            assert_scrubbed(&message);
+            assert!(message.chars().count() <= MAX_BODY_CHARS, "uncapped body");
+            assert!(message.contains("bad request"));
+        }
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn embed_invalid_input_message_is_scrubbed_and_capped() {
+    let provider = embed_provider_returning_400(format!("bad request {}", hostile_tail())).await;
+    let err = provider
+        .embed("hi")
+        .await
+        .expect_err("400 must be an error");
+    assert_invalid_input_scrubbed(err);
+}
+
+#[tokio::test]
+async fn embed_batch_invalid_input_message_is_scrubbed_and_capped() {
+    let provider = embed_provider_returning_400(format!("bad request {}", hostile_tail())).await;
+    let err = provider
+        .embed_batch(&["hi"])
+        .await
+        .expect_err("400 must be an error");
+    assert_invalid_input_scrubbed(err);
+}
+
+#[tokio::test]
+async fn chat_with_tools_body_over_cap_is_rejected() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+            b'a';
+            crate::http::LLM_BODY_LIMIT.get()
+                + 1
+        ]))
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: server.uri(),
+        model: "gpt-5.4-mini".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(matches!(
+        chat_error(&provider).await,
+        LlmError::ResponseTooLarge { limit } if limit == crate::http::LLM_BODY_LIMIT.get()
+    ));
+}

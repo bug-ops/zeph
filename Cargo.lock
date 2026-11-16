@@ -10753,6 +10753,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "tracing-test",
  "uuid",
  "zeph-commands",
  "zeph-common",

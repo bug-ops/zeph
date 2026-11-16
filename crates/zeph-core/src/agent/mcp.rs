@@ -47,25 +47,78 @@ impl McpToolScope {
 }
 
 /// Render the `/mcp list` "Shadowed tools" section; empty when nothing is shadowed.
-fn format_shadowed_tools(collisions: &[zeph_mcp::tool::ToolCollision]) -> String {
+fn format_shadowed_tools(
+    collisions: &[zeph_mcp::tool::ToolCollision],
+    native_shadows: &[zeph_mcp::tool::NativeToolShadow],
+) -> String {
     use std::fmt::Write;
 
-    if collisions.is_empty() {
-        return String::new();
+    let mut out = String::new();
+    if !collisions.is_empty() {
+        out.push_str("\n\nShadowed tools (same sanitized id, first server wins dispatch):");
+        for c in collisions {
+            let _ = write!(
+                out,
+                "\n- {} is shadowed by {} (id: {})",
+                c.qualified_b, c.qualified_a, c.sanitized_id
+            );
+        }
     }
-    let mut out =
-        String::from("\n\nShadowed tools (same sanitized id, first server wins dispatch):");
-    for c in collisions {
-        let _ = write!(
-            out,
-            "\n- {} is shadowed by {} (id: {})",
-            c.qualified_b, c.qualified_a, c.sanitized_id
-        );
+    if !native_shadows.is_empty() {
+        out.push_str("\n\nTools hidden by a native tool with the same id (native tool wins):");
+        for n in native_shadows {
+            let _ = write!(out, "\n- {} (id: {})", n.qualified, n.sanitized_id);
+        }
     }
     out
 }
 
+/// Render the `/mcp list` reply: per-server tool counts, total, and the shadowed-tools section.
+fn format_mcp_list(
+    server_ids: &[String],
+    tools: &[zeph_mcp::McpTool],
+    collisions: &[zeph_mcp::tool::ToolCollision],
+    native_shadows: &[zeph_mcp::tool::NativeToolShadow],
+) -> String {
+    use std::fmt::Write;
+
+    let mut output = String::from("Connected MCP servers:\n");
+    let mut total = 0usize;
+    for id in server_ids {
+        let count = tools.iter().filter(|t| t.server_id == id.as_str()).count();
+        total += count;
+        let _ = writeln!(output, "- {id} ({count} tools)");
+    }
+    let _ = write!(output, "Total: {total} tool(s)");
+    output.push_str(&format_shadowed_tools(collisions, native_shadows));
+    output
+}
+
 impl<C: Channel> Agent<C> {
+    /// Recompute the MCP tools hidden behind a native tool id and WARN once per newly hidden tool.
+    pub(super) fn refresh_native_tool_shadows(&mut self) {
+        let native: std::collections::HashSet<zeph_common::ToolName> = self
+            .tool_executor
+            .tool_definitions_erased()
+            .into_iter()
+            .filter(|d| !d.is_mcp_tool())
+            .map(|d| zeph_common::ToolName::new(d.id.as_ref()))
+            .collect();
+        let shadows = zeph_mcp::tool::detect_native_shadows(self.services.mcp.tools(), &native);
+        for s in shadows
+            .iter()
+            .filter(|s| !self.services.mcp.native_shadows.contains(s))
+        {
+            tracing::warn!(
+                server_id = %s.server_id,
+                tool = %s.qualified,
+                tool_id = %s.sanitized_id,
+                "MCP tool sanitized_id collides with a native tool; the native tool wins dispatch and the MCP tool is unreachable"
+            );
+        }
+        self.services.mcp.native_shadows = shadows;
+    }
+
     /// Dispatch a `/mcp` subcommand, returning the output as a `String`.
     ///
     /// All output is collected into the returned string; no channel sends are
@@ -150,8 +203,6 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_mcp_list(&mut self) -> Result<String, super::error::AgentError> {
-        use std::fmt::Write;
-
         let Some(manager) = self.services.mcp.manager.clone() else {
             return Ok("MCP is not enabled.".to_owned());
         };
@@ -161,24 +212,12 @@ impl<C: Channel> Agent<C> {
             return Ok("No MCP servers connected.".to_owned());
         }
 
-        let mut output = String::from("Connected MCP servers:\n");
-        let mut total = 0usize;
-        for id in &server_ids {
-            let count = self
-                .services
-                .mcp
-                .tools()
-                .iter()
-                .filter(|t| t.server_id == id.as_str())
-                .count();
-            total += count;
-            let _ = writeln!(output, "- {id} ({count} tools)");
-        }
-        let _ = write!(output, "Total: {total} tool(s)");
-
-        output.push_str(&format_shadowed_tools(&manager.tool_collisions()));
-
-        Ok(output)
+        Ok(format_mcp_list(
+            &server_ids,
+            self.services.mcp.tools(),
+            &manager.tool_collisions(),
+            &self.services.mcp.native_shadows,
+        ))
     }
 
     fn handle_mcp_tools(&mut self, server_id: Option<&str>) -> String {
@@ -386,6 +425,7 @@ impl<C: Channel> Agent<C> {
         // Handle deferred rebuild from /mcp add|remove via AgentAccess.
         if self.services.mcp.pending_semantic_rebuild {
             self.services.mcp.pending_semantic_rebuild = false;
+            self.refresh_native_tool_shadows();
             self.rebuild_semantic_index().await;
             self.sync_mcp_registry().await;
             let mcp_total = self.services.mcp.tools().len();
@@ -409,21 +449,13 @@ impl<C: Channel> Agent<C> {
         if !rx.has_changed().unwrap_or(false) {
             return;
         }
+        // `has_changed()` is false for the watch's initial value, so an empty list here is a real
+        // refresh (every server lost its tools) and must clear the agent's tools.
         let new_tools = self
             .services
             .mcp
             .tool_scope
             .filter(rx.borrow_and_update().clone());
-        if new_tools.is_empty() {
-            // Guard against replacing a non-empty initial tool list with the watch's empty
-            // initial value. The watch is only updated after a real tools/list_changed event.
-            //
-            // In practice this branch is unreachable with an empty list anyway: the
-            // `tools/list_changed` producer never sends an empty vec, and removing the last
-            // server goes through the `pending_semantic_rebuild` branch above, which has no
-            // such guard.
-            return;
-        }
         if new_tools == self.services.mcp.tools() {
             // Nothing in this agent's scope changed (e.g. another session's server refreshed).
             return;
@@ -435,6 +467,7 @@ impl<C: Channel> Agent<C> {
         self.services.mcp.set_tools(new_tools);
         self.services.mcp.sync_executor_tools();
         self.services.mcp.pruning_cache.reset();
+        self.refresh_native_tool_shadows();
         self.rebuild_semantic_index().await;
         self.sync_mcp_registry().await;
         let mcp_total = self.services.mcp.tools().len();
@@ -861,89 +894,13 @@ impl<C: Channel + Send + 'static> zeph_commands::McpAccess for Agent<C> {
                 + 'a,
         >,
     > {
-        // Extract all owned data before the async block so no &mut self reference is
-        // held across an .await point, satisfying the `for<'a>` Send bound.
-        let args_owned = args.to_owned();
-        let parts: Vec<String> = args_owned.split_whitespace().map(str::to_owned).collect();
-        let sub = parts.first().cloned().unwrap_or_default();
-
-        match sub.as_str() {
-            "list" => {
-                // Read-only: clone all data before async.
-                let manager = self.services.mcp.manager.clone();
-                let tools_snapshot: Vec<(String, String)> = self
-                    .services
-                    .mcp
-                    .tools()
-                    .iter()
-                    .map(|t| (t.server_id.to_string(), t.name.clone()))
-                    .collect();
-                Box::pin(async move {
-                    use std::fmt::Write;
-                    let Some(manager) = manager else {
-                        return Ok("MCP is not enabled.".to_owned());
-                    };
-                    let server_ids = manager.list_servers().await;
-                    if server_ids.is_empty() {
-                        return Ok("No MCP servers connected.".to_owned());
-                    }
-                    let mut output = String::from("Connected MCP servers:\n");
-                    let mut total = 0usize;
-                    for id in &server_ids {
-                        let count = tools_snapshot.iter().filter(|(sid, _)| sid == id).count();
-                        total += count;
-                        let _ = writeln!(output, "- {id} ({count} tools)");
-                    }
-                    let _ = write!(output, "Total: {total} tool(s)");
-                    Ok(output)
-                })
-            }
-            "tools" => {
-                // Read-only: collect tool info before async.
-                let server_id = parts.get(1).cloned();
-                let owned_tools: Vec<(String, String)> = if let Some(ref sid) = server_id {
-                    self.services
-                        .mcp
-                        .tools()
-                        .iter()
-                        .filter(|t| t.server_id == sid.as_str())
-                        .map(|t| (t.name.clone(), t.description.clone()))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                Box::pin(async move {
-                    use std::fmt::Write;
-                    let Some(server_id) = server_id else {
-                        return Ok("Usage: /mcp tools <server_id>".to_owned());
-                    };
-                    if owned_tools.is_empty() {
-                        return Ok(format!("No tools found for server '{server_id}'."));
-                    }
-                    let mut output =
-                        format!("Tools for '{server_id}' ({} total):\n", owned_tools.len());
-                    for (name, desc) in &owned_tools {
-                        if desc.is_empty() {
-                            let _ = writeln!(output, "- {name}");
-                        } else {
-                            let _ = writeln!(output, "- {name} — {desc}");
-                        }
-                    }
-                    Ok(output)
-                })
-            }
-            // add/remove require mutating self after async I/O.
-            // handle_mcp_command is structured so the only .await crossing a &mut self
-            // boundary goes through a cloned Arc<McpManager> — no &self fields are held
-            // across that .await.  The subsequent state-change methods (rebuild_semantic_index,
-            // sync_mcp_registry) are also async fn(&mut self), but they only hold owned locals
-            // across their own .await points (cloned tools Vec, cloned Arcs).
-            _ => Box::pin(async move {
-                self.handle_mcp_command(&args_owned)
-                    .await
-                    .map_err(|e| zeph_commands::CommandError::new(e.to_string()))
-            }),
-        }
+        // `handle_mcp_command` is the single implementation of every `/mcp` subcommand; it only
+        // holds a cloned `Arc<McpManager>` across its own `.await` points, so the future is `Send`.
+        Box::pin(async move {
+            self.handle_mcp_command(args)
+                .await
+                .map_err(|e| zeph_commands::CommandError::new(e.to_string()))
+        })
     }
 }
 
@@ -960,7 +917,7 @@ mod tests {
         use zeph_mcp::McpTrustLevel;
         use zeph_mcp::tool::ToolCollision;
 
-        assert_eq!(format_shadowed_tools(&[]), "");
+        assert_eq!(format_shadowed_tools(&[], &[]), "");
         let col = ToolCollision {
             sanitized_id: "a_b_c".into(),
             server_a: "a.b".into(),
@@ -970,9 +927,162 @@ mod tests {
             qualified_b: "a:b_c".into(),
             trust_b: McpTrustLevel::Untrusted,
         };
-        let out = format_shadowed_tools(&[col]);
+        let out = format_shadowed_tools(&[col], &[]);
         assert!(out.contains("Shadowed tools"));
         assert!(out.contains("a:b_c is shadowed by a.b:c (id: a_b_c)"));
+    }
+
+    #[test]
+    fn mcp_list_reply_includes_shadowed_section() {
+        use zeph_mcp::McpTrustLevel;
+        use zeph_mcp::tool::ToolCollision;
+
+        let col = ToolCollision {
+            sanitized_id: "a_b_c".into(),
+            server_a: "a.b".into(),
+            qualified_a: "a.b:c".into(),
+            trust_a: McpTrustLevel::Trusted,
+            server_b: "a".into(),
+            qualified_b: "a:b_c".into(),
+            trust_b: McpTrustLevel::Untrusted,
+        };
+        let out = format_mcp_list(&["a".to_owned(), "a.b".to_owned()], &[], &[col], &[]);
+        assert!(out.starts_with("Connected MCP servers:\n- a (0 tools)"));
+        assert!(out.contains("Shadowed tools"));
+        assert!(format_mcp_list(&["a".to_owned()], &[], &[], &[]).ends_with("Total: 0 tool(s)"));
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_with_native_id_is_recorded_as_shadowed() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools().advertising(&["memory_search"]);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.mcp.set_tools(vec![
+            zeph_mcp::McpTool {
+                server_id: "memory".into(),
+                name: "search".to_owned(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: None,
+                security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+            },
+            zeph_mcp::McpTool {
+                server_id: "memory".into(),
+                name: "other".to_owned(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: None,
+                security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+            },
+        ]);
+
+        agent.refresh_native_tool_shadows();
+
+        let shadows = &agent.services.mcp.native_shadows;
+        assert_eq!(shadows.len(), 1);
+        assert_eq!(shadows[0].qualified, "memory:search");
+        let out = format_shadowed_tools(&[], shadows);
+        assert!(out.contains("native tool wins"));
+        assert!(out.contains("- memory:search (id: memory_search)"));
+        assert!(!out.contains("first server wins"));
+        assert_eq!(out.matches("memory_search").count(), 1);
+    }
+
+    /// #7095: the registry entry point (`McpAccess::handle_mcp`, the only caller of `/mcp` from
+    /// `zeph-commands`) must answer exactly like `handle_mcp_command`. A `McpManager` with live
+    /// servers cannot be built here, so this pins parity on the paths reachable without one;
+    /// the shadowed section itself is pinned by `mcp_list_reply_includes_shadowed_section`.
+    #[test]
+    fn mcp_list_reply_separates_native_shadows_from_server_collisions() {
+        let native = zeph_mcp::tool::NativeToolShadow {
+            sanitized_id: "memory_search".into(),
+            server_id: "memory".into(),
+            qualified: "memory:search".into(),
+        };
+        let out = format_mcp_list(&["memory".to_owned()], &[], &[], &[native]);
+        assert!(!out.contains("Shadowed tools (same sanitized id"), "{out}");
+        assert!(
+            out.ends_with(
+                "Tools hidden by a native tool with the same id (native tool wins):\n- memory:search (id: memory_search)"
+            ),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_entry_point_answers_like_handle_mcp_command() {
+        use zeph_commands::McpAccess;
+
+        for args in [
+            "list",
+            "tools",
+            "tools srv",
+            "remove",
+            "remove srv",
+            "add srv",
+            "bogus",
+            "",
+        ] {
+            let mut via_registry = Agent::new(
+                mock_provider(vec![]),
+                MockChannel::new(vec![]),
+                create_test_registry(),
+                None,
+                5,
+                MockToolExecutor::no_tools(),
+            );
+            let mut direct = Agent::new(
+                mock_provider(vec![]),
+                MockChannel::new(vec![]),
+                create_test_registry(),
+                None,
+                5,
+                MockToolExecutor::no_tools(),
+            );
+            let registry_reply = via_registry.handle_mcp(args).await.unwrap();
+            let direct_reply = direct.handle_mcp_command(args).await.unwrap();
+            assert_eq!(registry_reply, direct_reply, "args: {args:?}");
+        }
+    }
+
+    /// #7097: the collision WARN is emitted once per newly shadowed tool, not on every refresh.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn native_collision_warns_once_across_refreshes() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools().advertising(&["memory_search"]),
+        );
+        agent.services.mcp.set_tools(vec![zeph_mcp::McpTool {
+            server_id: "memory".into(),
+            name: "search".to_owned(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+        }]);
+
+        agent.refresh_native_tool_shadows();
+        agent.refresh_native_tool_shadows();
+
+        logs_assert(|lines: &[&str]| {
+            let n = lines
+                .iter()
+                .filter(|l| l.contains("collides with a native tool"))
+                .count();
+            if n == 1 {
+                Ok(())
+            } else {
+                Err(format!("expected exactly one collision WARN, got {n}"))
+            }
+        });
+        assert!(logs_contain("memory:search"));
     }
 
     #[tokio::test]

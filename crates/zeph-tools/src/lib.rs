@@ -123,10 +123,11 @@ pub use error_taxonomy::{
 };
 pub use execution_context::ExecutionContext;
 pub use executor::{
-    CheckpointActionResult, CheckpointEntryView, CheckpointListResult, ClaimSource, DiffData,
-    DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats, MAX_TOOL_OUTPUT_CHARS, SyntheticKind,
-    TOOL_EVENT_CHANNEL_CAP, ToolCall, ToolError, ToolEvent, ToolEventRx, ToolEventTx, ToolExecutor,
-    ToolOutput, ToolStatus, truncate_tool_output, truncate_tool_output_at,
+    CallAttribution, CheckpointActionResult, CheckpointEntryView, CheckpointListResult,
+    ClaimSource, DiffData, DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats,
+    MAX_TOOL_OUTPUT_CHARS, SyntheticKind, TOOL_EVENT_CHANNEL_CAP, ToolCall, ToolError, ToolEvent,
+    ToolEventRx, ToolEventTx, ToolExecutor, ToolOutput, ToolStatus, truncate_tool_output,
+    truncate_tool_output_at,
 };
 pub use file::FileExecutor;
 pub use filter::{
@@ -177,8 +178,9 @@ pub use utility::{
     UtilityAction, UtilityContext, UtilityScore, UtilityScorer, has_explicit_tool_request,
 };
 pub use verifier::{
-    DestructiveCommandVerifier, FirewallVerifier, InjectionPatternVerifier, PreDispatchBlock,
-    PreDispatchBlockSink, PreExecutionVerifier, UrlGroundingVerifier, VerificationResult,
+    DestructiveCommandVerifier, FirewallVerifier, GateOutcome, InjectionPatternVerifier,
+    PreDispatchBlock, PreDispatchBlockSink, PreExecutionVerifier, UrlGroundingVerifier,
+    VerificationResult, VerifierWarning, evaluate_pre_dispatch, pre_execution_refusal,
 };
 pub use zeph_common::ToolName;
 pub use zeph_config::tools::{

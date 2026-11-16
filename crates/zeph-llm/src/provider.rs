@@ -168,41 +168,54 @@ pub struct ToolUseRequest {
     pub input: serde_json::Value,
 }
 
-/// Token usage billed outside the top-level request counters, such as server-side compaction
-/// iterations. Counts toward cost, never toward context size.
+/// The four billed token counters of one LLM call, always named so they cannot be reordered.
+///
+/// The single usage type shared by pricing, cost tracking, channels and ACP. It also carries
+/// usage billed outside the top-level request counters (server-side compaction iterations),
+/// which counts toward cost, never toward context size.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AuxiliaryUsage {
+pub struct TokenUsage {
     /// Input tokens.
     pub input: u64,
     /// Output tokens.
     pub output: u64,
-    /// Cache-creation input tokens.
-    pub cache_creation: u64,
-    /// Cache-read input tokens.
+    /// Input tokens written to the prompt cache.
+    pub cache_write: u64,
+    /// Input tokens served from the prompt cache.
     pub cache_read: u64,
 }
 
-impl AuxiliaryUsage {
-    /// Add `other` to `self`, saturating on overflow.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zeph_llm::provider::AuxiliaryUsage;
-    ///
-    /// let mut a = AuxiliaryUsage { input: 1, output: 2, cache_creation: 3, cache_read: 4 };
-    /// a.add(AuxiliaryUsage { input: 1, ..AuxiliaryUsage::default() });
-    /// assert_eq!(a.input, 2);
-    /// ```
-    pub fn add(&mut self, other: Self) {
+/// Adds counter-wise, saturating on overflow.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::TokenUsage;
+///
+/// let mut a = TokenUsage { input: 1, output: 2, cache_write: 3, cache_read: 4 };
+/// a += TokenUsage { input: 1, ..TokenUsage::default() };
+/// assert_eq!(a.input, 2);
+/// assert_eq!((a + a).output, 4);
+/// ```
+impl std::ops::AddAssign for TokenUsage {
+    fn add_assign(&mut self, other: Self) {
         self.input = self.input.saturating_add(other.input);
         self.output = self.output.saturating_add(other.output);
-        self.cache_creation = self.cache_creation.saturating_add(other.cache_creation);
+        self.cache_write = self.cache_write.saturating_add(other.cache_write);
         self.cache_read = self.cache_read.saturating_add(other.cache_read);
     }
 }
 
-impl From<ResponseUsage> for AuxiliaryUsage {
+impl std::ops::Add for TokenUsage {
+    type Output = Self;
+
+    fn add(mut self, other: Self) -> Self {
+        self += other;
+        self
+    }
+}
+
+impl From<ResponseUsage> for TokenUsage {
     /// Fold a whole response into auxiliary usage: its own counters plus any auxiliary it carried.
     ///
     /// Reasoning tokens are a subset of `output` and are not added again.
@@ -210,11 +223,11 @@ impl From<ResponseUsage> for AuxiliaryUsage {
         let mut aux = Self {
             input: usage.input,
             output: usage.output,
-            cache_creation: usage.cache.map_or(0, |c| c.creation),
+            cache_write: usage.cache.map_or(0, |c| c.creation),
             cache_read: usage.cache.map_or(0, |c| c.read),
         };
         if let Some(inner) = usage.auxiliary {
-            aux.add(inner);
+            aux += inner;
         }
         aux
     }
@@ -258,7 +271,7 @@ pub struct ResponseUsage {
     /// Reasoning tokens, a **subset** of `output`; never add them to cost separately.
     pub reasoning: Option<u64>,
     /// Usage billed outside the top-level counters (server compaction iterations).
-    pub auxiliary: Option<AuxiliaryUsage>,
+    pub auxiliary: Option<TokenUsage>,
     /// Service speed the request was sent with; drives the price tier.
     pub speed: zeph_config::ServiceSpeed,
 }
@@ -2489,6 +2502,35 @@ mod tests {
     }
 
     #[test]
+    fn token_usage_add_saturates_each_counter() {
+        let max = TokenUsage {
+            input: u64::MAX,
+            output: u64::MAX,
+            cache_write: u64::MAX,
+            cache_read: u64::MAX,
+        };
+        let one = TokenUsage {
+            input: 1,
+            output: 2,
+            cache_write: 3,
+            cache_read: 4,
+        };
+        assert_eq!(max + one, max);
+        let mut acc = max;
+        acc += one;
+        assert_eq!(acc, max);
+        assert_eq!(
+            one + one,
+            TokenUsage {
+                input: 2,
+                output: 4,
+                cache_write: 6,
+                cache_read: 8,
+            }
+        );
+    }
+
+    #[test]
     fn auxiliary_usage_from_response_includes_cache_and_nested_auxiliary() {
         let usage = ResponseUsage {
             input: 10,
@@ -2498,20 +2540,20 @@ mod tests {
                 read: 3,
             }),
             reasoning: Some(4),
-            auxiliary: Some(AuxiliaryUsage {
+            auxiliary: Some(TokenUsage {
                 input: 1,
                 output: 1,
-                cache_creation: 0,
+                cache_write: 0,
                 cache_read: 0,
             }),
             ..ResponseUsage::default()
         };
         assert_eq!(
-            AuxiliaryUsage::from(usage),
-            AuxiliaryUsage {
+            TokenUsage::from(usage),
+            TokenUsage {
                 input: 11,
                 output: 6,
-                cache_creation: 2,
+                cache_write: 2,
                 cache_read: 3,
             }
         );

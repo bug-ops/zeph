@@ -2221,3 +2221,35 @@ fn marker_checkpoint_never_reaches_the_gemini_request() {
     assert!(!json.contains("MARKER-ONLY-TEXT"), "{json}");
     assert!(json.contains("hello"));
 }
+
+#[tokio::test]
+async fn embed_400_invalid_input_message_is_scrubbed_and_capped() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let secret = "sk-test-abcdefghijklmnop1234";
+    let body = format!(
+        "bad request key {secret} \x1b[31mred\x1b[0m {}",
+        "x".repeat(5000)
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(body))
+        .mount(&server)
+        .await;
+    let provider = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+        .with_embedding_model("text-embedding-004")
+        .with_base_url(server.uri());
+
+    let err = provider
+        .embed("hi")
+        .await
+        .expect_err("400 must be an error");
+    let LlmError::InvalidInput { message, .. } = err else {
+        panic!("expected InvalidInput, got {err:?}");
+    };
+    assert!(!message.contains(secret));
+    assert!(!message.chars().any(char::is_control));
+    assert!(message.chars().count() <= crate::ApiErrorDetail::MAX_MESSAGE_CHARS);
+    assert!(message.contains("bad request"));
+}

@@ -101,6 +101,10 @@ impl SetCwdExecutor {
 }
 
 impl ToolExecutor for SetCwdExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        crate::registry::McpToolIds::empty_shared()
+    }
+
     // `resolve_and_set_cwd` calls `std::env::set_current_dir` — a process-global mutation.
     // Kept as a genuine `async fn` (never `std::future::ready`) so the mutation stays
     // lazy (poll-time), matching the pre-1.98 behavior and avoiding a select!-cancellation

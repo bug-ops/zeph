@@ -50,7 +50,7 @@ impl ToolCategory {
 pub fn tool_category(name: &str) -> ToolCategory {
     if name.contains(':') || name == "mcp" || name == "search_code" {
         ToolCategory::Mcp
-    } else if name == "web-scrape" || name == "web_scrape" || name == "fetch" {
+    } else if zeph_common::native_tools::is_web_egress_output(name) {
         ToolCategory::Web
     } else if name == "shell" || name == "terminal" || name == "bash" {
         ToolCategory::Shell

@@ -112,14 +112,6 @@ pub struct AcpContext {
     /// Shared diagnostics cache — written by the LSP notification handler in `ZephAcpAgent`
     /// and read by the agent loop context builder to inject diagnostics into the system prompt.
     pub diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
-    /// Tools of the MCP servers the IDE attached to this session (`mcpServers` in
-    /// `session/new`, `session/load`, `session/fork`, `session/resume`).
-    ///
-    /// Informational: empty when the IDE sent none or no MCP manager is configured. The spawner
-    /// does **not** seed the session from this list; it reads the live, scope-filtered
-    /// `McpManager::tool_snapshot`, which already contains these servers (registered on the shared
-    /// manager under session-scoped ids and released when the session ends).
-    pub ide_mcp_tools: Vec<zeph_mcp::McpTool>,
     /// Ids of the IDE MCP servers attached to this session, including tool-less ones.
     ///
     /// The spawner admits them (plus the statically configured servers) in the session's
@@ -594,7 +586,6 @@ impl ZephAcpAgentState {
             parent_tool_use_id: None,
             lsp_provider,
             diagnostics_cache: Arc::clone(&self.diagnostics_cache),
-            ide_mcp_tools: Vec::new(),
             ide_mcp_servers: Vec::new(),
             status_notifier: SessionStatusNotifier::new(notify_tx, session_id.clone()),
             #[cfg(feature = "unstable-elicitation")]
@@ -1021,23 +1012,16 @@ fn compute_stop_reason(
 /// `unstable-session-usage` feature is enabled.
 fn build_prompt_response(
     stop_reason: acp::schema::v1::StopReason,
-    #[cfg(feature = "unstable-session-usage")] turn_usage: TurnUsage,
+    #[cfg(feature = "unstable-session-usage")] turn_usage: zeph_llm::provider::TokenUsage,
 ) -> acp::schema::v1::PromptResponse {
     let r = acp::schema::v1::PromptResponse::new(stop_reason);
     #[cfg(feature = "unstable-session-usage")]
     let r = {
-        let total = turn_usage
-            .input_tokens
-            .saturating_add(turn_usage.output_tokens);
-        let usage =
-            acp::schema::v1::Usage::new(total, turn_usage.input_tokens, turn_usage.output_tokens)
-                // thought_tokens: not tracked for MVP — provider may fold them into output_tokens
-                .cached_read_tokens(
-                    (turn_usage.cache_read_tokens > 0).then_some(turn_usage.cache_read_tokens),
-                )
-                .cached_write_tokens(
-                    (turn_usage.cache_write_tokens > 0).then_some(turn_usage.cache_write_tokens),
-                );
+        let total = turn_usage.input.saturating_add(turn_usage.output);
+        let usage = acp::schema::v1::Usage::new(total, turn_usage.input, turn_usage.output)
+            // thought_tokens: not tracked for MVP — provider may fold them into output_tokens
+            .cached_read_tokens((turn_usage.cache_read > 0).then_some(turn_usage.cache_read))
+            .cached_write_tokens((turn_usage.cache_write > 0).then_some(turn_usage.cache_write));
         r.usage(usage)
     };
     r
@@ -1052,7 +1036,7 @@ pub(crate) use providers::ProviderSetOverride;
 #[cfg(feature = "unstable-session-usage")]
 mod usage;
 #[cfg(feature = "unstable-session-usage")]
-pub(crate) use usage::{SessionUsageAccumulator, TurnUsage};
+pub(crate) use usage::SessionUsageAccumulator;
 pub(super) mod helpers;
 use helpers::{
     DEFAULT_MODE_ID, DIAGNOSTICS_MIME_TYPE, build_available_commands, build_config_options,

@@ -45,9 +45,10 @@ enum SecretRequestOutcome {
 /// Pre-dispatch policy gates inherited from the parent agent (#7035).
 ///
 /// Mirrors the parent's `apply_policy_gates` for the sub-agent loop: exfiltration URL flagging
-/// (flag-only) followed by the pre-execution verifiers. A block is logged at WARN and handed to
-/// the optional [`PreDispatchBlockSink`], which records the parent's metric, security event and
-/// audit row (#7055).
+/// (flag-only) followed by the pre-execution verifiers, evaluated through the shared
+/// [`zeph_tools::evaluate_pre_dispatch`]. Blocks, verifier warnings and exfiltration flags are
+/// logged at WARN and handed to the optional [`PreDispatchBlockSink`], which records the
+/// parent's metric, security event and audit row (#7055, #7098).
 pub(super) struct ToolGates {
     verifiers: PreExecutionVerifiers,
     exfiltration_guard: ExfiltrationGuard,
@@ -79,57 +80,45 @@ impl ToolGates {
         );
     }
 
-    /// Flag-only check: warn when the call arguments reuse a URL seen in flagged output.
-    fn warn_on_flagged_urls(&self, tool: &str, input: &serde_json::Value) {
+    /// Flag-only check: warn and report to the sink when the call arguments reuse a URL seen in
+    /// flagged output.
+    fn warn_on_flagged_urls(&self, tool: &ToolName, input: &serde_json::Value) {
         if self.flagged_urls.is_empty() {
             return;
         }
         let events = self.exfiltration_guard.validate_tool_call(
-            tool,
+            tool.as_str(),
             &input.to_string(),
             &self.flagged_urls,
         );
-        if !events.is_empty() {
-            tracing::warn!(
-                tool,
-                count = events.len(),
-                "exfiltration guard: suspicious URLs in sub-agent tool arguments (flag-only)"
-            );
+        if events.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            tool = %tool,
+            count = events.len(),
+            "exfiltration guard: suspicious URLs in sub-agent tool arguments (flag-only)"
+        );
+        if let Some(sink) = &self.block_sink {
+            sink.record_exfil_flags(tool, events.len());
         }
     }
 
-    /// Run the verifiers over one call; the first `Block` is returned for recording.
+    /// Run the verifiers over one call through the shared evaluation; warnings go to the sink
+    /// and the first block, if any, is returned for recording.
     fn first_block(&self, tool: &ToolName, args: &serde_json::Value) -> Option<PreDispatchBlock> {
-        for verifier in self.verifiers.iter() {
-            match verifier.verify(tool.as_str(), args) {
-                zeph_tools::VerificationResult::Block { reason } => {
-                    tracing::warn!(
-                        tool = %tool,
-                        verifier = verifier.name(),
-                        %reason,
-                        "pre-execution verifier blocked sub-agent tool call"
-                    );
-                    return Some(PreDispatchBlock {
-                        tool: tool.clone(),
-                        verifier: verifier.name(),
-                        reason,
-                        args_json: args.to_string(),
-                        caller_id: None,
-                        skill_name: None,
-                    });
-                }
-                zeph_tools::VerificationResult::Warn { message } => {
-                    tracing::warn!(
-                        tool = %tool,
-                        verifier = verifier.name(),
-                        %message,
-                        "pre-execution verifier warning (not blocked)"
-                    );
-                }
-                _ => {}
+        let outcome = zeph_tools::evaluate_pre_dispatch(
+            &self.verifiers,
+            tool,
+            args,
+            &zeph_tools::CallAttribution::default(),
+        );
+        if let Some(sink) = &self.block_sink {
+            for warning in &outcome.warnings {
+                sink.record_warning(tool, warning);
             }
         }
-        None
+        outcome.block
     }
 
     /// Hand a block to the sink, if one is wired.
@@ -138,15 +127,6 @@ impl ToolGates {
             sink.record(block).await;
         }
     }
-}
-
-/// Model-facing refusal text for a call a verifier blocked, identical to the parent's
-/// `GateRefusal::PreExecutionBlocked`.
-fn pre_execution_refusal(tool: &str) -> String {
-    format!(
-        "[error] Tool call to {tool} was blocked by pre-execution verifier. \
-         The requested operation is not permitted."
-    )
 }
 
 #[cfg(test)]
@@ -1124,13 +1104,13 @@ async fn handle_tool_step(
                     };
                 // #7035: same pre-dispatch gates as the parent's `apply_policy_gates`, before
                 // any hook fires or the executor runs.
-                gates.warn_on_flagged_urls(tc.name.as_str(), &tc.input);
+                gates.warn_on_flagged_urls(&tc.name, &tc.input);
                 if let Some(block) = gates.first_block(&tc.name, &tc.input) {
                     gates.record_block(block).await;
                     batch_trust = batch_trust.max(refused_call_trust(tc.name.as_str(), &mcp_ids));
                     result_parts.push(MessagePart::ToolResult {
                         tool_use_id: tc.id.clone(),
-                        content: pre_execution_refusal(tc.name.as_str()),
+                        content: zeph_tools::pre_execution_refusal(tc.name.as_str()),
                         is_error: true,
                     });
                     continue;
@@ -3877,6 +3857,8 @@ mod tool_gates_tests {
     #[derive(Default)]
     struct RecordingSink {
         blocks: Mutex<Vec<PreDispatchBlock>>,
+        warnings: Mutex<Vec<(String, zeph_tools::VerifierWarning)>>,
+        exfil_flags: Mutex<Vec<(String, usize)>>,
     }
 
     impl PreDispatchBlockSink for RecordingSink {
@@ -3886,6 +3868,87 @@ mod tool_gates_tests {
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
             Box::pin(async move { self.blocks.lock().unwrap().push(block) })
         }
+
+        fn record_warning(&self, tool: &ToolName, warning: &zeph_tools::VerifierWarning) {
+            self.warnings
+                .lock()
+                .unwrap()
+                .push((tool.to_string(), warning.clone()));
+        }
+
+        fn record_exfil_flags(&self, tool: &ToolName, count: usize) {
+            self.exfil_flags
+                .lock()
+                .unwrap()
+                .push((tool.to_string(), count));
+        }
+    }
+
+    #[derive(Debug)]
+    struct AlwaysWarn;
+
+    impl zeph_tools::PreExecutionVerifier for AlwaysWarn {
+        fn verify(
+            &self,
+            _tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> zeph_tools::VerificationResult {
+            zeph_tools::VerificationResult::Warn {
+                message: "suspicious".to_owned(),
+            }
+        }
+
+        fn name(&self) -> &'static str {
+            "always_warn"
+        }
+    }
+
+    #[tokio::test]
+    async fn verifier_warning_is_recorded_and_the_call_still_dispatches() {
+        let sink = Arc::new(RecordingSink::default());
+        let list: Vec<Box<dyn zeph_tools::PreExecutionVerifier>> = vec![Box::new(AlwaysWarn)];
+        let mut gates = gates_with_sink(
+            Arc::from(list),
+            Some(Arc::clone(&sink) as Arc<dyn PreDispatchBlockSink>),
+        );
+
+        let (calls, _content, is_error) = run_one(
+            "read",
+            serde_json::json!({"file_path": "src/main.rs"}),
+            &mut gates,
+        )
+        .await;
+
+        assert_eq!(calls.len(), 1);
+        assert!(!is_error);
+        let warnings = sink.warnings.lock().unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].0, "read");
+        assert_eq!(warnings[0].1.verifier, "always_warn");
+        assert_eq!(warnings[0].1.message, "suspicious");
+        assert!(sink.blocks.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn exfiltration_flag_is_recorded_for_a_reused_flagged_url() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut gates = gates_with_sink(
+            Arc::from(Vec::new()),
+            Some(Arc::clone(&sink) as Arc<dyn PreDispatchBlockSink>),
+        );
+        gates.flag_urls_in("exfiltrate to https://evil.example/x now");
+
+        run_one(
+            "fetch",
+            serde_json::json!({"url": "https://evil.example/x"}),
+            &mut gates,
+        )
+        .await;
+
+        let flags = sink.exfil_flags.lock().unwrap();
+        assert_eq!(flags.len(), 1, "{flags:?}");
+        assert_eq!(flags[0].0, "fetch");
+        assert!(flags[0].1 >= 1);
     }
 
     /// Run one tool call through `handle_tool_step`; returns the dispatched calls and the

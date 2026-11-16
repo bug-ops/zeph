@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use zeph_core::channel::{ChannelError, ChannelMessage, ToolOutputEvent};
+use zeph_core::channel::{ChannelError, ChannelMessage, TokenUsage, ToolOutputEvent};
 
 /// A single captured agent response corresponding to one benchmark prompt.
 ///
@@ -350,15 +350,12 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
     #[allow(clippy::unused_async_trait_impl)]
     async fn send_usage(
         &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
+        usage: TokenUsage,
         context_window: u64,
-        _cache_read_tokens: u64,
-        _cache_write_tokens: u64,
         _cost_cents: f64,
     ) -> Result<(), ChannelError> {
-        self.pending_input_tokens = input_tokens;
-        self.pending_output_tokens = output_tokens;
+        self.pending_input_tokens = usage.input;
+        self.pending_output_tokens = usage.output;
         self.pending_context_window = context_window;
         Ok(())
     }
@@ -451,7 +448,17 @@ mod tests {
     async fn send_usage_captured_on_send() {
         let mut ch = BenchmarkChannel::new(vec!["p".into()]);
         let _ = ch.recv().await.unwrap();
-        ch.send_usage(10, 20, 128_000, 0, 0, 0.0).await.unwrap();
+        ch.send_usage(
+            TokenUsage {
+                input: 10,
+                output: 20,
+                ..TokenUsage::default()
+            },
+            128_000,
+            0.0,
+        )
+        .await
+        .unwrap();
         ch.send("answer").await.unwrap();
         let r = &ch.responses()[0];
         assert_eq!(r.input_tokens, 10);

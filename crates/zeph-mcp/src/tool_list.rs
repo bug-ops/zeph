@@ -14,7 +14,7 @@
 //! and shared by `Arc`. Per-turn operations (`publish_pruned`, `expose_full`, reads) only clone
 //! `Arc`s and never rebuild definitions or the id registry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
@@ -140,14 +140,28 @@ impl ExposedMcpTools {
 struct FullList {
     exposed: Arc<ExposedMcpTools>,
     by_identity: HashMap<McpServerId, HashMap<String, Arc<PublishedMcpTool>>>,
+    shadowed: HashSet<(McpServerId, String)>,
 }
 
 impl FullList {
+    /// Build the published view of `tools`.
+    ///
+    /// A tool whose sanitized id was already claimed by an earlier tool is shadowed: it stays in
+    /// `shadowed` but is never exposed, so dispatch, the id registry and every audit record agree
+    /// on the one server that serves an id (first registered wins).
     fn build(tools: Vec<McpTool>) -> Self {
-        let published: Vec<Arc<PublishedMcpTool>> = tools
-            .iter()
-            .map(|t| Arc::new(PublishedMcpTool::build(t)))
-            .collect();
+        let mut claimed: HashMap<String, McpServerId> = HashMap::new();
+        let mut published: Vec<Arc<PublishedMcpTool>> = Vec::with_capacity(tools.len());
+        let mut shadowed: HashSet<(McpServerId, String)> = HashSet::new();
+        for tool in tools {
+            let id = tool.sanitized_id();
+            if claimed.contains_key(&id) {
+                shadowed.insert((tool.server_id.clone(), tool.name.clone()));
+                continue;
+            }
+            claimed.insert(id, tool.server_id.clone());
+            published.push(Arc::new(PublishedMcpTool::build(&tool)));
+        }
         let mut by_identity: HashMap<McpServerId, HashMap<String, Arc<PublishedMcpTool>>> =
             HashMap::new();
         for p in &published {
@@ -156,13 +170,15 @@ impl FullList {
                 .or_default()
                 .insert(p.tool.name.clone(), Arc::clone(p));
         }
+        let exposed_tools: Vec<McpTool> = published.iter().map(|p| p.tool.clone()).collect();
         Self {
             exposed: Arc::new(ExposedMcpTools {
-                ids: Arc::new(ids_of(&tools)),
-                tools,
+                ids: Arc::new(ids_of(&exposed_tools)),
+                tools: exposed_tools,
                 published,
             }),
             by_identity,
+            shadowed,
         }
     }
 }
@@ -211,7 +227,10 @@ impl McpToolListWriter {
                     .get(&t.server_id)
                     .and_then(|by_name| by_name.get(&t.name))
                     .map(Arc::clone);
-                if member.is_none() {
+                let shadowed = full
+                    .shadowed
+                    .contains(&(t.server_id.clone(), t.name.clone()));
+                if member.is_none() && !shadowed {
                     tracing::warn!(
                         server_id = %t.server_id,
                         tool = %t.name,
@@ -309,6 +328,29 @@ mod tests {
         assert_eq!(reader.snapshot().tools.len(), 1);
         assert!(ids.contains("a_x"));
         assert!(ids.contains("b_y"), "pruned tools stay classified as MCP");
+    }
+
+    #[test]
+    fn shadowed_tool_is_never_exposed_and_pruning_cannot_revive_it() {
+        let first = tool("a", "b_c");
+        let second = tool("a_b", "c");
+        assert_eq!(first.sanitized_id(), second.sanitized_id());
+        let (writer, reader) = McpToolList::new(Vec::new());
+        writer.publish_full(&[first.clone(), second.clone()]);
+
+        let snapshot = reader.snapshot();
+        assert_eq!(snapshot.tools, vec![first]);
+        assert_eq!(
+            snapshot
+                .ids
+                .server_id("a_b_c")
+                .map(|s| s.as_str().to_owned()),
+            Some("a".to_owned())
+        );
+
+        writer.publish_pruned(vec![second]);
+        assert_eq!(reader.snapshot().tools, []);
+        assert!(reader.snapshot().find_by_dispatch_id("a_b_c").is_none());
     }
 
     #[test]

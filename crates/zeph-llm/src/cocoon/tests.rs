@@ -727,3 +727,50 @@ mod integration {
         }
     }
 }
+
+const LEAK_SECRET: &str = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+
+fn assert_no_leak(err: &crate::LlmError, log: &str) {
+    let crate::LlmError::InvalidInput { message, .. } = err else {
+        panic!("expected InvalidInput, got {err:?}");
+    };
+    assert!(!message.contains(LEAK_SECRET), "leaked in error: {message}");
+    assert!(!message.chars().any(char::is_control));
+    assert!(message.chars().count() <= crate::ApiErrorDetail::MAX_MESSAGE_CHARS);
+    assert!(!log.contains(LEAK_SECRET), "leaked in log: {log}");
+}
+
+async fn bad_request_server(route: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(400).set_body_string(format!(
+            "bad request key {LEAK_SECRET} \x1b[31m{}",
+            "x".repeat(2000)
+        )))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chat_with_tools_400_is_sanitized_in_error_and_logs() {
+    let logs = crate::testing::LogCapture::start();
+    let server = bad_request_server("/v1/chat/completions").await;
+    let err = make_provider(&server.uri())
+        .chat_with_tools(&user_message("hi"), &[])
+        .await
+        .expect_err("400 must be an error");
+    assert_no_leak(&err, &logs.contents());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chat_typed_400_is_sanitized_in_error_and_logs() {
+    let logs = crate::testing::LogCapture::start();
+    let server = bad_request_server("/v1/chat/completions").await;
+    let err = make_provider(&server.uri())
+        .chat_typed::<serde_json::Value>(&user_message("hi"))
+        .await
+        .expect_err("400 must be an error");
+    assert_no_leak(&err, &logs.contents());
+}

@@ -50,10 +50,7 @@ impl GateRefusal {
                 "[error] Tool call quota exceeded (session limit: {max} calls). \
                  No further tool calls are allowed this session."
             ),
-            Self::PreExecutionBlocked => format!(
-                "[error] Tool call to {tool} was blocked by pre-execution verifier. \
-                 The requested operation is not permitted."
-            ),
+            Self::PreExecutionBlocked => zeph_tools::pre_execution_refusal(tool),
             Self::DispatchRejected { reason } => {
                 format!("[error] Tool call to {tool} was rejected: {reason}.")
             }
@@ -112,22 +109,58 @@ pub(crate) struct PreDispatchBlockRecorder {
 }
 
 impl PreDispatchBlockRecorder {
-    /// Count the block and push a `PreExecutionBlock` security event.
-    fn note(&self, block: &zeph_tools::PreDispatchBlock) {
+    /// Push a security event of `category` and apply `count` to the metrics in one update.
+    fn emit(
+        &self,
+        category: zeph_common::SecurityEventCategory,
+        source: &str,
+        detail: String,
+        count: impl FnOnce(&mut crate::metrics::MetricsSnapshot),
+    ) {
         let Some(tx) = &self.metrics_tx else {
             return;
         };
-        let event = crate::metrics::SecurityEvent::new(
-            zeph_common::SecurityEventCategory::PreExecutionBlock,
-            block.tool.as_str(),
-            block.detail(),
-        );
+        let event = crate::metrics::SecurityEvent::new(category, source, detail);
         let elapsed = self.start_time.elapsed().as_secs();
         tx.send_modify(|m| {
             m.uptime_seconds = elapsed;
-            m.pre_execution_blocks += 1;
+            count(m);
             m.push_security_event(event);
         });
+    }
+
+    /// Count the block and push a `PreExecutionBlock` security event.
+    fn note(&self, block: &zeph_tools::PreDispatchBlock) {
+        self.emit(
+            zeph_common::SecurityEventCategory::PreExecutionBlock,
+            block.tool.as_str(),
+            block.detail(),
+            |m| m.pre_execution_blocks += 1,
+        );
+    }
+
+    /// Count the warning and push a `PreExecutionWarn` security event.
+    pub(super) fn note_warning(
+        &self,
+        tool: &zeph_common::ToolName,
+        warning: &zeph_tools::VerifierWarning,
+    ) {
+        self.emit(
+            zeph_common::SecurityEventCategory::PreExecutionWarn,
+            tool.as_str(),
+            warning.detail(),
+            |m| m.pre_execution_warnings += 1,
+        );
+    }
+
+    /// Count `count` flagged exfiltration URLs and push an `ExfiltrationBlock` security event.
+    pub(super) fn note_exfil_flags(&self, tool: &zeph_common::ToolName, count: usize) {
+        self.emit(
+            zeph_common::SecurityEventCategory::ExfiltrationBlock,
+            tool.as_str(),
+            format!("{count} suspicious URL(s) flagged in tool args"),
+            |m| m.exfiltration_tool_urls_flagged += count as u64,
+        );
     }
 
     /// The logger and audit row for `block`, or `None` when auditing is disabled.
@@ -158,6 +191,14 @@ impl zeph_tools::PreDispatchBlockSink for PreDispatchBlockRecorder {
                 logger.log(&entry).await;
             }
         })
+    }
+
+    fn record_warning(&self, tool: &zeph_common::ToolName, warning: &zeph_tools::VerifierWarning) {
+        self.note_warning(tool, warning);
+    }
+
+    fn record_exfil_flags(&self, tool: &zeph_common::ToolName, count: usize) {
+        self.note_exfil_flags(tool, count);
     }
 }
 
@@ -270,50 +311,25 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
             let args_value = serde_json::Value::Object(call.params.clone());
-            for verifier in self.tool_orchestrator.pre_execution_verifiers.iter() {
-                match verifier.verify(call.tool_id.as_str(), &args_value) {
-                    zeph_tools::VerificationResult::Block { reason } => {
-                        tracing::warn!(
-                            tool = %call.tool_id,
-                            verifier = verifier.name(),
-                            %reason,
-                            "pre-execution verifier blocked tool call"
-                        );
-                        let block = zeph_tools::PreDispatchBlock {
-                            tool: call.tool_id.clone(),
-                            verifier: verifier.name(),
-                            reason,
-                            args_json: serde_json::to_string(&args_value).unwrap_or_default(),
-                            caller_id: call.caller_id.clone(),
-                            skill_name: call.skill_name.clone(),
-                        };
-                        recorder.note(&block);
-                        if let Some((logger, entry)) = recorder.audit_entry(&block) {
-                            self.runtime.lifecycle.supervisor.spawn(
-                                crate::agent::agent_supervisor::TaskClass::Telemetry,
-                                "audit-log",
-                                async move { logger.log(&entry).await },
-                            );
-                        }
-                        pre_exec_blocked[idx] = true;
-                        break;
-                    }
-                    zeph_tools::VerificationResult::Warn { message } => {
-                        tracing::warn!(
-                            tool = %call.tool_id,
-                            verifier = verifier.name(),
-                            %message,
-                            "pre-execution verifier warning (not blocked)"
-                        );
-                        self.update_metrics(|m| m.pre_execution_warnings += 1);
-                        self.push_security_event(
-                            zeph_common::SecurityEventCategory::PreExecutionWarn,
-                            call.tool_id.as_str(),
-                            format!("{}: {}", verifier.name(), message),
-                        );
-                    }
-                    _ => {}
+            let outcome = zeph_tools::evaluate_pre_dispatch(
+                &self.tool_orchestrator.pre_execution_verifiers,
+                &call.tool_id,
+                &args_value,
+                &call.attribution(),
+            );
+            for warning in &outcome.warnings {
+                recorder.note_warning(&call.tool_id, warning);
+            }
+            if let Some(block) = outcome.block {
+                recorder.note(&block);
+                if let Some((logger, entry)) = recorder.audit_entry(&block) {
+                    self.runtime.lifecycle.supervisor.spawn(
+                        crate::agent::agent_supervisor::TaskClass::Telemetry,
+                        "audit-log",
+                        async move { logger.log(&entry).await },
+                    );
                 }
+                pre_exec_blocked[idx] = true;
             }
         }
         pre_exec_blocked
@@ -379,6 +395,58 @@ mod tests {
             assert!(out.summary.starts_with("[error]"), "{}", out.summary);
             assert!(out.claim_source.is_none());
         }
+    }
+
+    fn recorder_with_metrics() -> (
+        PreDispatchBlockRecorder,
+        tokio::sync::watch::Receiver<crate::metrics::MetricsSnapshot>,
+    ) {
+        let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
+        let recorder = PreDispatchBlockRecorder {
+            metrics_tx: Some(tx),
+            start_time: std::time::Instant::now(),
+            audit_logger: None,
+        };
+        (recorder, rx)
+    }
+
+    #[test]
+    fn recorder_counts_verifier_warning_and_emits_event() {
+        use zeph_tools::PreDispatchBlockSink;
+
+        let (recorder, rx) = recorder_with_metrics();
+        let warning = zeph_tools::VerifierWarning {
+            verifier: "url_grounding",
+            message: "ungrounded".to_owned(),
+        };
+        recorder.record_warning(&zeph_common::ToolName::new("fetch"), &warning);
+
+        let m = rx.borrow();
+        assert_eq!(m.pre_execution_warnings, 1);
+        let event = m.security_events.back().expect("event");
+        assert_eq!(
+            event.category,
+            zeph_common::SecurityEventCategory::PreExecutionWarn
+        );
+        assert_eq!(event.source, "fetch");
+        assert_eq!(event.detail, "url_grounding: ungrounded");
+    }
+
+    #[test]
+    fn recorder_counts_exfil_flags_and_emits_event() {
+        use zeph_tools::PreDispatchBlockSink;
+
+        let (recorder, rx) = recorder_with_metrics();
+        recorder.record_exfil_flags(&zeph_common::ToolName::new("fetch"), 3);
+
+        let m = rx.borrow();
+        assert_eq!(m.exfiltration_tool_urls_flagged, 3);
+        let event = m.security_events.back().expect("event");
+        assert_eq!(
+            event.category,
+            zeph_common::SecurityEventCategory::ExfiltrationBlock
+        );
+        assert_eq!(event.source, "fetch");
     }
 
     #[test]

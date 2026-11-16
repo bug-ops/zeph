@@ -896,9 +896,11 @@ async fn build_acp_deps(
     };
     // Without the refresh task nothing feeds `tools_watch_tx`, so per-session
     // `with_mcp_tool_rx` subscriptions would never fire. Idempotent when the manager is shared.
-    if !config.cli.safe_mode {
-        mcp_manager.spawn_refresh_task(Some(&acp_mem_supervisor));
-    }
+    drop(crate::agent_setup::start_mcp_tool_refresh(
+        &mcp_manager,
+        Some(&acp_mem_supervisor),
+        !config.cli.safe_mode,
+    ));
     let mcp_media = if config.cli.no_mcp_media {
         tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
         None
@@ -1521,6 +1523,9 @@ where
     mcp_config: zeph_core::config::McpConfig,
     mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
     mcp_tool_scope: zeph_core::agent::McpToolScope,
+    /// Connection supervisor scoped to this session, so the agent's background tasks are listed
+    /// and drained with the rest of the connection (#7126).
+    task_supervisor: std::sync::Arc<zeph_common::TaskSupervisor>,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
     trajectory_config: zeph_core::config::TrajectoryConfig,
@@ -1599,6 +1604,7 @@ where
         crate::bootstrap::managed_skills_dir(),
     )
     .with_shutdown(deps.shutdown_rx)
+    .with_task_supervisor(deps.task_supervisor)
     .with_config_reload(deps.config_path, deps.config_reload_rx)
     .with_plugins_dir(crate::bootstrap::plugins_dir(), deps.startup_shell_overlay)
     .with_shell_policy_handle(deps.shell_policy_handle)
@@ -2237,6 +2243,10 @@ async fn spawn_acp_agent(
         mcp_registry,
         mcp_tool_rx,
         mcp_tool_scope,
+        task_supervisor: Arc::new(
+            d.shell_task_supervisor
+                .scoped(&session_ctx.session_id.to_string()),
+        ),
         mcp_manager: Arc::clone(&mcp_manager),
         mcp_config,
         focus_config: d.focus_config.clone(),
@@ -5630,44 +5640,30 @@ mod tests {
         Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
     }
 
-    /// #6221 regression: `build_acp_agent` must call `Agent::with_skill_config` so
-    /// `config.skills.confusability_threshold` reaches the real, constructed `Agent` via the
-    /// same `AgentBuilder` chain `spawn_acp_agent` actually uses per ACP session — the ACP-path
-    /// counterpart to `build_agent_wires_skill_matching_config` (`src/runner.rs`) and
-    /// `build_daemon_agent_wires_skill_matching_config` (`src/daemon.rs`), for the
-    /// `BuildAcpAgentParams`/`build_acp_agent` seam extracted from `spawn_acp_agent` (previously
-    /// the only one of the four `Agent`-construction entry points with no such seam or
-    /// regression test at all). Asserts the *exact* threshold value echoed by
-    /// `ConfusabilityReport`'s `Display` output, not just "non-default", so a swapped field in
-    /// `SkillConfigParams` would also be caught.
-    #[tokio::test]
+    type AcpTestParams = (
+        BuildAcpAgentParams<fn() -> Vec<PathBuf>>,
+        // Senders kept alive so the agent's receivers do not observe a closed channel.
+        (
+            tokio::sync::mpsc::Sender<zeph_skills::watcher::SkillEvent>,
+            tokio::sync::mpsc::Sender<zeph_core::config_watcher::ConfigEvent>,
+            tokio::sync::watch::Sender<bool>,
+        ),
+    );
+
     #[allow(clippy::too_many_lines)] // exhaustive BuildAcpAgentParams literal — one field per line
-    async fn build_acp_agent_wires_skill_matching_config() {
-        use zeph_commands::SkillAccess as _;
-
-        let mut config = zeph_core::config::Config::default();
-        config.skills.disambiguation_threshold = 0.77;
-        config.skills.two_stage_matching = true;
-        config.skills.confusability_threshold = 0.42;
-
-        let skill_meta = zeph_skills::loader::SkillMeta::new(
-            zeph_common::SkillName::parse("solo-skill").unwrap(),
-            "a lone skill with no confusable sibling",
-        );
-        let inner_matcher =
-            zeph_skills::matcher::SkillMatcher::new(&[&skill_meta], build_acp_agent_test_embed_fn)
-                .await
-                .expect("single-skill matcher construction must succeed with a constant embed_fn");
-
-        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
-        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    fn acp_test_params(
+        config: &zeph_core::config::Config,
+        matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
+        mcp_manager: Arc<zeph_mcp::McpManager>,
+        mcp_tool_scope: zeph_core::agent::McpToolScope,
+        task_supervisor: Arc<zeph_common::TaskSupervisor>,
+    ) -> AcpTestParams {
+        let (reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let shell_policy_handle =
             zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle();
-        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
-        let mcp_manager = Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
-            &config, false, None,
-        ));
+        let session_config = zeph_core::AgentSessionConfig::from_config(config, 4096);
         let mock_provider =
             zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
 
@@ -5675,9 +5671,7 @@ mod tests {
             provider: mock_provider.clone(),
             embedding_provider: mock_provider,
             registry: Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty())),
-            matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
-                inner_matcher,
-            )),
+            matcher,
             max_active_skills: 5,
             tool_executor: zeph_tools::DynExecutor(Arc::new(zeph_tools::SetCwdExecutor::new(
                 vec![],
@@ -5707,7 +5701,7 @@ mod tests {
             working_dir: PathBuf::from("."),
             skill_paths: Vec::new(),
             reload_rx,
-            plugin_dirs_supplier: || Vec::<PathBuf>::new(),
+            plugin_dirs_supplier: Vec::<PathBuf>::new as fn() -> Vec<PathBuf>,
             shutdown_rx,
             config_path: PathBuf::new(),
             config_reload_rx,
@@ -5719,7 +5713,8 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
-            mcp_tool_scope: zeph_core::agent::McpToolScope::AllServers,
+            mcp_tool_scope,
+            task_supervisor,
             mcp_manager,
             mcp_config: zeph_core::config::McpConfig::default(),
             focus_config: zeph_core::config::FocusConfig::default(),
@@ -5747,6 +5742,51 @@ mod tests {
                 zeph_core::InteractionConfig::from_config(&enabled)
             },
         };
+        (params, (reload_tx, config_reload_tx, shutdown_tx))
+    }
+
+    /// #6221 regression: `build_acp_agent` must call `Agent::with_skill_config` so
+    /// `config.skills.confusability_threshold` reaches the real, constructed `Agent` via the
+    /// same `AgentBuilder` chain `spawn_acp_agent` actually uses per ACP session — the ACP-path
+    /// counterpart to `build_agent_wires_skill_matching_config` (`src/runner.rs`) and
+    /// `build_daemon_agent_wires_skill_matching_config` (`src/daemon.rs`), for the
+    /// `BuildAcpAgentParams`/`build_acp_agent` seam extracted from `spawn_acp_agent` (previously
+    /// the only one of the four `Agent`-construction entry points with no such seam or
+    /// regression test at all). Asserts the *exact* threshold value echoed by
+    /// `ConfusabilityReport`'s `Display` output, not just "non-default", so a swapped field in
+    /// `SkillConfigParams` would also be caught.
+    #[tokio::test]
+    async fn build_acp_agent_wires_skill_matching_config() {
+        use zeph_commands::SkillAccess as _;
+
+        let mut config = zeph_core::config::Config::default();
+        config.skills.disambiguation_threshold = 0.77;
+        config.skills.two_stage_matching = true;
+        config.skills.confusability_threshold = 0.42;
+
+        let skill_meta = zeph_skills::loader::SkillMeta::new(
+            zeph_common::SkillName::parse("solo-skill").unwrap(),
+            "a lone skill with no confusable sibling",
+        );
+        let inner_matcher =
+            zeph_skills::matcher::SkillMatcher::new(&[&skill_meta], build_acp_agent_test_embed_fn)
+                .await
+                .expect("single-skill matcher construction must succeed with a constant embed_fn");
+
+        let mcp_manager = Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
+            &config, false, None,
+        ));
+        let (params, _keep_alive) = acp_test_params(
+            &config,
+            Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
+                inner_matcher,
+            )),
+            mcp_manager,
+            zeph_core::agent::McpToolScope::AllServers,
+            Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
+        );
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = Box::pin(build_acp_agent(params, channel)).await;
@@ -5765,6 +5805,55 @@ mod tests {
         assert!(
             interaction.ask_user.enabled && interaction.cache_keepalive.enabled,
             "BuildAcpAgentParams.interaction must reach the built Agent"
+        );
+    }
+
+    /// #7111/#7126: `build_acp_agent` must subscribe the session to MCP tool-list changes within
+    /// its scope and run its background tasks on the connection supervisor under a
+    /// session-scoped name.
+    #[tokio::test]
+    async fn build_acp_agent_wires_scoped_mcp_refresh_and_task_supervisor() {
+        let config = zeph_core::config::Config::default();
+        let mcp_manager = Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
+            &config, false, None,
+        ));
+        let connection_supervisor = Arc::new(zeph_common::TaskSupervisor::new(
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        let scope = zeph_core::agent::McpToolScope::Servers(std::collections::HashSet::from([
+            zeph_common::types::McpServerId::from("mine"),
+        ]));
+        let (params, _keep_alive) = acp_test_params(
+            &config,
+            None,
+            Arc::clone(&mcp_manager),
+            scope,
+            Arc::new(connection_supervisor.scoped("sess1")),
+        );
+        let (channel, handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = Box::pin(build_acp_agent(params, channel)).await;
+
+        let tool = |server: &str, name: &str| zeph_mcp::McpTool {
+            server_id: server.into(),
+            name: name.to_owned(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: zeph_mcp::ToolSecurityMeta::default(),
+        };
+        mcp_manager.publish_tools_for_testing(vec![
+            tool("mine", "own_tool"),
+            tool("other", "foreign_tool"),
+        ]);
+        let count = Box::pin(crate::agent_setup::mcp_tool_count_after_turn(agent, handle)).await;
+
+        assert_eq!(count, 1, "only the session's own server may be admitted");
+        assert!(
+            connection_supervisor
+                .snapshot()
+                .iter()
+                .any(|t| &*t.name == "agent.lifecycle.cancel_bridge.sess1"),
+            "agent tasks must appear on the connection supervisor, scoped per session"
         );
     }
 }

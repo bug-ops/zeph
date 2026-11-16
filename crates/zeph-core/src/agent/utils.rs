@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_llm::provider::{
-    AuxiliaryUsage, CacheUsage, LlmProvider, Message, MessagePart, ResponseUsage, Role,
+    CacheUsage, LlmProvider, Message, MessagePart, ResponseUsage, Role, TokenUsage,
 };
 
 use super::{Agent, CODE_CONTEXT_PREFIX};
@@ -430,19 +430,21 @@ impl<C: Channel> Agent<C> {
                 provider_name,
                 kind,
                 model,
-                input_tokens,
-                cache_read,
-                cache_write,
-                output_tokens,
+                TokenUsage {
+                    input: input_tokens,
+                    output: output_tokens,
+                    cache_read,
+                    cache_write,
+                },
                 speed,
             );
-            if auxiliary != AuxiliaryUsage::default() {
+            if auxiliary != TokenUsage::default() {
                 tracker.record_auxiliary_usage(provider_name, kind, model, auxiliary, speed);
             }
             let breakdown = tracker.provider_breakdown();
             self.update_metrics(|m| {
                 m.cost_spent_cents = tracker.current_spend();
-                m.cache_creation_tokens += cache_write + auxiliary.cache_creation;
+                m.cache_creation_tokens += cache_write + auxiliary.cache_write;
                 m.cache_read_tokens += cache_read + auxiliary.cache_read;
                 m.prompt_tokens += auxiliary.input;
                 m.completion_tokens += auxiliary.output;
@@ -514,12 +516,14 @@ impl<C: Channel> Agent<C> {
         };
         let cost_cents = tracker.price_of(
             model,
-            input_tokens,
-            cache_read,
-            cache_write,
-            output_tokens,
+            TokenUsage {
+                input: input_tokens,
+                output: output_tokens,
+                cache_read,
+                cache_write,
+            } + auxiliary,
             speed,
-        ) + tracker.price_of_auxiliary(model, auxiliary, speed);
+        );
         // Generation-window throughput: only derivable once TTFT/TTFB is known and the
         // remaining window (latency - ttft) is positive.
         let tokens_per_sec = ttft_ms.and_then(|ttft| {
@@ -540,7 +544,7 @@ impl<C: Channel> Agent<C> {
             input_tokens: input_tokens.saturating_add(auxiliary.input),
             output_tokens: output_tokens.saturating_add(auxiliary.output),
             cache_read_tokens: cache_read.saturating_add(auxiliary.cache_read),
-            cache_write_tokens: cache_write.saturating_add(auxiliary.cache_creation),
+            cache_write_tokens: cache_write.saturating_add(auxiliary.cache_write),
             reasoning_tokens,
             cost_cents,
             latency_ms,
@@ -1256,7 +1260,7 @@ mod tests {
         );
     }
     fn billing_agent(
-        aux: Option<zeph_llm::provider::AuxiliaryUsage>,
+        aux: Option<zeph_llm::provider::TokenUsage>,
     ) -> (
         Agent<MockChannel>,
         tokio::sync::watch::Receiver<crate::metrics::MetricsSnapshot>,
@@ -1282,10 +1286,10 @@ mod tests {
 
     #[test]
     fn auxiliary_usage_is_billed_but_never_enters_context_tokens() {
-        let aux = zeph_llm::provider::AuxiliaryUsage {
+        let aux = zeph_llm::provider::TokenUsage {
             input: 4000,
             output: 600,
-            cache_creation: 0,
+            cache_write: 0,
             cache_read: 0,
         };
         let (plain, plain_rx) = billing_agent(None);
@@ -1338,10 +1342,12 @@ mod tests {
 
         let expected = crate::cost::CostTracker::new(true, 1000.0).price_of(
             "claude-opus-5-5",
-            1000,
-            1000,
-            0,
-            200,
+            TokenUsage {
+                input: 1000,
+                output: 200,
+                cache_read: 1000,
+                cache_write: 0,
+            },
             zeph_config::ServiceSpeed::Fast,
         );
         let snap = rx.borrow();
@@ -1385,10 +1391,10 @@ mod tests {
 
     #[test]
     fn usage_record_cost_includes_auxiliary_usage() {
-        let aux = zeph_llm::provider::AuxiliaryUsage {
+        let aux = zeph_llm::provider::TokenUsage {
             input: 4000,
             output: 600,
-            cache_creation: 0,
+            cache_write: 0,
             cache_read: 0,
         };
         let (plain, _) = billing_agent(None);

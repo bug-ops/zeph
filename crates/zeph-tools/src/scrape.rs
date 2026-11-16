@@ -27,13 +27,14 @@ use url::Url;
 
 use zeph_common::ToolName;
 use zeph_common::http::{BodyLimit, BodyReadError, read_capped};
+use zeph_common::native_tools::{FETCH_ID, WEB_SCRAPE_ID, WEB_SCRAPE_OUTPUT_NAME};
 
 use zeph_sanitizer::IpiFilter;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, EgressEvent, chrono_now};
 use crate::config::{EgressConfig, ScrapeConfig};
 use crate::executor::{
-    ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
+    CallAttribution, ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
 use crate::net::{check_domain_policy, validate_url};
 
@@ -257,11 +258,15 @@ impl WebScrapeExecutor {
 }
 
 impl ToolExecutor for WebScrapeExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        crate::registry::McpToolIds::empty_shared()
+    }
+
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
         use crate::registry::{InvocationHint, ToolDef};
         vec![
             ToolDef {
-                id: "web_scrape".into(),
+                id: WEB_SCRAPE_ID.into(),
                 description: "Extract structured data from a web page using CSS selectors.\n\nONLY call this tool when the user has explicitly provided a URL in their message, or when a prior tool call returned a URL to retrieve. NEVER construct, guess, or infer a URL from entity names, brand knowledge, or domain patterns.\n\nParameters: url (string, required) - HTTPS URL; select (string, required) - CSS selector; extract (string, optional) - \"text\", \"html\", or \"attr:<name>\"; limit (integer, optional) - max results\nReturns: extracted text/HTML/attribute values, one per line\nErrors: InvalidParams if URL is not HTTPS or selector is empty; Timeout after configured seconds; connection/DNS failures".into(),
                 schema: schemars::schema_for!(ScrapeInstruction),
                 invocation: InvocationHint::FencedBlock("scrape"),
@@ -269,7 +274,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 server_id: None,
             },
             ToolDef {
-                id: "fetch".into(),
+                id: FETCH_ID.into(),
                 description: "Fetch a URL and return the response body as plain text.\n\nONLY call this tool when the user has explicitly provided a URL in their message, or when a prior tool call returned a URL to retrieve. NEVER construct, guess, or infer a URL from entity names, brand knowledge, or domain patterns. If no URL is present in the conversation, do not call this tool.\n\nParameters: url (string, required) - HTTPS URL to fetch\nReturns: response body as UTF-8 text, truncated if exceeding max body size\nErrors: InvalidParams if URL is not HTTPS; Timeout; SSRF-blocked private IPs; connection failures".into(),
                 schema: schemars::schema_for!(FetchParams),
                 invocation: InvocationHint::ToolCall,
@@ -299,20 +304,19 @@ impl ToolExecutor for WebScrapeExecutor {
             let correlation_id = EgressEvent::new_correlation_id();
             let start = Instant::now();
             let scrape_result = self
-                .scrape_instruction(&instruction, &correlation_id, None, None)
+                .scrape_instruction(&instruction, &correlation_id, &CallAttribution::default())
                 .await;
             #[allow(clippy::cast_possible_truncation)]
             let duration_ms = start.elapsed().as_millis() as u64;
             match scrape_result {
                 Ok(output) => {
                     self.log_audit(
-                        "web_scrape",
+                        WEB_SCRAPE_ID,
                         &redact_url_for_log(&instruction.url),
                         AuditResult::Success,
                         duration_ms,
                         None,
-                        None,
-                        None,
+                        &CallAttribution::default(),
                         Some(correlation_id),
                     )
                     .await;
@@ -321,13 +325,12 @@ impl ToolExecutor for WebScrapeExecutor {
                 Err(e) => {
                     let audit_result = tool_error_to_audit_result(&e);
                     self.log_audit(
-                        "web_scrape",
+                        WEB_SCRAPE_ID,
                         &redact_url_for_log(&instruction.url),
                         audit_result,
                         duration_ms,
                         Some(&e),
-                        None,
-                        None,
+                        &CallAttribution::default(),
                         Some(correlation_id),
                     )
                     .await;
@@ -337,7 +340,7 @@ impl ToolExecutor for WebScrapeExecutor {
         }
 
         Ok(Some(ToolOutput {
-            tool_name: ToolName::new("web-scrape"),
+            tool_name: ToolName::new(WEB_SCRAPE_OUTPUT_NAME),
             summary: outputs.join("\n\n"),
             blocks_executed,
             filter_stats: None,
@@ -357,52 +360,40 @@ impl ToolExecutor for WebScrapeExecutor {
     )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         match call.tool_id.as_str() {
-            "web_scrape" => {
+            WEB_SCRAPE_ID => {
                 let instruction: ScrapeInstruction = deserialize_params(&call.params)?;
                 let correlation_id = EgressEvent::new_correlation_id();
                 let start = Instant::now();
                 let result = self
-                    .scrape_instruction(
-                        &instruction,
-                        &correlation_id,
-                        call.caller_id.clone(),
-                        call.skill_name.clone(),
-                    )
+                    .scrape_instruction(&instruction, &correlation_id, &call.attribution())
                     .await;
                 #[allow(clippy::cast_possible_truncation)]
                 let duration_ms = start.elapsed().as_millis() as u64;
                 self.run_with_audit(
-                    "web_scrape",
-                    "web-scrape",
+                    WEB_SCRAPE_ID,
+                    WEB_SCRAPE_OUTPUT_NAME,
                     &redact_url_for_log(&instruction.url),
-                    call.caller_id.clone(),
-                    call.skill_name.clone(),
+                    &call.attribution(),
                     correlation_id,
                     duration_ms,
                     result,
                 )
                 .await
             }
-            "fetch" => {
+            FETCH_ID => {
                 let p: FetchParams = deserialize_params(&call.params)?;
                 let correlation_id = EgressEvent::new_correlation_id();
                 let start = Instant::now();
                 let result = self
-                    .handle_fetch(
-                        &p,
-                        &correlation_id,
-                        call.caller_id.clone(),
-                        call.skill_name.clone(),
-                    )
+                    .handle_fetch(&p, &correlation_id, &call.attribution())
                     .await;
                 #[allow(clippy::cast_possible_truncation)]
                 let duration_ms = start.elapsed().as_millis() as u64;
                 self.run_with_audit(
-                    "fetch",
-                    "fetch",
+                    FETCH_ID,
+                    FETCH_ID,
                     &redact_url_for_log(&p.url),
-                    call.caller_id.clone(),
-                    call.skill_name.clone(),
+                    &call.attribution(),
                     correlation_id,
                     duration_ms,
                     result,
@@ -414,7 +405,7 @@ impl ToolExecutor for WebScrapeExecutor {
     }
 
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
-        matches!(tool_id, "web_scrape" | "fetch")
+        matches!(tool_id, WEB_SCRAPE_ID | FETCH_ID)
     }
 
     crate::tool_executor_no_inner_defaults!();
@@ -439,8 +430,7 @@ impl WebScrapeExecutor {
         audit_tool_name: &str,
         public_tool_name: &str,
         audit_command: &str,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
         correlation_id: String,
         duration_ms: u64,
         result: Result<String, ToolError>,
@@ -453,8 +443,7 @@ impl WebScrapeExecutor {
                     AuditResult::Success,
                     duration_ms,
                     None,
-                    caller_id,
-                    skill_name,
+                    attribution,
                     Some(correlation_id),
                 )
                 .await;
@@ -480,8 +469,7 @@ impl WebScrapeExecutor {
                     audit_result,
                     duration_ms,
                     Some(&e),
-                    caller_id,
-                    skill_name,
+                    attribution,
                     Some(correlation_id),
                 )
                 .await;
@@ -498,8 +486,7 @@ impl WebScrapeExecutor {
         result: AuditResult,
         duration_ms: u64,
         error: Option<&ToolError>,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
         correlation_id: Option<String>,
     ) {
         if let Some(ref logger) = self.audit_logger {
@@ -531,8 +518,8 @@ impl WebScrapeExecutor {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id,
-                skill_name,
+                caller_id: attribution.caller_id.clone(),
+                skill_name: attribution.skill_name.clone(),
                 policy_match: None,
                 correlation_id,
                 vigil_risk: None,
@@ -570,8 +557,7 @@ impl WebScrapeExecutor {
         &self,
         params: &FetchParams,
         correlation_id: &str,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
     ) -> Result<String, ToolError> {
         let parsed = validate_url(&params.url);
         let host_str = parsed
@@ -581,12 +567,11 @@ impl WebScrapeExecutor {
         if let Err(ref _e) = parsed {
             if self.egress_config.enabled && self.egress_config.log_blocked {
                 let event = Self::make_blocked_event(
-                    "fetch",
+                    FETCH_ID,
                     &params.url,
                     &host_str,
                     correlation_id,
-                    caller_id.clone(),
-                    skill_name.clone(),
+                    attribution,
                     "scheme",
                 );
                 self.log_egress_event(&event).await;
@@ -602,12 +587,11 @@ impl WebScrapeExecutor {
         ) {
             if self.egress_config.enabled && self.egress_config.log_blocked {
                 let event = Self::make_blocked_event(
-                    "fetch",
+                    FETCH_ID,
                     &params.url,
                     parsed.host_str().unwrap_or(""),
                     correlation_id,
-                    caller_id.clone(),
-                    skill_name.clone(),
+                    attribution,
                     "blocklist",
                 );
                 self.log_egress_event(&event).await;
@@ -620,12 +604,11 @@ impl WebScrapeExecutor {
             Err(e) => {
                 if self.egress_config.enabled && self.egress_config.log_blocked {
                     let event = Self::make_blocked_event(
-                        "fetch",
+                        FETCH_ID,
                         &params.url,
                         parsed.host_str().unwrap_or(""),
                         correlation_id,
-                        caller_id.clone(),
-                        skill_name.clone(),
+                        attribution,
                         "ssrf",
                     );
                     self.log_egress_event(&event).await;
@@ -639,10 +622,9 @@ impl WebScrapeExecutor {
                 &params.url,
                 &host,
                 &addrs,
-                "fetch",
+                FETCH_ID,
                 correlation_id,
-                caller_id,
-                skill_name,
+                attribution,
             )
             .await?;
         self.apply_ipi_filter(&body, &params.url).await
@@ -652,8 +634,7 @@ impl WebScrapeExecutor {
         &self,
         instruction: &ScrapeInstruction,
         correlation_id: &str,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
     ) -> Result<String, ToolError> {
         let parsed = validate_url(&instruction.url);
         let host_str = parsed
@@ -663,12 +644,11 @@ impl WebScrapeExecutor {
         if let Err(ref _e) = parsed {
             if self.egress_config.enabled && self.egress_config.log_blocked {
                 let event = Self::make_blocked_event(
-                    "web_scrape",
+                    WEB_SCRAPE_ID,
                     &instruction.url,
                     &host_str,
                     correlation_id,
-                    caller_id.clone(),
-                    skill_name.clone(),
+                    attribution,
                     "scheme",
                 );
                 self.log_egress_event(&event).await;
@@ -684,12 +664,11 @@ impl WebScrapeExecutor {
         ) {
             if self.egress_config.enabled && self.egress_config.log_blocked {
                 let event = Self::make_blocked_event(
-                    "web_scrape",
+                    WEB_SCRAPE_ID,
                     &instruction.url,
                     parsed.host_str().unwrap_or(""),
                     correlation_id,
-                    caller_id.clone(),
-                    skill_name.clone(),
+                    attribution,
                     "blocklist",
                 );
                 self.log_egress_event(&event).await;
@@ -702,12 +681,11 @@ impl WebScrapeExecutor {
             Err(e) => {
                 if self.egress_config.enabled && self.egress_config.log_blocked {
                     let event = Self::make_blocked_event(
-                        "web_scrape",
+                        WEB_SCRAPE_ID,
                         &instruction.url,
                         parsed.host_str().unwrap_or(""),
                         correlation_id,
-                        caller_id.clone(),
-                        skill_name.clone(),
+                        attribution,
                         "ssrf",
                     );
                     self.log_egress_event(&event).await;
@@ -721,10 +699,9 @@ impl WebScrapeExecutor {
                 &instruction.url,
                 &host,
                 &addrs,
-                "web_scrape",
+                WEB_SCRAPE_ID,
                 correlation_id,
-                caller_id,
-                skill_name,
+                attribution,
             )
             .await?;
         let selector = instruction.select.clone();
@@ -744,8 +721,7 @@ impl WebScrapeExecutor {
         url: &str,
         host: &str,
         correlation_id: &str,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
         block_reason: &'static str,
     ) -> EgressEvent {
         EgressEvent {
@@ -761,8 +737,8 @@ impl WebScrapeExecutor {
             response_bytes: 0,
             blocked: true,
             block_reason: Some(block_reason),
-            caller_id,
-            skill_name,
+            caller_id: attribution.caller_id.clone(),
+            skill_name: attribution.skill_name.clone(),
             hop: 0,
         }
     }
@@ -785,8 +761,7 @@ impl WebScrapeExecutor {
         addrs: &[SocketAddr],
         tool: &str,
         correlation_id: &str,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
     ) -> Result<String, ToolError> {
         const MAX_REDIRECTS: usize = 3;
 
@@ -823,8 +798,8 @@ impl WebScrapeExecutor {
                             response_bytes: 0,
                             blocked: false,
                             block_reason: None,
-                            caller_id: caller_id.clone(),
-                            skill_name: skill_name.clone(),
+                            caller_id: attribution.caller_id.clone(),
+                            skill_name: attribution.skill_name.clone(),
                             #[allow(clippy::cast_possible_truncation)]
                             hop: hop as u8,
                         };
@@ -877,8 +852,8 @@ impl WebScrapeExecutor {
                             response_bytes: 0,
                             blocked: true,
                             block_reason: Some("ssrf"),
-                            caller_id: caller_id.clone(),
-                            skill_name: skill_name.clone(),
+                            caller_id: attribution.caller_id.clone(),
+                            skill_name: attribution.skill_name.clone(),
                             #[allow(clippy::cast_possible_truncation)]
                             hop: (hop + 1) as u8,
                         };
@@ -906,8 +881,8 @@ impl WebScrapeExecutor {
                             response_bytes: 0,
                             blocked: true,
                             block_reason: Some("ssrf"),
-                            caller_id: caller_id.clone(),
-                            skill_name: skill_name.clone(),
+                            caller_id: attribution.caller_id.clone(),
+                            skill_name: attribution.skill_name.clone(),
                             #[allow(clippy::cast_possible_truncation)]
                             hop: (hop + 1) as u8,
                         };
@@ -940,8 +915,8 @@ impl WebScrapeExecutor {
                         response_bytes: 0,
                         blocked: false,
                         block_reason: None,
-                        caller_id: caller_id.clone(),
-                        skill_name: skill_name.clone(),
+                        caller_id: attribution.caller_id.clone(),
+                        skill_name: attribution.skill_name.clone(),
                         #[allow(clippy::cast_possible_truncation)]
                         hop: hop as u8,
                     };
@@ -972,8 +947,8 @@ impl WebScrapeExecutor {
                             response_bytes: self.max_body_bytes,
                             blocked: false,
                             block_reason: None,
-                            caller_id: caller_id.clone(),
-                            skill_name: skill_name.clone(),
+                            caller_id: attribution.caller_id.clone(),
+                            skill_name: attribution.skill_name.clone(),
                             #[allow(clippy::cast_possible_truncation)]
                             hop: hop as u8,
                         };
@@ -1005,8 +980,8 @@ impl WebScrapeExecutor {
                     response_bytes,
                     blocked: false,
                     block_reason: None,
-                    caller_id: caller_id.clone(),
-                    skill_name: skill_name.clone(),
+                    caller_id: attribution.caller_id.clone(),
+                    skill_name: attribution.skill_name.clone(),
                     #[allow(clippy::cast_possible_truncation)]
                     hop: hop as u8,
                 };
@@ -1584,7 +1559,14 @@ mod tests {
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/page", server.uri());
         let result = executor
-            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None, None)
+            .fetch_html(
+                &url,
+                &host,
+                &addrs,
+                "fetch",
+                "test-cid",
+                &CallAttribution::default(),
+            )
             .await;
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert_eq!(result.unwrap(), "<h1>OK</h1>");
@@ -1605,7 +1587,14 @@ mod tests {
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/forbidden", server.uri());
         let result = executor
-            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None, None)
+            .fetch_html(
+                &url,
+                &host,
+                &addrs,
+                "fetch",
+                "test-cid",
+                &CallAttribution::default(),
+            )
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -1627,7 +1616,14 @@ mod tests {
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/missing", server.uri());
         let result = executor
-            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None, None)
+            .fetch_html(
+                &url,
+                &host,
+                &addrs,
+                "fetch",
+                "test-cid",
+                &CallAttribution::default(),
+            )
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -1650,7 +1646,14 @@ mod tests {
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/redirect-no-loc", server.uri());
         let result = executor
-            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None, None)
+            .fetch_html(
+                &url,
+                &host,
+                &addrs,
+                "fetch",
+                "test-cid",
+                &CallAttribution::default(),
+            )
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -1789,7 +1792,14 @@ mod tests {
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/big", server.uri());
         let result = small_limit_executor
-            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None, None)
+            .fetch_html(
+                &url,
+                &host,
+                &addrs,
+                "fetch",
+                "test-cid",
+                &CallAttribution::default(),
+            )
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -2143,7 +2153,14 @@ mod tests {
         let (host, addrs) = server_host_and_addr(&server);
         let url = format!("{}/content", server.uri());
         let result = executor
-            .fetch_html(&url, &host, &addrs, "fetch", "test-cid", None, None)
+            .fetch_html(
+                &url,
+                &host,
+                &addrs,
+                "fetch",
+                "test-cid",
+                &CallAttribution::default(),
+            )
             .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "plain text content");
@@ -2387,8 +2404,7 @@ mod tests {
                 AuditResult::Success,
                 42,
                 None,
-                None,
-                None,
+                &CallAttribution::default(),
                 None,
             )
             .await;
@@ -2429,8 +2445,7 @@ mod tests {
                 },
                 0,
                 None,
-                None,
-                None,
+                &CallAttribution::default(),
                 None,
             )
             .await;
@@ -2532,8 +2547,7 @@ mod tests {
                 &addrs,
                 "fetch",
                 "test-cid",
-                None,
-                None,
+                &CallAttribution::default(),
             )
             .await;
         assert!(result.is_ok());

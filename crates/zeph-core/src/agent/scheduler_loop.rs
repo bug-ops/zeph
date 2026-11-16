@@ -1411,10 +1411,12 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     .map_or_else(Default::default, |u| u.speed);
                                                 let cost_cents = tracker.price_of(
                                                     model,
-                                                    usage.input_tokens,
-                                                    cache_read,
-                                                    cache_write,
-                                                    usage.output_tokens,
+                                                    zeph_llm::provider::TokenUsage {
+                                                        input: usage.input_tokens,
+                                                        output: usage.output_tokens,
+                                                        cache_read,
+                                                        cache_write,
+                                                    },
                                                     speed,
                                                 );
                                                 let (ttft_ms, reasoning_tokens) = member_provider

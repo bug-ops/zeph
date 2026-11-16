@@ -356,9 +356,7 @@ impl ZephAcpAgentState {
                 .get(&args.session_id)
                 .map(|e| e.usage_accumulator.lock().clone());
             if let Some(acc) = snapshot {
-                let used = acc
-                    .total_input_tokens
-                    .saturating_add(acc.total_output_tokens);
+                let used = acc.totals.input.saturating_add(acc.totals.output);
                 let mut update = UsageUpdate::new(used, acc.last_context_window);
                 if acc.last_cost_cents > 0.0 {
                     update = update.cost(Cost::new(acc.last_cost_cents / 100.0, "USD"));

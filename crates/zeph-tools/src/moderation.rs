@@ -179,6 +179,10 @@ fn moderation_error_to_tool_error(e: ModerationError) -> ToolError {
 }
 
 impl<B: ReactionModerationBackend + std::fmt::Debug> ToolExecutor for ModerationExecutor<B> {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        crate::registry::McpToolIds::empty_shared()
+    }
+
     fn execute(
         &self,
         _response: &str,

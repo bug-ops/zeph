@@ -87,7 +87,7 @@ async fn connect_all_skips_failing_servers() {
         PolicyEnforcer::new(vec![]),
     );
     let (tools, outcomes) = mgr.connect_all().await;
-    assert!(tools.is_empty());
+    assert_eq!(tools.as_slice(), [] as [McpTool; 0]);
     assert_eq!(outcomes.len(), 2);
     assert!(outcomes.iter().all(|o| !o.connected));
     assert_eq!(mgr.list_servers().await, [] as [String; 0]);
@@ -492,7 +492,7 @@ async fn connect_all_with_http_entries_skips_failing() {
         PolicyEnforcer::new(vec![]),
     );
     let (tools, _outcomes) = mgr.connect_all().await;
-    assert!(tools.is_empty());
+    assert_eq!(tools.as_slice(), [] as [McpTool; 0]);
     assert_eq!(mgr.list_servers().await, [] as [String; 0]);
 }
 
@@ -1097,7 +1097,7 @@ fn ingest_tools_untrusted_none_allowlist_fails_closed_by_default() {
             previous_fingerprints: None,
         },
     );
-    assert!(result.is_empty());
+    assert_eq!(result.as_slice(), [] as [McpTool; 0]);
 }
 
 #[test]
@@ -1196,7 +1196,7 @@ fn ingest_tools_sandboxed_none_allowlist_fails_closed_regardless_of_flag() {
             previous_fingerprints: None,
         },
     );
-    assert!(result.is_empty());
+    assert_eq!(result.as_slice(), [] as [McpTool; 0]);
 }
 
 #[test]
@@ -1239,7 +1239,7 @@ fn ingest_tools_untrusted_explicit_empty_allowlist_denies_all() {
         },
     );
     // Some(empty) on Untrusted = explicit deny-all (fail-closed)
-    assert!(result.is_empty());
+    assert_eq!(result.as_slice(), [] as [McpTool; 0]);
 }
 
 #[test]
@@ -1289,7 +1289,7 @@ fn ingest_tools_sandboxed_empty_allowlist_returns_no_tools() {
         },
     );
     // Sandboxed + empty allowlist = fail-closed: no tools exposed
-    assert!(result.is_empty());
+    assert_eq!(result.as_slice(), [] as [McpTool; 0]);
 }
 
 #[test]
@@ -1979,7 +1979,7 @@ async fn connect_all_does_not_orphan_tool_list_locked_on_connect_failure() {
 
     let (tools, outcomes) = mgr.connect_all().await;
 
-    assert!(tools.is_empty());
+    assert_eq!(tools.as_slice(), [] as [McpTool; 0]);
     assert!(outcomes.iter().all(|o| !o.connected));
     assert!(
         !mgr.is_tool_list_locked_for_test("locked-fail"),

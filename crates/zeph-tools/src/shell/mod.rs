@@ -1949,6 +1949,10 @@ impl ShellExecutor {
 }
 
 impl ToolExecutor for ShellExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        crate::registry::McpToolIds::empty_shared()
+    }
+
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         self.execute_inner(response, false).await
     }

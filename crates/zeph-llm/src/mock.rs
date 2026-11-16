@@ -76,7 +76,7 @@ pub struct MockProvider {
     pub prefix_cache: crate::provider::PrefixCache,
     /// Value returned by `last_response_usage()`; set via
     /// [`MockProvider::with_auxiliary_usage`].
-    pub auxiliary_usage: Option<crate::provider::AuxiliaryUsage>,
+    pub auxiliary_usage: Option<crate::provider::TokenUsage>,
     /// Full snapshot returned by `last_response_usage()`, taking precedence over
     /// `auxiliary_usage`; set via [`MockProvider::with_response_usage`].
     pub response_usage: Option<crate::provider::ResponseUsage>,
@@ -493,7 +493,7 @@ impl MockProvider {
 
     /// Report `usage` from `last_response_usage()` after every call.
     #[must_use]
-    pub fn with_auxiliary_usage(mut self, usage: crate::provider::AuxiliaryUsage) -> Self {
+    pub fn with_auxiliary_usage(mut self, usage: crate::provider::TokenUsage) -> Self {
         self.auxiliary_usage = Some(usage);
         self
     }

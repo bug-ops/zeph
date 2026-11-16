@@ -5,7 +5,29 @@
 
 use std::time::Duration;
 
+use zeph_common::http::{BodyLimit, BodyReadError, read_capped};
+
 use crate::error::{LlmError, body_is_context_length_error};
+
+/// Maximum accepted size of one provider response body.
+///
+/// Provider endpoints can be third-party (`compatible`, `cocoon`, `gonka`); the cap bounds memory
+/// regardless of what the peer streams inside the request timeout.
+pub(crate) const LLM_BODY_LIMIT: BodyLimit = BodyLimit::from_const(32 * 1024 * 1024);
+
+/// Read a response body as text, failing once it exceeds [`LLM_BODY_LIMIT`].
+///
+/// Invalid UTF-8 is replaced lossily, matching `reqwest::Response::text`.
+pub(crate) async fn read_body(response: reqwest::Response) -> Result<String, LlmError> {
+    let bytes = read_capped(response, LLM_BODY_LIMIT)
+        .await
+        .map_err(|e| match e {
+            BodyReadError::TooLarge { limit } => LlmError::ResponseTooLarge { limit },
+            BodyReadError::Transport(e) => LlmError::Http(e),
+        })?;
+    Ok(String::from_utf8(bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+}
 
 /// Create an HTTP client for LLM inference providers.
 ///
@@ -51,7 +73,7 @@ pub(crate) async fn check_response(
     provider: &str,
 ) -> Result<String, LlmError> {
     let status = response.status();
-    let text = response.text().await.map_err(LlmError::Http)?;
+    let text = read_body(response).await?;
     if !status.is_success() {
         log_api_error_body(provider, status, &text);
         return Err(map_error_response(status, &text, provider));
@@ -77,8 +99,21 @@ pub(crate) async fn read_response_body(
     response: reqwest::Response,
 ) -> Result<(reqwest::StatusCode, String), LlmError> {
     let status = response.status();
-    let text = response.text().await.map_err(LlmError::Http)?;
+    let text = read_body(response).await?;
     Ok((status, text))
+}
+
+/// Map an HTTP 400 body to the matching [`LlmError`], logging the scrubbed body at debug level.
+///
+/// Context-length bodies become [`LlmError::ContextLengthExceeded`]; everything else becomes a
+/// sanitized [`LlmError::InvalidInput`].
+pub(crate) fn map_bad_request(provider: &str, body: &str) -> LlmError {
+    log_api_error_body(provider, reqwest::StatusCode::BAD_REQUEST, body);
+    if body_is_context_length_error(body) {
+        LlmError::ContextLengthExceeded
+    } else {
+        LlmError::invalid_input_from_body(provider, body)
+    }
 }
 
 /// Only call this function after confirming the response is not a 2xx success.
@@ -98,6 +133,61 @@ pub(crate) fn map_error_response(
 mod tests {
     use super::*;
     use std::assert_matches;
+
+    #[tokio::test]
+    async fn read_body_rejects_body_over_limit() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_bytes(vec![b'a'; LLM_BODY_LIMIT.get() + 1]),
+            )
+            .mount(&server)
+            .await;
+        let response = reqwest::get(server.uri()).await.unwrap();
+        assert_matches!(
+            read_body(response).await,
+            Err(LlmError::ResponseTooLarge { limit }) if limit == LLM_BODY_LIMIT.get()
+        );
+    }
+
+    #[tokio::test]
+    async fn read_body_returns_text_under_limit() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("hello"))
+            .mount(&server)
+            .await;
+        let response = reqwest::get(server.uri()).await.unwrap();
+        assert_eq!(read_body(response).await.unwrap(), "hello");
+    }
+
+    #[test]
+    fn map_bad_request_sanitizes_body() {
+        let body = format!(
+            "key sk-abcdef0123456789abcdef0123456789abcdef \x1b[31m{}",
+            "x".repeat(5000)
+        );
+        let LlmError::InvalidInput { message, .. } = map_bad_request("p", &body) else {
+            panic!("expected InvalidInput");
+        };
+        assert!(!message.contains("sk-abcdef"));
+        assert!(!message.chars().any(char::is_control));
+        assert!(message.chars().count() <= crate::error::ApiErrorDetail::MAX_MESSAGE_CHARS);
+    }
+
+    #[test]
+    fn map_bad_request_keeps_context_length_classification() {
+        assert_matches!(
+            map_bad_request("p", "maximum context length exceeded"),
+            LlmError::ContextLengthExceeded
+        );
+    }
 
     #[test]
     fn bad_request_with_context_length_body_returns_exceeded() {

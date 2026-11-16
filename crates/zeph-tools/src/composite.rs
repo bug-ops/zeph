@@ -175,6 +175,13 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
 pub struct OptionalExecutor<T: ToolExecutor>(pub Option<T>);
 
 impl<T: ToolExecutor> ToolExecutor for OptionalExecutor<T> {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        self.0.as_ref().map_or_else(
+            crate::registry::McpToolIds::empty_shared,
+            ToolExecutor::mcp_dispatch_ids,
+        )
+    }
+
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         match &self.0 {
             Some(inner) => inner.execute(response).await,
@@ -268,6 +275,99 @@ mod tests {
     use super::*;
     use crate::ToolName;
     use std::assert_matches;
+
+    #[derive(Debug)]
+    struct NoopModerationBackend;
+
+    impl crate::moderation::ReactionModerationBackend for NoopModerationBackend {
+        fn delete_reaction<'a>(
+            &'a self,
+            _: i64,
+            _: i64,
+            _: i64,
+            _: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), crate::moderation::ModerationError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete_all_reactions<'a>(
+            &'a self,
+            _: i64,
+            _: i64,
+            _: i64,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), crate::moderation::ModerationError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn assert_shares_empty_registry(name: &str, executor: &impl ToolExecutor) {
+        assert!(
+            std::sync::Arc::ptr_eq(
+                &executor.mcp_dispatch_ids(),
+                &crate::registry::McpToolIds::empty_shared()
+            ),
+            "{name} must answer mcp_dispatch_ids with the shared empty registry"
+        );
+    }
+
+    #[test]
+    fn every_native_leaf_shares_the_empty_registry() {
+        let shell_cfg = crate::config::ShellConfig::default();
+        let scrape_cfg = crate::config::ScrapeConfig::default();
+        let search_cfg = crate::config::SearchConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert_shares_empty_registry("shell", &crate::ShellExecutor::new(&shell_cfg));
+        assert_shares_empty_registry("file", &crate::FileExecutor::new(vec![]));
+        assert_shares_empty_registry("scrape", &crate::WebScrapeExecutor::new(&scrape_cfg));
+        assert_shares_empty_registry(
+            "search",
+            &crate::search::WebSearchExecutor::new(
+                &search_cfg,
+                &scrape_cfg,
+                Some(zeph_common::secret::Secret::new("k".to_owned())),
+            )
+            .expect("search executor"),
+        );
+        assert_shares_empty_registry(
+            "search_code",
+            &crate::search_code::SearchCodeExecutor::new(vec![]),
+        );
+        assert_shares_empty_registry(
+            "diagnostics",
+            &crate::diagnostics::DiagnosticsExecutor::new(vec![]),
+        );
+        assert_shares_empty_registry("cwd", &crate::cwd::SetCwdExecutor::new(vec![]));
+        assert_shares_empty_registry(
+            "moderation",
+            &crate::moderation::ModerationExecutor::new(NoopModerationBackend),
+        );
+        assert_shares_empty_registry("time", &crate::time::GetCurrentTimeExecutor::default());
+    }
+
+    #[test]
+    fn native_leaves_and_empty_optional_share_one_empty_registry() {
+        let empty = crate::registry::McpToolIds::empty_shared();
+        let time = crate::time::GetCurrentTimeExecutor::default();
+        assert!(std::sync::Arc::ptr_eq(&time.mcp_dispatch_ids(), &empty));
+        let none: OptionalExecutor<crate::time::GetCurrentTimeExecutor> = OptionalExecutor(None);
+        assert!(std::sync::Arc::ptr_eq(&none.mcp_dispatch_ids(), &empty));
+        let some = OptionalExecutor(Some(crate::time::GetCurrentTimeExecutor::default()));
+        assert!(std::sync::Arc::ptr_eq(&some.mcp_dispatch_ids(), &empty));
+    }
 
     #[derive(Debug)]
     struct MatchingExecutor;

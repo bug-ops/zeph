@@ -2821,7 +2821,7 @@ async fn router_coe_shadow_usage_lands_in_auxiliary_not_primary_counters() {
     assert_eq!((usage.input, usage.output), (10, 5));
     assert_eq!(
         usage.auxiliary,
-        Some(crate::provider::AuxiliaryUsage {
+        Some(crate::provider::TokenUsage {
             input: 3,
             output: 2,
             ..Default::default()

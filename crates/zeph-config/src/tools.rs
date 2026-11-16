@@ -77,7 +77,10 @@ fn default_shell_tools() -> Vec<String> {
 }
 
 fn default_guarded_tools() -> Vec<String> {
-    vec!["fetch".to_string(), "web_scrape".to_string()]
+    vec![
+        zeph_common::native_tools::FETCH_ID.to_string(),
+        zeph_common::native_tools::WEB_SCRAPE_ID.to_string(),
+    ]
 }
 
 /// Configuration for the destructive command verifier.

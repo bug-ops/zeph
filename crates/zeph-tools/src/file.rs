@@ -656,6 +656,10 @@ impl FileExecutor {
 }
 
 impl ToolExecutor for FileExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        crate::registry::McpToolIds::empty_shared()
+    }
+
     fn execute(
         &self,
         _response: &str,
