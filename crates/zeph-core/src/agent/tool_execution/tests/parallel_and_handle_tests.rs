@@ -112,11 +112,10 @@ fn make_calls(n: usize) -> Vec<ToolCall> {
         .map(|i| ToolCall {
             tool_id: zeph_common::ToolName::new(format!("tool-{i}")),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         })
         .collect()
 }

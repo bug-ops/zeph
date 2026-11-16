@@ -10,28 +10,15 @@
 use std::sync::Arc;
 
 use zeph_common::ProviderName;
-use zeph_common::task_supervisor::BlockingHandle;
+use zeph_common::task_supervisor::AbortOnDrop;
 use zeph_config::CacheKeepaliveConfig;
-use zeph_llm::provider::{KeepaliveRequest, LlmProvider as _, ToolDefinition};
+use zeph_llm::provider::{LlmProvider as _, ToolDefinition};
 
 use super::Agent;
-use crate::cache_keepalive::{KeepaliveState, ServiceDeps, Shared, StopReason, run_service};
+use crate::cache_keepalive::{
+    CaptureInput, KeepaliveState, ServiceDeps, Shared, StopReason, run_service,
+};
 use crate::channel::Channel;
-
-/// Aborts the keepalive task when dropped, so closing a session stops its pings.
-struct KeepaliveTaskGuard(BlockingHandle<()>);
-
-impl Drop for KeepaliveTaskGuard {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-impl std::fmt::Debug for KeepaliveTaskGuard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("KeepaliveTaskGuard")
-    }
-}
 
 /// Keepalive settings and service handle carried by one agent instance.
 ///
@@ -41,7 +28,8 @@ impl std::fmt::Debug for KeepaliveTaskGuard {
 pub(crate) struct KeepaliveRuntime {
     pub(crate) config: CacheKeepaliveConfig,
     shared: Arc<Shared>,
-    guard: Option<KeepaliveTaskGuard>,
+    /// Aborts the keepalive task when dropped, so closing a session stops its pings.
+    guard: Option<AbortOnDrop<()>>,
 }
 
 impl KeepaliveRuntime {
@@ -94,8 +82,8 @@ impl<C: Channel> Agent<C> {
     /// Capture the request the main loop just sent successfully, so the service can replay it.
     ///
     /// Called by the main-loop dispatch after every successful response, and only while the
-    /// service is armed, because the history is deep-copied. The tool definitions are shared with
-    /// the previous snapshot when unchanged. Side-call provider clones and subagents run their
+    /// service is armed. Only the messages added since the previous capture are copied, and the
+    /// tool definitions are shared with the previous snapshot when unchanged. Side-call provider clones and subagents run their
     /// own loops and never reach this.
     pub(super) fn keepalive_capture(&self, tool_defs: &[ToolDefinition]) {
         let keepalive = &self.runtime.cache_keepalive;
@@ -108,9 +96,9 @@ impl<C: Channel> Agent<C> {
             .last_response_usage()
             .map_or_default(|usage| usage.speed);
         keepalive.shared.capture(
-            KeepaliveRequest {
+            CaptureInput {
                 provider: self.provider.clone(),
-                messages: Arc::from(self.msg.messages.as_slice()),
+                messages: &self.msg.messages,
                 tools: keepalive
                     .shared
                     .reusable_tools(tool_defs)
@@ -237,7 +225,7 @@ impl<C: Channel> Agent<C> {
             .lifecycle
             .task_supervisor
             .spawn_oneshot(name, move || run_service(deps));
-        self.runtime.cache_keepalive.guard = Some(KeepaliveTaskGuard(handle));
+        self.runtime.cache_keepalive.guard = Some(AbortOnDrop::new(handle));
     }
 }
 
@@ -261,6 +249,9 @@ fn describe(state: &KeepaliveState) -> &'static str {
             "stopped: keepalive_provider does not match the serving provider"
         }
         KeepaliveState::Stopped(StopReason::UserOff) => "off",
+        KeepaliveState::Stopped(StopReason::Unpriced) => {
+            "stopped: pings cannot be priced while thinking is on"
+        }
     }
 }
 

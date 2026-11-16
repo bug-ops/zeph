@@ -83,7 +83,7 @@ async fn router_falls_back_on_unreachable() {
     let err = r.chat(&msgs).await.unwrap_err();
     // Fallback exhaustion must surface the last provider's actual error (#5821),
     // not a generic `NoProviders` that discards the connection-failure diagnostic.
-    assert_matches!(&err, LlmError::Other(msg) if msg.contains("Ollama chat request failed"),
+    assert_matches!(&err, LlmError::Http(e) if e.is_connect(),
         "expected the last provider's actual error to survive exhaustion, got {err:?}"
     );
 }

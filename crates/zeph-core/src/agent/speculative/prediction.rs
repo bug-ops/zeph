@@ -45,13 +45,13 @@ impl Prediction {
     /// Convert to a [`ToolCall`] for dispatch through the executor.
     #[must_use]
     pub fn to_tool_call(&self, call_id: impl Into<String>) -> ToolCall {
+        let call_id: String = call_id.into();
         ToolCall {
             tool_id: self.tool_id.clone(),
             params: self.args.clone(),
-            caller_id: Some(call_id.into()),
+            attribution: zeph_tools::CallAttribution::for_caller(call_id),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 }

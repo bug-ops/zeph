@@ -984,11 +984,10 @@ impl ClaudeProvider {
             let status = resp.status();
             if !status.is_success() {
                 let body = crate::http::read_body(resp).await.unwrap_or_default();
-                tracing::debug!(status = %status, body = %body, "Claude list_models_remote error body");
-                return Err(LlmError::api_error("claude", status.as_u16(), &body));
+                return Err(crate::http::api_failure("claude", status, &body));
             }
 
-            let page: serde_json::Value = resp.json().await?;
+            let page: serde_json::Value = crate::http::read_json(resp).await?;
             if let Some(data) = page.get("data").and_then(|v| v.as_array()) {
                 for item in data {
                     let type_field = item

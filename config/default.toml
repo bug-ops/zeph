@@ -31,7 +31,7 @@ max_tool_iterations = 10
 enabled = false
 # Provider to ping, by [[llm.providers]] name. Empty = the main provider.
 keepalive_provider = ""
-# Pings in a row without real activity before the service stops (must be > 0)
+# Pings in a row without real activity before the service stops (1-50)
 max_consecutive_pings = 6
 
 # ── Cascade routing ───────────────────────────────────────────────────────────
@@ -844,7 +844,7 @@ destination = "stdout"
 [tools.ask_user]
 # Let the model ask you a clarifying question mid-turn (the ask_user tool). Off by default.
 enabled = false
-# Seconds to wait for your answer before the question times out (must be > 0)
+# Seconds to wait for your answer before the question times out (1-3600)
 timeout_secs = 300
 # Maximum questions the model may ask in a single turn (must be > 0)
 max_questions_per_turn = 3

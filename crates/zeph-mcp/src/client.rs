@@ -1023,8 +1023,8 @@ impl McpClient {
     /// dropped. Safe to call `shutdown()` on the returned client — `cancel()` simply
     /// signals the cancellation token.
     ///
-    /// Only available in `#[cfg(test)]` contexts.
-    #[cfg(test)]
+    /// Only available in `#[cfg(test)]` contexts and with the `mock` feature.
+    #[cfg(any(test, feature = "mock"))]
     pub(crate) fn new_disconnected_for_test(server_id: impl Into<McpServerId>) -> Self {
         let (tx, _rx) = tokio::sync::mpsc::channel::<ToolRefreshEvent>(16);
         let handler = ToolListChangedHandler::new(

@@ -243,6 +243,8 @@ pub(crate) struct McpState {
     pub(crate) pending_semantic_rebuild: bool,
     /// MCP tools unreachable because their sanitized id equals a native tool id.
     pub(crate) native_shadows: Vec<zeph_mcp::tool::NativeToolShadow>,
+    /// Ids served by native tools; MCP tools with the same sanitized id are never published.
+    native_ids: zeph_mcp::tool_list::NativeToolIds,
 }
 
 pub(crate) struct IndexState {
@@ -559,9 +561,9 @@ pub(crate) struct LifecycleState {
     pub(crate) start_time: Instant,
     pub(crate) cancel_signal: Arc<Notify>,
     pub(crate) cancel_token: CancellationToken,
-    /// Handle to the cancel bridge task spawned each turn. Aborted before a new one is created
-    /// to prevent unbounded task accumulation across turns.
-    pub(crate) cancel_bridge_handle: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
+    /// Guard for the cancel bridge task spawned each turn. Replacing or dropping it aborts the
+    /// task, preventing accumulation across turns and after the agent ends.
+    pub(crate) cancel_bridge_handle: Option<zeph_common::AbortOnDrop<()>>,
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) config_reload_rx: Option<mpsc::Receiver<ConfigEvent>>,
     /// Path to the plugins directory; used to re-apply overlays on hot-reload.
@@ -1362,10 +1364,28 @@ impl McpState {
         self.publish_full();
     }
 
+    /// Attach the list writer. Republishes when native ids are already known, because the ids are
+    /// recorded before the writer exists on some wiring orders and would never be applied.
+    pub(crate) fn attach_tool_list(&mut self, writer: zeph_mcp::McpToolListWriter) {
+        self.tool_list = Some(writer);
+        if !self.native_ids.is_empty() {
+            self.publish_full();
+        }
+    }
+
+    /// Record the native tool ids and republish the list when they changed, so an MCP tool with a
+    /// native id leaves the exposed list and the MCP id registry.
+    pub(crate) fn set_native_ids(&mut self, ids: zeph_mcp::tool_list::NativeToolIds) {
+        if self.native_ids != ids {
+            self.native_ids = ids;
+            self.publish_full();
+        }
+    }
+
     /// Publish `self.tools` as the exposed list and rebuild the id registry from it.
     fn publish_full(&self) {
         if let Some(ref list) = self.tool_list {
-            list.publish_full(&self.tools);
+            list.publish_full(&self.tools, &self.native_ids);
         }
     }
 
@@ -1531,6 +1551,7 @@ impl Default for McpState {
             elicitation_warn_sensitive_fields: true,
             pending_semantic_rebuild: false,
             native_shadows: Vec::new(),
+            native_ids: zeph_mcp::tool_list::NativeToolIds::default(),
         }
     }
 }

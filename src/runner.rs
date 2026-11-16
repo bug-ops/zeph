@@ -5229,9 +5229,10 @@ mod tests {
         let conversation_id = memory.sqlite().create_conversation().await.unwrap();
         let mut config = Config::default();
         config.tools.ask_user.enabled = true;
-        config.tools.ask_user.timeout_secs = std::num::NonZeroU64::new(17).unwrap();
+        config.tools.ask_user.timeout_secs = zeph_config::AskUserTimeout::new(17).unwrap();
         config.llm.cache_keepalive.enabled = true;
-        config.llm.cache_keepalive.max_consecutive_pings = std::num::NonZeroU32::new(2).unwrap();
+        config.llm.cache_keepalive.max_consecutive_pings =
+            zeph_config::KeepalivePingCap::new(2).unwrap();
 
         let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
         let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
@@ -5947,10 +5948,9 @@ mod tests {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("builtin:shell"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.unwrap().is_some(), "tool call must succeed");

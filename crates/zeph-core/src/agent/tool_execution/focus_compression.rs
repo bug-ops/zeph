@@ -44,6 +44,10 @@ pub(in crate::agent) fn user_answer_output(
     }
 }
 
+fn denied_reply(name: &str) -> BuiltinReply {
+    BuiltinReply::failed(format!("Error: {name} is denied by [tools.permissions]"))
+}
+
 /// Synthetic tools the agent loop answers itself, never reaching hooks, gates or executors.
 ///
 /// Invariant: a name that maps to `Some` always gets a result written into its slot by
@@ -76,6 +80,16 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Whether `[tools.permissions]` denies this built-in call.
+    ///
+    /// Mirrors `TrustGateExecutor::check_trust`: only a tool with explicit rules is evaluated, so
+    /// unconfigured built-ins stay allowed, and `Full` autonomy ignores the rules.
+    pub(in crate::agent) fn builtin_denied(&self, name: &str, input: &serde_json::Value) -> bool {
+        let policy = &self.runtime.config.permission_policy;
+        policy.rules().contains_key(name)
+            && policy.check(name, &input.to_string()) == zeph_config::tools::PermissionAction::Deny
+    }
+
     /// Whether `name` bypasses the security and utility gates: only `skill_state_patch`, a pure
     /// in-memory merge whose gating would break the mechanism. The tool-call quota still counts it.
     pub(in crate::agent) fn is_gate_exempt(&self, name: &str) -> bool {
@@ -97,6 +111,13 @@ impl<C: Channel> Agent<C> {
             let Some(builtin) = self.builtin_tool(tc.name.as_str()) else {
                 continue;
             };
+            if self.builtin_denied(tc.name.as_str(), &tc.input) {
+                tool_results[idx] = Ok(Some(context_management_output(
+                    tc.name.clone(),
+                    denied_reply(tc.name.as_str()),
+                )));
+                continue;
+            }
             let result = match builtin {
                 // Answered by `preprocess_ask_user_calls`, which needs the cancel token.
                 BuiltinTool::AskUser => continue,
@@ -139,7 +160,9 @@ impl<C: Channel> Agent<C> {
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
     ) {
         for (idx, tc) in tool_calls.iter().enumerate() {
-            if self.builtin_tool(tc.name.as_str()) != Some(BuiltinTool::AskUser) {
+            if self.builtin_tool(tc.name.as_str()) != Some(BuiltinTool::AskUser)
+                || self.builtin_denied(tc.name.as_str(), &tc.input)
+            {
                 continue;
             }
             let reply = self

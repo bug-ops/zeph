@@ -16,6 +16,7 @@ use std::time::Duration;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
+use zeph_common::http::{BodyLimit, read_capped, read_prefix};
 use zeph_common::secret::Secret;
 
 use crate::embedding::{SkillEmbedding, embed_skills_with_timeout};
@@ -30,6 +31,24 @@ use crate::scanner::scan_skill_body;
 
 /// Maximum README bytes to pass to the LLM (prevents context overflow).
 const MAX_README_BYTES: usize = 32_768;
+
+/// Upper bound on one GitHub search response body; a search page is well under 1 MiB.
+const GITHUB_JSON_LIMIT: BodyLimit = BodyLimit::from_const(4 * 1024 * 1024);
+
+/// Bytes of a README kept; the rest of the body is never read.
+const README_BODY_LIMIT: BodyLimit = BodyLimit::from_const(MAX_README_BYTES);
+
+/// Bytes of a GitHub error body kept for the diagnostic message.
+const GITHUB_ERROR_BODY_LIMIT: BodyLimit = BodyLimit::from_const(4096);
+
+/// Read a GitHub JSON response through the capped reader and decode it.
+async fn read_github_json(resp: reqwest::Response) -> Result<serde_json::Value, SkillError> {
+    let bytes = read_capped(resp, GITHUB_JSON_LIMIT)
+        .await
+        .map_err(|e| SkillError::Other(format!("GitHub search response read failed: {e}")))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| SkillError::Other(format!("GitHub search JSON parse failed: {e}")))
+}
 
 /// System prompt for mining: generate SKILL.md from a GitHub repository README.
 const MINING_SYSTEM_PROMPT: &str = "\
@@ -450,17 +469,15 @@ impl SkillMiner {
         }
 
         if !resp.status().is_success() {
+            let status = resp.status();
+            let body = read_prefix(resp, GITHUB_ERROR_BODY_LIMIT).await;
             return Err(SkillError::Other(format!(
-                "GitHub search returned {}: {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
+                "GitHub search returned {status}: {}",
+                String::from_utf8_lossy(&body)
             )));
         }
 
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| SkillError::Other(format!("GitHub search JSON parse failed: {e}")))?;
+        let json = read_github_json(resp).await?;
 
         let items = json["items"].as_array().cloned().unwrap_or_default();
         let mut candidates = Vec::with_capacity(items.len());
@@ -540,14 +557,8 @@ impl SkillMiner {
             )));
         }
 
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| SkillError::Other(format!("README read failed: {e}")))?;
-
-        let text =
-            String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_README_BYTES)]).into_owned();
-        Ok(text)
+        let bytes = read_prefix(resp, README_BODY_LIMIT).await;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Generate a SKILL.md candidate from a `RepoCandidate`.
@@ -958,5 +969,38 @@ mod tests {
             err.contains("timed out"),
             "error message must mention timeout, got: {err}"
         );
+    }
+
+    async fn github_response(body: Vec<u8>) -> reqwest::Response {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        reqwest::get(server.uri()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn github_json_over_limit_is_rejected() {
+        let resp = github_response(vec![b' '; GITHUB_JSON_LIMIT.get() + 1]).await;
+        let err = read_github_json(resp).await.unwrap_err().to_string();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn github_json_under_limit_is_decoded() {
+        let resp = github_response(br#"{"items":[]}"#.to_vec()).await;
+        let json = read_github_json(resp).await.unwrap();
+        assert_eq!(json["items"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn readme_body_is_cut_at_the_limit_without_reading_the_rest() {
+        let resp = github_response(vec![b'r'; MAX_README_BYTES * 4]).await;
+        let bytes = read_prefix(resp, README_BODY_LIMIT).await;
+        assert_eq!(bytes.len(), MAX_README_BYTES);
     }
 }

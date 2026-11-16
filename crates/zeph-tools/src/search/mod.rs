@@ -234,8 +234,7 @@ impl WebSearchExecutor {
             response_bytes: 0,
             blocked: true,
             block_reason: Some(block_reason),
-            caller_id: attribution.caller_id.clone(),
-            skill_name: attribution.skill_name.clone(),
+            attribution: attribution.clone(),
             hop: 0,
         }
     }
@@ -279,8 +278,7 @@ impl WebSearchExecutor {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id: attribution.caller_id.clone(),
-                skill_name: attribution.skill_name.clone(),
+                attribution: attribution.clone(),
                 policy_match: None,
                 correlation_id,
                 vigil_risk: None,
@@ -481,8 +479,7 @@ impl WebSearchExecutor {
                         response_bytes: 0,
                         blocked: false,
                         block_reason: None,
-                        caller_id: attribution.caller_id.clone(),
-                        skill_name: attribution.skill_name.clone(),
+                        attribution: attribution.clone(),
                         hop: 0,
                     };
                     self.log_egress_event(&event).await;
@@ -516,8 +513,7 @@ impl WebSearchExecutor {
                         response_bytes: 0,
                         blocked,
                         block_reason,
-                        caller_id: attribution.caller_id.clone(),
-                        skill_name: attribution.skill_name.clone(),
+                        attribution: attribution.clone(),
                         hop: 0,
                     };
                     self.log_egress_event(&event).await;
@@ -540,8 +536,7 @@ impl WebSearchExecutor {
                 response_bytes: 0,
                 blocked: false,
                 block_reason: None,
-                caller_id: attribution.caller_id.clone(),
-                skill_name: attribution.skill_name.clone(),
+                attribution: attribution.clone(),
                 hop: 0,
             };
             self.log_egress_event(&event).await;
@@ -669,7 +664,7 @@ impl ToolExecutor for WebSearchExecutor {
         let correlation_id = EgressEvent::new_correlation_id();
         let start = Instant::now();
         let result = self
-            .handle_search(&params, &correlation_id, &call.attribution())
+            .handle_search(&params, &correlation_id, call.attribution())
             .await;
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -681,7 +676,7 @@ impl ToolExecutor for WebSearchExecutor {
                     AuditResult::Success,
                     duration_ms,
                     None,
-                    &call.attribution(),
+                    call.attribution(),
                     Some(correlation_id),
                 )
                 .await;
@@ -714,7 +709,7 @@ impl ToolExecutor for WebSearchExecutor {
                     audit_result,
                     duration_ms,
                     Some(&e),
-                    &call.attribution(),
+                    call.attribution(),
                     Some(correlation_id),
                 )
                 .await;
@@ -882,10 +877,9 @@ mod tests {
                 m.insert("query".to_owned(), serde_json::json!("   "));
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let err = executor.execute_tool_call(&call).await.unwrap_err();
         assert_matches!(err, ToolError::InvalidParams { .. });
@@ -902,10 +896,9 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("something_else"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());

@@ -237,10 +237,9 @@ fn bash_call(command: &str) -> ToolCall {
         params: [("command".to_owned(), serde_json::json!(command))]
             .into_iter()
             .collect(),
-        caller_id: None,
+        attribution: crate::CallAttribution::default(),
         context: None,
         tool_call_id: None,
-        skill_name: None,
     }
 }
 
@@ -1007,10 +1006,9 @@ async fn dyn_executor_forwards_remaining_cross_cutting_methods() {
     let call = ToolCall {
         tool_id: ToolName::new("bash"),
         params: serde_json::Map::new(),
-        caller_id: None,
+        attribution: crate::CallAttribution::default(),
         context: None,
         tool_call_id: None,
-        skill_name: None,
     };
 
     let (via_dyn_confirm, via_dyn_speculatable, via_dyn_retryable) =
@@ -1539,11 +1537,10 @@ async fn execute_tool_call_valid_command() {
         params: [("command".to_owned(), serde_json::json!("echo hi"))]
             .into_iter()
             .collect(),
-        caller_id: None,
+        attribution: crate::CallAttribution::default(),
         context: None,
 
         tool_call_id: None,
-        skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(result.summary.contains("hi"));
@@ -1555,11 +1552,10 @@ async fn execute_tool_call_missing_command_returns_invalid_params() {
     let call = ToolCall {
         tool_id: ToolName::new("bash"),
         params: serde_json::Map::new(),
-        caller_id: None,
+        attribution: crate::CallAttribution::default(),
         context: None,
 
         tool_call_id: None,
-        skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await;
     assert_matches!(result, Err(ToolError::InvalidParams { .. }));
@@ -1573,11 +1569,10 @@ async fn execute_tool_call_empty_command_returns_none() {
         params: [("command".to_owned(), serde_json::json!(""))]
             .into_iter()
             .collect(),
-        caller_id: None,
+        attribution: crate::CallAttribution::default(),
         context: None,
 
         tool_call_id: None,
-        skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap();
     assert!(result.is_none());
@@ -3054,11 +3049,10 @@ async fn execute_tool_call_with_background_true() {
         ]
         .into_iter()
         .collect(),
-        caller_id: None,
+        attribution: crate::CallAttribution::default(),
         context: None,
 
         tool_call_id: None,
-        skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(
@@ -3617,11 +3611,10 @@ mod resolve_context {
                 );
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: Some(ctx),
 
             tool_call_id: None,
-            skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(
@@ -3659,11 +3652,10 @@ mod resolve_context {
                 );
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(
@@ -4058,10 +4050,9 @@ async fn background_run_reports_real_exit_code_and_ignores_output_text() {
             ]
             .into_iter()
             .collect(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         executor.execute_tool_call(&call).await.unwrap().unwrap();
         let done = tokio::time::timeout(Duration::from_secs(10), rx.recv())

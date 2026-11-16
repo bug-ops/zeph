@@ -589,10 +589,9 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("read"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = composite
             .execute_tool_call_confirmed(&call)
@@ -616,10 +615,9 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("read"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = composite
             .execute_tool_call_confirmed(&call)
@@ -710,11 +708,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("read"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "file_handler");
@@ -726,11 +723,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("bash"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "shell_handler");
@@ -742,11 +738,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("unknown"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -828,10 +823,9 @@ mod tests {
             ToolCall {
                 tool_id: ToolName::new("shell"),
                 params: serde_json::Map::new(),
-                caller_id: None,
+                attribution: crate::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             }
         }
 
@@ -935,10 +929,9 @@ mod tests {
             let call = ToolCall {
                 tool_id: ToolName::new("read"),
                 params: serde_json::Map::new(),
-                caller_id: None,
+                attribution: crate::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             };
             assert!(wrapped.execute_tool_call(&call).await.unwrap().is_none());
         }
@@ -949,10 +942,9 @@ mod tests {
             let call = ToolCall {
                 tool_id: ToolName::new("read"),
                 params: serde_json::Map::new(),
-                caller_id: None,
+                attribution: crate::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             };
             let result = wrapped.execute_tool_call(&call).await.unwrap();
             assert_eq!(result.unwrap().summary, "file_handler");
@@ -985,10 +977,9 @@ mod tests {
             let call = ToolCall {
                 tool_id: ToolName::new("anything"),
                 params: serde_json::Map::new(),
-                caller_id: None,
+                attribution: crate::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             };
             assert!(!wrapped.requires_confirmation(&call));
         }

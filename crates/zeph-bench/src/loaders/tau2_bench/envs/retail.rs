@@ -198,10 +198,9 @@ impl RetailEnv {
             let call = ToolCall {
                 tool_id: ToolName::new(action.name.as_str()),
                 params: action.arguments.clone(),
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             };
             self.execute_tool_call(&call).await.map_err(|e| {
                 BenchError::InvalidFormat(format!("replay action '{}': {e}", action.name))
@@ -796,11 +795,10 @@ mod tests {
         ToolCall {
             tool_id: ToolName::new(tool),
             params: params.as_object().cloned().unwrap_or_default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

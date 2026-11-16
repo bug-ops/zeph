@@ -1163,6 +1163,94 @@ pub struct RequestPolicy {
 }
 
 impl MessagePart {
+    /// Whether two parts carry identical request content, compared without allocating.
+    ///
+    /// Deliberately not a `PartialEq` impl: a `PartialEq` on this type makes
+    /// `clippy::assert_is_empty` fire on every `Vec<MessagePart>` assertion in the workspace.
+    /// A variant added later compares unequal until it gets an arm, which is the safe direction
+    /// for callers that treat equality as "no need to copy again".
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::MessagePart;
+    ///
+    /// let a = MessagePart::Text { text: "hi".into() };
+    /// assert!(a.wire_eq(&a.clone()));
+    /// assert!(!a.wire_eq(&MessagePart::Recall { text: "hi".into() }));
+    /// ```
+    #[must_use]
+    pub fn wire_eq(&self, other: &Self) -> bool {
+        use MessagePart as P;
+        match (self, other) {
+            (
+                P::Text { text: a }
+                | P::Recall { text: a }
+                | P::CodeContext { text: a }
+                | P::Summary { text: a }
+                | P::CrossSession { text: a }
+                | P::RuntimeNote { text: a },
+                P::Text { text: b }
+                | P::Recall { text: b }
+                | P::CodeContext { text: b }
+                | P::Summary { text: b }
+                | P::CrossSession { text: b }
+                | P::RuntimeNote { text: b },
+            ) => std::mem::discriminant(self) == std::mem::discriminant(other) && a == b,
+            (
+                P::ToolOutput {
+                    tool_name: n1,
+                    body: b1,
+                    compacted_at: c1,
+                },
+                P::ToolOutput {
+                    tool_name: n2,
+                    body: b2,
+                    compacted_at: c2,
+                },
+            ) => n1 == n2 && b1 == b2 && c1 == c2,
+            (
+                P::ToolUse {
+                    id: i1,
+                    name: n1,
+                    input: v1,
+                },
+                P::ToolUse {
+                    id: i2,
+                    name: n2,
+                    input: v2,
+                },
+            ) => i1 == i2 && n1 == n2 && v1 == v2,
+            (
+                P::ToolResult {
+                    tool_use_id: i1,
+                    content: c1,
+                    is_error: e1,
+                },
+                P::ToolResult {
+                    tool_use_id: i2,
+                    content: c2,
+                    is_error: e2,
+                },
+            ) => i1 == i2 && c1 == c2 && e1 == e2,
+            (P::Image(a), P::Image(b)) => a == b,
+            (
+                P::ThinkingBlock {
+                    thinking: t1,
+                    signature: s1,
+                },
+                P::ThinkingBlock {
+                    thinking: t2,
+                    signature: s2,
+                },
+            ) => t1 == t2 && s1 == s2,
+            (P::RedactedThinkingBlock { data: a }, P::RedactedThinkingBlock { data: b })
+            | (P::Compaction { summary: a }, P::Compaction { summary: b }) => a == b,
+            (P::TurnContext(a), P::TurnContext(b)) => a == b,
+            _ => false,
+        }
+    }
+
     /// Return the plain text content if this part is a text-like variant (`Text`, `Recall`,
     /// `CodeContext`, `Summary`, `CrossSession`), `None` otherwise.
     #[must_use]
@@ -1282,7 +1370,7 @@ pub enum NoteAppend {
     NotAToolResultMessage,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Raw image payload for vision-capable providers.
 ///
 /// The `data` field is serialized as a Base64 string. `mime_type` must be a valid

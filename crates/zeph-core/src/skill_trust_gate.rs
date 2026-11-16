@@ -626,10 +626,9 @@ mod tests {
         let call = zeph_tools::executor::ToolCall {
             tool_id: "bash".into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         assert!(
             trust_gate.execute_tool_call(&call).await.is_ok(),

@@ -627,20 +627,11 @@ impl ZephAcpAgentState {
             // Before converting to ACP updates, capture token/cost data for accumulators.
             #[cfg(feature = "unstable-session-usage")]
             if let LoopbackEvent::Usage {
-                input_tokens,
-                output_tokens,
+                usage: call_usage,
                 context_window,
-                cache_read_tokens,
-                cache_write_tokens,
                 cost_cents,
             } = event
             {
-                let call_usage = zeph_llm::provider::TokenUsage {
-                    input: input_tokens,
-                    output: output_tokens,
-                    cache_read: cache_read_tokens,
-                    cache_write: cache_write_tokens,
-                };
                 turn_usage += call_usage;
                 // Update session-lifetime accumulator (cost/context_window: overwrite, tokens: sum).
                 if let Some(entry) = self.sessions.lock().get(session_id) {
@@ -652,11 +643,8 @@ impl ZephAcpAgentState {
                 // Reconstruct the event so loopback_event_to_updates can forward it as
                 // a UsageUpdate notification (with cost and context window) to the IDE.
                 let event = LoopbackEvent::Usage {
-                    input_tokens,
-                    output_tokens,
+                    usage: call_usage,
                     context_window,
-                    cache_read_tokens,
-                    cache_write_tokens,
                     cost_cents,
                 };
                 for update in loopback_event_to_updates(event) {

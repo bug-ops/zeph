@@ -456,10 +456,9 @@ impl ToolExecutor for SchedulerExecutor {
                 let call = ToolCall {
                     tool_id: tool_id.into(),
                     params,
-                    caller_id: None,
+                    attribution: zeph_tools::CallAttribution::default(),
                     context: None,
                     tool_call_id: None,
-                    skill_name: None,
                 };
                 return self.execute_tool_call(&call).await;
             }
@@ -554,11 +553,10 @@ mod tests {
         ToolCall {
             tool_id: zeph_tools::ToolName::new(tool_id),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

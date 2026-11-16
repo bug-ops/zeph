@@ -313,8 +313,7 @@ pub async fn graph_recall_astar(
                 |e| *e.weight(),
                 |_| 0.0,
             ) {
-                for window in path.windows(2) {
-                    let (a, b) = (window[0], window[1]);
+                for &[a, b] in path.array_windows() {
                     let pair = if a.index() < b.index() {
                         (a, b)
                     } else {

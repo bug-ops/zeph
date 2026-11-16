@@ -2243,10 +2243,11 @@ async fn spawn_acp_agent(
         mcp_registry,
         mcp_tool_rx,
         mcp_tool_scope,
-        task_supervisor: Arc::new(
-            d.shell_task_supervisor
-                .scoped(&session_ctx.session_id.to_string()),
-        ),
+        task_supervisor: Arc::new(d.shell_task_supervisor.scoped(
+            &zeph_common::task_supervisor::unique_session_scope(
+                &session_ctx.session_id.to_string(),
+            ),
+        )),
         mcp_manager: Arc::clone(&mcp_manager),
         mcp_config,
         focus_config: d.focus_config.clone(),
@@ -3568,10 +3569,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "diagnostics".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
         assert_matches!(
@@ -3613,10 +3613,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "diagnostics".into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
         assert_matches!(
@@ -3674,10 +3673,9 @@ mod tests {
         zeph_tools::ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -3810,10 +3808,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "diagnostics".into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = gated.execute_tool_call(&call).await;
         assert_matches!(
@@ -3874,10 +3871,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "diagnostics".into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = gated.execute_tool_call(&call).await;
         assert_matches!(
@@ -4352,10 +4348,9 @@ mod tests {
         zeph_tools::ToolCall {
             tool_id: "bash".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -4506,10 +4501,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "invoke_skill".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = session_composite.execute_tool_call_erased(&call).await;
         let output = result
@@ -4753,10 +4747,9 @@ mod tests {
             let call = zeph_tools::ToolCall {
                 tool_id: tool_id.into(),
                 params: serde_json::Map::new(),
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             };
             let result = gated.execute_tool_call(&call).await;
             assert_matches!(
@@ -4807,10 +4800,9 @@ mod tests {
             let call = zeph_tools::ToolCall {
                 tool_id: tool_id.into(),
                 params: serde_json::Map::new(),
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             };
             let result = gated.execute_tool_call(&call).await;
             assert_matches!(

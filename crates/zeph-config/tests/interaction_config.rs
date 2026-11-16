@@ -5,7 +5,7 @@
 //! (specs 090 / 091, FR-002 / FR-010 / FR-011): both default to disabled, the numeric limits
 //! are non-zero by construction, and the three defaults TOML files document every key.
 
-use std::num::{NonZeroU8, NonZeroU32, NonZeroU64};
+use std::num::NonZeroU8;
 
 use zeph_config::{AskUserConfig, CacheKeepaliveConfig, Config};
 
@@ -32,7 +32,7 @@ fn parse(overlay: &str) -> Result<Config, toml::de::Error> {
 fn ask_user_config_default_is_disabled_with_plan_limits() {
     let cfg = AskUserConfig::default();
     assert!(!cfg.enabled, "ask_user must be opt-in");
-    assert_eq!(cfg.timeout_secs, NonZeroU64::new(300).unwrap());
+    assert_eq!(cfg.timeout_secs.get(), 300);
     assert_eq!(cfg.max_questions_per_turn, NonZeroU8::new(3).unwrap());
 }
 
@@ -41,7 +41,7 @@ fn cache_keepalive_config_default_is_disabled_with_plan_limits() {
     let cfg = CacheKeepaliveConfig::default();
     assert!(!cfg.enabled, "keepalive must be opt-in (spec 091 FR-002)");
     assert!(cfg.keepalive_provider.is_empty());
-    assert_eq!(cfg.max_consecutive_pings, NonZeroU32::new(6).unwrap());
+    assert_eq!(cfg.max_consecutive_pings.get(), 6);
 }
 
 #[test]

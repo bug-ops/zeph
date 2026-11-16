@@ -260,10 +260,10 @@ fn interaction_config_from_config_default_is_both_disabled() {
 fn interaction_config_from_config_is_field_for_field() {
     let mut cfg = zeph_core::config::Config::default();
     cfg.tools.ask_user.enabled = true;
-    cfg.tools.ask_user.timeout_secs = std::num::NonZeroU64::new(17).unwrap();
+    cfg.tools.ask_user.timeout_secs = zeph_config::AskUserTimeout::new(17).unwrap();
     cfg.tools.ask_user.max_questions_per_turn = std::num::NonZeroU8::new(2).unwrap();
     cfg.llm.cache_keepalive.enabled = true;
-    cfg.llm.cache_keepalive.max_consecutive_pings = std::num::NonZeroU32::new(4).unwrap();
+    cfg.llm.cache_keepalive.max_consecutive_pings = zeph_config::KeepalivePingCap::new(4).unwrap();
     let ic = InteractionConfig::from_config(&cfg);
     assert_eq!(ic.ask_user, cfg.tools.ask_user);
     assert_eq!(ic.cache_keepalive, cfg.llm.cache_keepalive);

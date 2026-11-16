@@ -50,14 +50,6 @@ use prediction::Prediction;
 
 pub use zeph_config::tools::{SpeculationMode, SpeculativeConfig};
 
-struct SweepHandle(zeph_common::task_supervisor::TaskHandle);
-
-impl SweepHandle {
-    fn abort(self) {
-        self.0.abort();
-    }
-}
-
 /// Metrics collected across a single agent turn.
 #[derive(Debug, Default, Clone)]
 pub struct SpeculativeMetrics {
@@ -110,7 +102,8 @@ pub struct SpeculationEngine {
     config: SpeculativeConfig,
     cache: SpeculativeCache,
     metrics: parking_lot::Mutex<SpeculativeMetrics>,
-    sweeper: Option<SweepHandle>,
+    /// Held only for its `Drop`, which aborts the sweeper task with the engine.
+    _sweeper: Option<zeph_common::AbortOnDrop<()>>,
     /// Optional session-level supervisor for task registration. `None` in test harnesses
     /// that construct `SpeculationEngine` without a supervisor.
     task_supervisor: Option<Arc<zeph_common::TaskSupervisor>>,
@@ -138,35 +131,26 @@ impl SpeculationEngine {
         // Share the inner Arc so the sweeper operates on the *same* handle set (fixes C2).
         let shared = cache.shared_inner();
 
-        let sweeper_handle = if let Some(sup) = &supervisor {
-            // `factory` must be `Fn` (not `FnOnce`) because `TaskSupervisor::spawn` may restart
-            // the task. Clone the `Arc` on each factory invocation so `shared` stays available.
-            let task_handle = sup.spawn(zeph_common::task_supervisor::TaskDescriptor {
-                name: "agent.speculative.sweeper",
-                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
-                factory: move || {
-                    let shared = Arc::clone(&shared);
-                    async move {
-                        let mut interval = tokio::time::interval(Duration::from_secs(5));
-                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                        loop {
-                            interval.tick().await;
-                            SpeculativeCache::sweep_expired_inner(&shared);
-                        }
+        let sweeper_handle = supervisor.as_ref().map(|sup| {
+            zeph_common::AbortOnDrop::new(sup.spawn_oneshot(
+                Arc::from("agent.speculative.sweeper"),
+                move || async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(5));
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        interval.tick().await;
+                        SpeculativeCache::sweep_expired_inner(&shared);
                     }
                 },
-            });
-            Some(SweepHandle(task_handle))
-        } else {
-            None
-        };
+            ))
+        });
 
         Self {
             executor,
             config,
             cache,
             metrics: parking_lot::Mutex::new(SpeculativeMetrics::default()),
-            sweeper: sweeper_handle,
+            _sweeper: sweeper_handle,
             task_supervisor: supervisor,
         }
     }
@@ -374,9 +358,6 @@ impl SpeculationEngine {
 impl Drop for SpeculationEngine {
     fn drop(&mut self) {
         self.cache.cancel_all();
-        if let Some(handle) = self.sweeper.take() {
-            handle.abort();
-        }
     }
 }
 
@@ -756,6 +737,7 @@ mod tests {
 
     /// Verify that an engine without a supervisor has no sweeper handle and drops cleanly.
     #[tokio::test]
+    #[allow(clippy::used_underscore_binding)] // inspects the Drop-only guard field
     async fn sweeper_none_without_supervisor() {
         let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
         let config = SpeculativeConfig {
@@ -767,14 +749,15 @@ mod tests {
         // behaviour. Verify that construction and drop do not panic.
         let engine = SpeculationEngine::new(Arc::clone(&exec), config);
         assert!(
-            engine.sweeper.is_none(),
+            engine._sweeper.is_none(),
             "sweeper must be None when no supervisor is provided"
         );
         drop(engine);
     }
 
-    /// Verify sweeper abort via the supervised path (`SweepHandle::Supervised`).
+    /// Verify sweeper abort via the supervised path (`AbortOnDrop`).
     #[tokio::test]
+    #[allow(clippy::used_underscore_binding)] // inspects the Drop-only guard field
     async fn sweeper_supervised_aborted_on_drop() {
         let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
         let config = SpeculativeConfig {
@@ -788,9 +771,9 @@ mod tests {
         let engine =
             SpeculationEngine::new_with_supervisor(Arc::clone(&exec), config, Some(supervisor));
         assert!(
-            engine.sweeper.is_some(),
+            engine._sweeper.is_some(),
             "sweeper handle must be Some with supervisor"
         );
-        drop(engine); // Must not panic — exercises SweepHandle::Supervised abort path.
+        drop(engine); // Must not panic — exercises the AbortOnDrop abort path.
     }
 }

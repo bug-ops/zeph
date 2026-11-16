@@ -315,7 +315,7 @@ impl<C: Channel> Agent<C> {
                 &self.tool_orchestrator.pre_execution_verifiers,
                 &call.tool_id,
                 &args_value,
-                &call.attribution(),
+                call.attribution(),
             );
             for warning in &outcome.warnings {
                 recorder.note_warning(&call.tool_id, warning);

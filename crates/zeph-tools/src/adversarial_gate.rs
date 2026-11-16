@@ -171,8 +171,7 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
             adversarial_policy_decision: Some(decision.to_owned()),
             exit_code: None,
             truncated: false,
-            caller_id: call.caller_id.clone(),
-            skill_name: call.skill_name.clone(),
+            attribution: call.attribution.clone(),
             policy_match: None,
             correlation_id: None,
             vigil_risk: None,
@@ -377,11 +376,10 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

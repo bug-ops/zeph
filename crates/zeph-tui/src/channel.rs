@@ -161,6 +161,10 @@ impl TuiChannel {
 }
 
 impl Channel for TuiChannel {
+    fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+        zeph_core::channel::AskUserSupport::Interactive
+    }
+
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "tui.channel.recv", skip_all)

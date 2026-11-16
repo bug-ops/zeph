@@ -252,7 +252,7 @@ model = "whisper-1"
 [llm.cache_keepalive]
 enabled = false                # Re-read the cached prompt prefix while idle so the provider cache does not expire; spends tokens per ping (default: false)
 keepalive_provider = ""        # Provider name from [[llm.providers]] to ping; empty = main provider (default: "")
-max_consecutive_pings = 6      # Pings in a row without real activity before the service stops; must be > 0 (default: 6)
+max_consecutive_pings = 6      # Pings in a row without real activity before the service stops; 1-50 (default: 6)
 
 [skills]
 # Defaults to the user config dir when omitted
@@ -666,7 +666,7 @@ retention_days = 7          # Days to retain overflow entries before age-based c
 
 [tools.ask_user]
 enabled = false             # Let the model ask the user a question mid-turn (the ask_user tool; default: false)
-timeout_secs = 300          # Seconds to wait for the answer before the question times out; must be > 0 (default: 300)
+timeout_secs = 300          # Seconds to wait for the answer before the question times out; 1-3600 (default: 300)
 max_questions_per_turn = 3  # Questions the model may ask in one turn; 1-255 (default: 3)
 
 [tools.audit]

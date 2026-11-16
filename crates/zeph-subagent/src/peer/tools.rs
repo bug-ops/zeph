@@ -479,10 +479,9 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

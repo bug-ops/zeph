@@ -172,11 +172,10 @@ mod tests {
         ToolCall {
             tool_id: ToolName::new(TOOL_NAME),
             params,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -233,11 +232,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("other_tool"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());

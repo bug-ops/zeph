@@ -795,7 +795,7 @@ mod tests {
                 tool_name: "shell".into(),
                 command: "ls".into(),
                 chunk: "file.txt\n".into(),
-                skill_name: None,
+                attribution: zeph_tools::CallAttribution::default(),
             })
             .await
             .unwrap();

@@ -11,9 +11,9 @@
 //! that expands each trait method into a `match` over the active variant.
 
 use zeph_core::channel::{
-    AskUserOutcome, AskUserRequest, Channel, ChannelError, ChannelMessage, ElicitationRequest,
-    ElicitationResponse, SkillCatalogItem, StatusText, StopHint, TokenUsage, ToolOutputEvent,
-    ToolStartEvent,
+    AskUserOutcome, AskUserRequest, AskUserSupport, Channel, ChannelError, ChannelMessage,
+    ElicitationRequest, ElicitationResponse, SkillCatalogItem, StatusText, StopHint, TokenUsage,
+    ToolOutputEvent, ToolStartEvent,
 };
 
 use crate::cli::CliChannel;
@@ -122,6 +122,18 @@ impl Channel for AnyChannel {
             Self::Discord(c) => c.try_recv(),
             #[cfg(feature = "slack")]
             Self::Slack(c) => c.try_recv(),
+        }
+    }
+
+    fn ask_user_support(&self) -> AskUserSupport {
+        match self {
+            Self::Cli(c) => c.ask_user_support(),
+            Self::JsonCli(c) => c.ask_user_support(),
+            Self::Telegram(c) => c.ask_user_support(),
+            #[cfg(feature = "discord")]
+            Self::Discord(c) => c.ask_user_support(),
+            #[cfg(feature = "slack")]
+            Self::Slack(c) => c.ask_user_support(),
         }
     }
 

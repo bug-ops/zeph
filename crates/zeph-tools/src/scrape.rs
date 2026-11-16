@@ -172,10 +172,9 @@ impl ExtractMode {
 ///         m.insert("url".to_owned(), serde_json::json!("https://example.com"));
 ///         m
 ///     },
-///     caller_id: None,
 ///     context: None,
 ///     tool_call_id: None,
-///     skill_name: None,
+///     attribution: zeph_tools::CallAttribution::default(),
 /// };
 /// let _ = executor.execute_tool_call(&call).await;
 /// # }
@@ -365,7 +364,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 let correlation_id = EgressEvent::new_correlation_id();
                 let start = Instant::now();
                 let result = self
-                    .scrape_instruction(&instruction, &correlation_id, &call.attribution())
+                    .scrape_instruction(&instruction, &correlation_id, call.attribution())
                     .await;
                 #[allow(clippy::cast_possible_truncation)]
                 let duration_ms = start.elapsed().as_millis() as u64;
@@ -373,7 +372,7 @@ impl ToolExecutor for WebScrapeExecutor {
                     WEB_SCRAPE_ID,
                     WEB_SCRAPE_OUTPUT_NAME,
                     &redact_url_for_log(&instruction.url),
-                    &call.attribution(),
+                    call.attribution(),
                     correlation_id,
                     duration_ms,
                     result,
@@ -385,7 +384,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 let correlation_id = EgressEvent::new_correlation_id();
                 let start = Instant::now();
                 let result = self
-                    .handle_fetch(&p, &correlation_id, &call.attribution())
+                    .handle_fetch(&p, &correlation_id, call.attribution())
                     .await;
                 #[allow(clippy::cast_possible_truncation)]
                 let duration_ms = start.elapsed().as_millis() as u64;
@@ -393,7 +392,7 @@ impl ToolExecutor for WebScrapeExecutor {
                     FETCH_ID,
                     FETCH_ID,
                     &redact_url_for_log(&p.url),
-                    &call.attribution(),
+                    call.attribution(),
                     correlation_id,
                     duration_ms,
                     result,
@@ -518,8 +517,7 @@ impl WebScrapeExecutor {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id: attribution.caller_id.clone(),
-                skill_name: attribution.skill_name.clone(),
+                attribution: attribution.clone(),
                 policy_match: None,
                 correlation_id,
                 vigil_risk: None,
@@ -737,8 +735,7 @@ impl WebScrapeExecutor {
             response_bytes: 0,
             blocked: true,
             block_reason: Some(block_reason),
-            caller_id: attribution.caller_id.clone(),
-            skill_name: attribution.skill_name.clone(),
+            attribution: attribution.clone(),
             hop: 0,
         }
     }
@@ -798,8 +795,7 @@ impl WebScrapeExecutor {
                             response_bytes: 0,
                             blocked: false,
                             block_reason: None,
-                            caller_id: attribution.caller_id.clone(),
-                            skill_name: attribution.skill_name.clone(),
+                            attribution: attribution.clone(),
                             #[allow(clippy::cast_possible_truncation)]
                             hop: hop as u8,
                         };
@@ -852,8 +848,7 @@ impl WebScrapeExecutor {
                             response_bytes: 0,
                             blocked: true,
                             block_reason: Some("ssrf"),
-                            caller_id: attribution.caller_id.clone(),
-                            skill_name: attribution.skill_name.clone(),
+                            attribution: attribution.clone(),
                             #[allow(clippy::cast_possible_truncation)]
                             hop: (hop + 1) as u8,
                         };
@@ -881,8 +876,7 @@ impl WebScrapeExecutor {
                             response_bytes: 0,
                             blocked: true,
                             block_reason: Some("ssrf"),
-                            caller_id: attribution.caller_id.clone(),
-                            skill_name: attribution.skill_name.clone(),
+                            attribution: attribution.clone(),
                             #[allow(clippy::cast_possible_truncation)]
                             hop: (hop + 1) as u8,
                         };
@@ -915,8 +909,7 @@ impl WebScrapeExecutor {
                         response_bytes: 0,
                         blocked: false,
                         block_reason: None,
-                        caller_id: attribution.caller_id.clone(),
-                        skill_name: attribution.skill_name.clone(),
+                        attribution: attribution.clone(),
                         #[allow(clippy::cast_possible_truncation)]
                         hop: hop as u8,
                     };
@@ -947,8 +940,7 @@ impl WebScrapeExecutor {
                             response_bytes: self.max_body_bytes,
                             blocked: false,
                             block_reason: None,
-                            caller_id: attribution.caller_id.clone(),
-                            skill_name: attribution.skill_name.clone(),
+                            attribution: attribution.clone(),
                             #[allow(clippy::cast_possible_truncation)]
                             hop: hop as u8,
                         };
@@ -980,8 +972,7 @@ impl WebScrapeExecutor {
                     response_bytes,
                     blocked: false,
                     block_reason: None,
-                    caller_id: attribution.caller_id.clone(),
-                    skill_name: attribution.skill_name.clone(),
+                    attribution: attribution.clone(),
                     #[allow(clippy::cast_possible_truncation)]
                     hop: hop as u8,
                 };
@@ -2063,11 +2054,10 @@ mod tests {
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert_matches!(result, Err(ToolError::Blocked { .. }));
@@ -2087,11 +2077,10 @@ mod tests {
                 );
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert_matches!(result, Err(ToolError::Blocked { .. }));
@@ -2111,11 +2100,10 @@ mod tests {
                 );
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert_matches!(result, Err(ToolError::Blocked { .. }));
@@ -2128,11 +2116,10 @@ mod tests {
         let call = crate::executor::ToolCall {
             tool_id: ToolName::new("unknown_tool"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.unwrap().is_none());
@@ -2365,11 +2352,10 @@ mod tests {
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert_matches!(result, Err(ToolError::Blocked { .. }));
@@ -2481,11 +2467,10 @@ mod tests {
                 m.insert("select".to_owned(), serde_json::json!("h1"));
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert_matches!(result, Err(ToolError::Blocked { .. }));
@@ -2514,11 +2499,10 @@ mod tests {
                 m.insert("url".to_owned(), serde_json::json!("http://example.com"));
                 m
             },
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         // Must not panic even without an audit logger
         let result = executor.execute_tool_call(&call).await;

@@ -875,11 +875,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -894,11 +893,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "web".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -914,11 +912,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err(), "empty AllowList must block every tool call");
@@ -933,11 +930,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -949,11 +945,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -1027,11 +1022,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "web".into(), // not in deny list → allowed
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -1162,11 +1156,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(
@@ -1185,11 +1178,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "web".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_ok(), "non-disallowed tool must be allowed");
@@ -1226,10 +1218,9 @@ mod tests {
         ToolCall {
             tool_id: "bash".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -1351,10 +1342,9 @@ mod tests {
         let call = ToolCall {
             tool_id: "web".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_ok(), "non-bash tool calls must not be inspected");
@@ -1373,10 +1363,9 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -1470,11 +1459,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err(), "plan mode must block all tool execution");
@@ -1642,11 +1630,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "blocked_tool".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         // confirmed path must still enforce the denylist, not bypass it
         let res = exec.execute_tool_call_confirmed_erased(&call).await;
@@ -1691,11 +1678,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::default(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let res = exec.execute_tool_call_confirmed_erased(&call).await;
         assert!(

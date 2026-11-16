@@ -313,11 +313,9 @@ pub(crate) async fn build_agent_factory(
             zeph_tools::DynExecutor(final_tool_executor),
         )
         .apply_session_config(deps.session_config)
-        .with_task_supervisor(Arc::new(
-            deps.shell_ingredients
-                .task_supervisor
-                .scoped(session_id.as_str()),
-        ))
+        .with_task_supervisor(Arc::new(deps.shell_ingredients.task_supervisor.scoped(
+            &zeph_common::task_supervisor::unique_session_scope(session_id.as_str()),
+        )))
         .with_skill_config(zeph_core::SkillConfigParams {
             disambiguation_threshold: deps.skill_disambiguation_threshold,
             two_stage_matching: deps.skill_two_stage_matching,
@@ -1955,10 +1953,9 @@ mod tests {
         zeph_tools::ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -2254,10 +2251,9 @@ mod tests {
         zeph_tools::ToolCall {
             tool_id: "bash".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -2508,10 +2504,9 @@ mod tests {
             .execute_tool_call_erased(&zeph_tools::ToolCall {
                 tool_id: "set_working_directory".into(),
                 params,
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             })
             .await;
         assert!(
@@ -2575,10 +2570,9 @@ mod tests {
             .execute_tool_call_erased(&zeph_tools::ToolCall {
                 tool_id: "invoke_skill".into(),
                 params,
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             })
             .await;
         assert!(
@@ -2636,10 +2630,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "invoke_skill".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = agent
             .tool_executor_arc()

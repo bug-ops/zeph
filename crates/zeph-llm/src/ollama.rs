@@ -43,6 +43,7 @@ use crate::error::LlmError;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ollama_rs::generation::chat::ChatMessage;
 use ollama_rs::generation::chat::request::ChatMessageRequest;
+use ollama_rs::generation::embeddings::GenerateEmbeddingsResponse;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
 use ollama_rs::generation::images::Image as OllamaImage;
 use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
@@ -102,20 +103,18 @@ fn ollama_http_client() -> reqwest::Client {
         .expect("Ollama HTTP client construction must not fail")
 }
 
-/// Add `error_context` to a bare [`LlmError::Http`] (connection refused, or a transport-level
-/// failure that outlasted [`send_with_transport_retry`]'s own retries — [`send_with_retry`]
-/// propagates it immediately with no retry of its own, since it never produced an HTTP
-/// response to inspect). Without this, a connection-level failure loses all Ollama-specific
-/// context and callers that depend on the message shape to diagnose *which* provider failed
-/// and why — e.g. `RouterProvider`'s fallback-exhaustion diagnostic (#5821) — regress.
-/// [`LlmError::RateLimited`]/[`LlmError::Unavailable`] (produced after `send_with_retry`
-/// exhausts its own retries on a real HTTP 429/503) are already self-descriptive and are
-/// passed through unchanged, matching how the Claude/OpenAI/Gemini backends propagate them.
+/// Log `error_context` for a transport-level [`LlmError::Http`] and pass it through unchanged.
+///
+/// The typed `reqwest::Error` (source chain, `is_timeout()`, `is_connect()`) must survive for the
+/// router fallback and retry classification, so the Ollama-specific context goes to the log
+/// instead of being flattened into a string (#7131). Every other variant
+/// ([`LlmError::RateLimited`]/[`LlmError::Unavailable`] after `send_with_retry` exhausted its
+/// retries) is already self-descriptive and is passed through as well.
 fn wrap_transport_error(err: LlmError, error_context: &str) -> LlmError {
-    match err {
-        LlmError::Http(e) => LlmError::Other(format!("{error_context} failed: {e}")),
-        other => other,
+    if let LlmError::Http(e) = &err {
+        tracing::warn!(error_context, error = %e, "Ollama transport failure");
     }
+    err
 }
 
 /// Whether a `reqwest::Error` from sending a request (as opposed to inspecting a response
@@ -232,6 +231,12 @@ fn ollama_reqwest_client() -> reqwest012::Client {
         .user_agent(concat!("zeph/", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("Ollama HTTP client construction must not fail")
+}
+
+/// Body of `GET /api/tags` (the `ollama-rs` counterpart is private).
+#[derive(serde::Deserialize)]
+struct TagsResponse {
+    models: Vec<ollama_rs::models::LocalModel>,
 }
 
 /// Metadata returned by `/api/show` for the configured chat model.
@@ -392,11 +397,13 @@ impl OllamaProvider {
     /// Returns an error if the request fails.
     #[tracing::instrument(name = "llm.ollama.fetch_model_info", skip_all)]
     pub async fn fetch_model_info(&self) -> Result<ModelInfo, LlmError> {
-        let info = self
-            .client
-            .show_model_info(self.model.clone())
-            .await
-            .map_err(|e| LlmError::Other(format!("failed to fetch model info from Ollama: {e}")))?;
+        let info: ollama_rs::models::ModelInfo = self
+            .post_json(
+                "api/show",
+                &serde_json::json!({ "name": self.model }),
+                "Ollama model info request",
+            )
+            .await?;
 
         // Try model_info map first (newer ollama versions)
         let ctx = info
@@ -442,13 +449,12 @@ impl OllamaProvider {
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
-        let local_models = self
-            .client
-            .list_local_models()
-            .await
-            .map_err(|e| LlmError::Other(format!("ollama list_local_models: {e}")))?;
+        let tags: TagsResponse = self
+            .get_json("api/tags", "Ollama model list request")
+            .await?;
 
-        let models: Vec<crate::model_cache::RemoteModelInfo> = local_models
+        let models: Vec<crate::model_cache::RemoteModelInfo> = tags
+            .models
             .into_iter()
             .map(|m| crate::model_cache::RemoteModelInfo {
                 id: m.name.clone(),
@@ -472,11 +478,54 @@ impl OllamaProvider {
     pub async fn warmup(&self) -> Result<(), LlmError> {
         let request =
             ChatMessageRequest::new(self.model.clone(), vec![ChatMessage::user("hi".to_owned())]);
-        self.client
-            .send_chat_messages(request)
-            .await
-            .map_err(|e| LlmError::Other(format!("Ollama warmup failed: {e}")))?;
+        self.send_chat_request(&request, "Ollama warmup request", false)
+            .await?;
         Ok(())
+    }
+
+    /// POST `body` to `{base_url}{path}` and decode a 2xx JSON response.
+    ///
+    /// Auxiliary endpoints (`/api/show`, `/api/embed`) deliberately skip `send_with_retry`: it
+    /// resets the per-response usage tracker, which belongs to the chat path. Transient transport
+    /// failures are still retried; non-2xx bodies map through [`Self::decode_aux_response`].
+    async fn post_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &'static str,
+        body: &(impl serde::Serialize + Sync),
+        error_context: &str,
+    ) -> Result<T, LlmError> {
+        let url = format!("{}{path}", self.client.url_str());
+        let response = send_with_transport_retry(|| self.http_client.post(&url).json(body).send())
+            .await
+            .map_err(|e| wrap_transport_error(LlmError::Http(e), error_context))?;
+        self.decode_aux_response(response).await
+    }
+
+    /// GET `{base_url}{path}` and decode a 2xx JSON response; see [`Self::post_json`].
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &'static str,
+        error_context: &str,
+    ) -> Result<T, LlmError> {
+        let url = format!("{}{path}", self.client.url_str());
+        let response = send_with_transport_retry(|| self.http_client.get(&url).send())
+            .await
+            .map_err(|e| wrap_transport_error(LlmError::Http(e), error_context))?;
+        self.decode_aux_response(response).await
+    }
+
+    /// Read a capped body and map a non-2xx status through the sanitizing error path shared with
+    /// `/api/chat`, otherwise decode it as JSON.
+    async fn decode_aux_response<T: serde::de::DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<T, LlmError> {
+        let status = response.status();
+        let text = crate::http::read_body(response).await?;
+        if !status.is_success() {
+            return Err(crate::http::api_failure(self.name(), status, &text));
+        }
+        serde_json::from_str(&text).map_err(LlmError::Json)
     }
 
     /// POST a non-streaming chat request directly to `{base_url}/api/chat`, retrying on
@@ -806,11 +855,9 @@ impl LlmProvider for OllamaProvider {
             EmbeddingsInput::from(text.as_ref()),
         );
 
-        let response = self
-            .client
-            .generate_embeddings(request)
-            .await
-            .map_err(|e| LlmError::Other(format!("Ollama embedding request failed: {e}")))?;
+        let response: GenerateEmbeddingsResponse = self
+            .post_json("api/embed", &request, "Ollama embedding request")
+            .await?;
 
         response
             .embeddings
@@ -843,11 +890,9 @@ impl LlmProvider for OllamaProvider {
             EmbeddingsInput::from(truncated),
         );
 
-        let response = self
-            .client
-            .generate_embeddings(request)
-            .await
-            .map_err(|e| LlmError::Other(format!("Ollama batch embedding failed: {e}")))?;
+        let response: GenerateEmbeddingsResponse = self
+            .post_json("api/embed", &request, "Ollama batch embedding request")
+            .await?;
 
         if response.embeddings.len() != texts.len() {
             return Err(LlmError::Other(format!(
@@ -1822,9 +1867,8 @@ mod tests {
     async fn warmup_with_unreachable_endpoint_errors() {
         let provider =
             OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
-        let result = provider.warmup().await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("warmup failed"));
+        let err = provider.warmup().await.unwrap_err();
+        assert_matches!(&err, LlmError::Http(e) if e.is_connect());
     }
 
     #[tokio::test]

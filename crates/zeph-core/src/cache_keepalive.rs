@@ -7,7 +7,7 @@
 //! turn pays a full cache write. This module keeps the cache warm: one supervised task per agent
 //! replays the last successful main-loop request as a minimal ping shortly before the TTL ends.
 //!
-//! The agent captures a [`KeepaliveRequest`] snapshot only
+//! The agent captures a snapshot of the request only
 //! after a successful main response and marks activity at every turn start; the service never
 //! observes provider state directly. Its [`KeepaliveState`] is published through
 //! [`MetricsSnapshot`].
@@ -21,8 +21,14 @@
 //! price plus the largest output the ping may generate, see
 //! [`keepalive_output_cap`]) and refuses to ping when
 //! that, added to what earlier pings of the idle period cost, reaches the cache write the pings
-//! avoid. Without a cost tracker nothing can be priced, so the gate is open and only
-//! `max_consecutive_pings` bounds the spend.
+//! avoid. When a ping cannot be priced (no cost tracker, cost tracking off, or a model without
+//! pricing) the gate fails closed with [`StopReason::Unpriced`] whenever the ping may generate
+//! more than one output token (thinking on); a one-token ping stays bounded by
+//! `max_consecutive_pings` alone.
+//!
+//! The captured history is mirrored as `HistoryChunks`: a tool loop only appends messages, so a
+//! capture copies the new tail instead of the whole history, and the full copy is made once per
+//! ping, in the service task.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,10 +37,11 @@ use parking_lot::Mutex;
 use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 use tracing::Instrument as _;
+use zeph_common::ProviderName;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
-    KeepaliveOutcome, KeepaliveRequest, LlmProvider as _, ResponseUsage, TokenUsage,
-    keepalive_output_cap,
+    KeepaliveOutcome, KeepaliveRequest, LlmProvider as _, Message, ResponseUsage, TokenUsage,
+    ToolDefinition, keepalive_output_cap,
 };
 
 use crate::cost::CostTracker;
@@ -80,6 +87,10 @@ pub enum StopReason {
     ProviderMismatch,
     /// The user turned keepalive off with `/keepalive off`.
     UserOff,
+    /// A ping may generate more than one output token but cannot be priced (no cost tracker, cost
+    /// tracking off, or a model without pricing); terminal until `/keepalive on` or a provider
+    /// switch.
+    Unpriced,
 }
 
 /// Observable state of the keepalive service.
@@ -121,7 +132,8 @@ pub(crate) struct Shared {
 
 #[derive(Debug, Default)]
 struct Inner {
-    snapshot: Option<Arc<KeepaliveRequest>>,
+    snapshot: Option<Snapshot>,
+    history: HistoryChunks,
     last_activity: Option<Instant>,
     retry_at: Option<Instant>,
     generation: u64,
@@ -134,6 +146,122 @@ struct Inner {
     state: KeepaliveState,
     user: Option<bool>,
     mismatch: bool,
+}
+
+/// A captured request without its history, which lives in `Inner::history`.
+#[derive(Debug)]
+struct Snapshot {
+    provider: AnyProvider,
+    tools: Arc<[ToolDefinition]>,
+    target: Option<ProviderName>,
+}
+
+/// What a capture records: the request the main loop just sent successfully.
+pub(crate) struct CaptureInput<'a> {
+    pub(crate) provider: AnyProvider,
+    pub(crate) messages: &'a [Message],
+    pub(crate) tools: Arc<[ToolDefinition]>,
+    pub(crate) target: Option<ProviderName>,
+}
+
+/// Number of chunks after which [`HistoryChunks::advance`] merges them into one.
+const COALESCE_AT_CHUNKS: usize = 64;
+
+/// How [`HistoryChunks::advance`] brought the mirror up to date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HistorySync {
+    /// The history equals the mirror; nothing was copied.
+    Unchanged,
+    /// Only the new tail was copied.
+    Appended,
+    /// The history was rewritten, truncated or first seen; the whole history was copied once.
+    Rebuilt,
+    /// The tail was appended and the chunks were merged into one (one full copy).
+    Coalesced,
+}
+
+/// Whether two messages put the same bytes on the wire.
+///
+/// Compares the fields a provider request is built from; the remaining metadata (db id,
+/// embedding, fidelity tag, subgoal) never reaches a request.
+fn wire_eq(a: &Message, b: &Message) -> bool {
+    a.role == b.role
+        && a.content == b.content
+        && a.parts.len() == b.parts.len()
+        && a.parts.iter().zip(&b.parts).all(|(x, y)| x.wire_eq(y))
+        && a.metadata.visibility == b.metadata.visibility
+        && a.metadata.origin == b.metadata.origin
+        && a.metadata.request_policy == b.metadata.request_policy
+}
+
+/// Immutable mirror of the history behind the last snapshot, stored as shared chunks.
+///
+/// Messages are append-only inside a turn, so [`advance`](Self::advance) copies only the messages
+/// that are new since the previous capture and shares every older chunk. Chunks are immutable
+/// `Arc` slices, so the service task can hold a consistent view while the agent keeps capturing.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HistoryChunks {
+    chunks: Vec<Arc<[Message]>>,
+    len: usize,
+}
+
+impl HistoryChunks {
+    fn iter(&self) -> impl Iterator<Item = &Message> {
+        self.chunks.iter().flat_map(|chunk| chunk.iter())
+    }
+
+    fn from_slice(messages: &[Message]) -> Self {
+        if messages.is_empty() {
+            return Self::default();
+        }
+        Self {
+            chunks: vec![Arc::from(messages)],
+            len: messages.len(),
+        }
+    }
+
+    /// The mirror brought up to date with `messages`, and how much had to be copied.
+    pub(crate) fn advance(&self, messages: &[Message]) -> (Self, HistorySync) {
+        if self.len == 0 {
+            let sync = if messages.is_empty() {
+                HistorySync::Unchanged
+            } else {
+                HistorySync::Rebuilt
+            };
+            return (Self::from_slice(messages), sync);
+        }
+        let is_extension = self.len <= messages.len()
+            && self
+                .iter()
+                .zip(messages)
+                .all(|(held, new)| wire_eq(held, new));
+        if !is_extension {
+            return (Self::from_slice(messages), HistorySync::Rebuilt);
+        }
+        let tail = &messages[self.len..];
+        if tail.is_empty() {
+            return (self.clone(), HistorySync::Unchanged);
+        }
+        let mut next = self.clone();
+        next.chunks.push(Arc::from(tail));
+        next.len = messages.len();
+        if next.chunks.len() > COALESCE_AT_CHUNKS {
+            let merged = next.materialize();
+            return (
+                Self {
+                    chunks: vec![merged],
+                    len: next.len,
+                },
+                HistorySync::Coalesced,
+            );
+        }
+        (next, HistorySync::Appended)
+    }
+
+    /// The whole history as one slice: the single deep copy a ping needs.
+    pub(crate) fn materialize(&self) -> Arc<[Message]> {
+        self.iter().cloned().collect()
+    }
 }
 
 /// What a ping starts from: the snapshot and what the idle period has spent so far.
@@ -212,15 +340,44 @@ impl Shared {
     /// Store the snapshot of a successful main-loop request and restart the ping timer.
     ///
     /// `speed` is the service speed the request was billed at; the cost gate prices pings with it.
-    pub(crate) fn capture(&self, request: KeepaliveRequest, speed: zeph_config::ServiceSpeed) {
+    /// The history is compared with the mirror outside the lock and only the new tail is copied;
+    /// the agent is the only writer of the mirror, so no update can be lost.
+    #[tracing::instrument(
+        name = "core.keepalive.capture",
+        level = "debug",
+        skip_all,
+        fields(messages = input.messages.len(), sync = tracing::field::Empty, copied = tracing::field::Empty)
+    )]
+    pub(crate) fn capture(
+        &self,
+        input: CaptureInput<'_>,
+        speed: zeph_config::ServiceSpeed,
+    ) -> HistorySync {
+        let mirror = self.inner.lock().history.clone();
+        let (history, sync) = mirror.advance(input.messages);
+        let copied = match sync {
+            HistorySync::Unchanged => 0,
+            HistorySync::Appended => input.messages.len().saturating_sub(mirror.len),
+            HistorySync::Rebuilt | HistorySync::Coalesced => input.messages.len(),
+        };
+        let span = tracing::Span::current();
+        span.record("sync", tracing::field::debug(&sync));
+        span.record("copied", copied);
         let mut g = self.inner.lock();
-        let previous = g.snapshot.replace(Arc::new(request));
+        let previous = g.snapshot.replace(Snapshot {
+            provider: input.provider,
+            tools: input.tools,
+            target: input.target,
+        });
+        let previous_history = std::mem::replace(&mut g.history, history);
         g.speed = speed;
         g.mark_activity();
         drop(g);
         // The old snapshot can be large; free it outside the lock.
         drop(previous);
+        drop(previous_history);
         self.wake.notify_one();
+        sync
     }
 
     /// Whether a main-loop request has been captured.
@@ -249,7 +406,7 @@ impl Shared {
     /// Forget the snapshot: the conversation it replays no longer exists (`/clear`).
     pub(crate) fn clear_snapshot(&self) {
         let mut g = self.inner.lock();
-        let previous = g.snapshot.take();
+        let previous = (g.snapshot.take(), std::mem::take(&mut g.history));
         g.generation += 1;
         drop(g);
         drop(previous);
@@ -277,11 +434,13 @@ impl Shared {
     /// The main provider was replaced: the snapshot is stale and provider-bound stops clear.
     pub(crate) fn provider_changed(&self) {
         let mut g = self.inner.lock();
-        let previous = g.snapshot.take();
+        let previous = (g.snapshot.take(), std::mem::take(&mut g.history));
         g.generation += 1;
         if matches!(
             g.state,
-            KeepaliveState::Stopped(StopReason::NoCacheHit | StopReason::PrefixRewritten)
+            KeepaliveState::Stopped(
+                StopReason::NoCacheHit | StopReason::PrefixRewritten | StopReason::Unpriced
+            )
         ) {
             g.state = KeepaliveState::Idle;
             g.consecutive = 0;
@@ -336,17 +495,33 @@ impl Shared {
     }
 
     /// Move to `InFlight` and hand out the snapshot, unless activity raced ahead.
+    ///
+    /// The history is materialized after the lock is released, so the agent never waits on the
+    /// copy.
     fn begin_ping(&self, generation: u64) -> Option<PingStart> {
         let mut g = self.inner.lock();
         if g.generation != generation || g.state != KeepaliveState::Idle {
             return None;
         }
-        let snapshot = g.snapshot.clone()?;
+        let snapshot = g.snapshot.as_ref()?;
+        let (provider, tools, target) = (
+            snapshot.provider.clone(),
+            Arc::clone(&snapshot.tools),
+            snapshot.target.clone(),
+        );
+        let history = g.history.clone();
         g.state = KeepaliveState::InFlight;
+        let (spent_cents, speed) = (g.ping_spend_cents, g.speed);
+        drop(g);
         Some(PingStart {
-            request: snapshot,
-            spent_cents: g.ping_spend_cents,
-            speed: g.speed,
+            request: Arc::new(KeepaliveRequest {
+                provider,
+                messages: history.materialize(),
+                tools,
+                target,
+            }),
+            spent_cents,
+            speed,
         })
     }
 
@@ -453,6 +628,12 @@ fn estimate_prefix_tokens(request: &KeepaliveRequest) -> u64 {
     u64::try_from((messages + tools) / 4).unwrap_or(u64::MAX)
 }
 
+/// The stop for a ping that cannot be priced: a one-token ping is bounded by the ping cap alone,
+/// anything larger fails closed.
+fn unpriced_stop(output_cap: u64) -> Option<StopReason> {
+    (output_cap > 1).then_some(StopReason::Unpriced)
+}
+
 /// Everything the keepalive task needs besides the shared state.
 pub(crate) struct ServiceDeps {
     pub(crate) shared: Arc<Shared>,
@@ -479,6 +660,7 @@ impl ServiceDeps {
 
     /// Whether another ping is still worth sending: the daily budget has room and the pings of
     /// this idle period, plus this one at its worst case, stay below the cache write they avoid.
+    /// A ping that cannot be priced and may generate more than one token is refused.
     ///
     /// The worst case is the prefix read at the cache-hit price plus the largest output the ping
     /// may generate (see [`keepalive_output_cap`]), priced at the speed the request was billed at.
@@ -488,14 +670,16 @@ impl ServiceDeps {
         spent_cents: f64,
         speed: zeph_config::ServiceSpeed,
     ) -> Option<StopReason> {
-        let tracker = self.cost.as_deref()?;
+        let backend = request.provider.keepalive_backend(request.target.as_ref());
+        let output = u64::from(keepalive_output_cap(backend.current_thinking_budget()));
+        let Some(tracker) = self.cost.as_deref() else {
+            return unpriced_stop(output);
+        };
         if tracker.check_budget().is_err() {
             return Some(StopReason::BudgetExhausted);
         }
-        let backend = request.provider.keepalive_backend(request.target.as_ref());
         let model = backend.effective_model_identifier();
         let prefix = estimate_prefix_tokens(request);
-        let output = u64::from(keepalive_output_cap(backend.current_thinking_budget()));
         let worst_ping = tracker.price_of(
             model,
             TokenUsage {
@@ -514,7 +698,10 @@ impl ServiceDeps {
             speed,
         );
         let total = spent_cents + worst_ping;
-        (total > 0.0 && total >= avoided_write).then_some(StopReason::BudgetExhausted)
+        if total <= 0.0 {
+            return unpriced_stop(output);
+        }
+        (total >= avoided_write).then_some(StopReason::BudgetExhausted)
     }
 
     fn record_cost(&self, backend: &AnyProvider, usage: ResponseUsage) -> f64 {
@@ -667,7 +854,15 @@ mod tests {
     fn armed(request: KeepaliveRequest) -> Arc<Shared> {
         let shared = Arc::new(Shared::default());
         shared.arm();
-        shared.capture(request, zeph_config::ServiceSpeed::default());
+        shared.capture(
+            CaptureInput {
+                provider: request.provider,
+                messages: &request.messages,
+                tools: request.tools,
+                target: request.target,
+            },
+            zeph_config::ServiceSpeed::default(),
+        );
         shared
     }
 
@@ -1112,5 +1307,211 @@ mod tests {
             fields.contains(&("cache_creation".to_owned(), 7)),
             "{fields:?}"
         );
+    }
+
+    fn user(text: &str) -> Message {
+        Message::from_legacy(Role::User, text)
+    }
+
+    fn messages(texts: &[&str]) -> Vec<Message> {
+        texts.iter().map(|t| user(t)).collect()
+    }
+
+    fn same_wire(a: &[Message], b: &[Message]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| wire_eq(x, y))
+    }
+
+    #[test]
+    fn history_first_capture_is_one_copy_and_pure_appends_copy_only_the_tail() {
+        let mut history = messages(&["a", "b"]);
+        let (mirror, sync) = HistoryChunks::default().advance(&history);
+        assert_eq!(sync, HistorySync::Rebuilt);
+        history.extend(messages(&["c"]));
+        let (mirror, sync) = mirror.advance(&history);
+        assert_eq!(sync, HistorySync::Appended);
+        assert_eq!(mirror.chunks.len(), 2);
+        let (mirror, sync) = mirror.advance(&history);
+        assert_eq!(sync, HistorySync::Unchanged);
+        assert!(same_wire(&mirror.materialize(), &history));
+    }
+
+    #[test]
+    fn history_appended_chunks_are_shared_with_the_previous_mirror() {
+        let mut history = messages(&["a", "b"]);
+        let (first, _) = HistoryChunks::default().advance(&history);
+        history.push(user("c"));
+        let (second, _) = first.advance(&history);
+        assert!(Arc::ptr_eq(&first.chunks[0], &second.chunks[0]));
+    }
+
+    #[test]
+    fn history_rewrite_costs_exactly_one_full_copy() {
+        let mut history = messages(&["a", "b", "c"]);
+        let (mirror, _) = HistoryChunks::default().advance(&history);
+        history[1] = user("rewritten");
+        let (mirror, sync) = mirror.advance(&history);
+        assert_eq!(sync, HistorySync::Rebuilt);
+        assert_eq!(mirror.chunks.len(), 1);
+        assert!(same_wire(&mirror.materialize(), &history));
+    }
+
+    #[test]
+    fn history_truncation_rebuilds() {
+        let mut history = messages(&["a", "b", "c"]);
+        let (mirror, _) = HistoryChunks::default().advance(&history);
+        history.truncate(1);
+        let (mirror, sync) = mirror.advance(&history);
+        assert_eq!(sync, HistorySync::Rebuilt);
+        assert!(same_wire(&mirror.materialize(), &history));
+    }
+
+    #[test]
+    fn history_coalesces_above_the_chunk_limit() {
+        let mut history = messages(&["seed"]);
+        let (mut mirror, _) = HistoryChunks::default().advance(&history);
+        let mut coalesced = 0;
+        for i in 0..(COALESCE_AT_CHUNKS * 2) {
+            history.push(user(&format!("m{i}")));
+            let (next, sync) = mirror.advance(&history);
+            coalesced += usize::from(sync == HistorySync::Coalesced);
+            assert!(next.chunks.len() <= COALESCE_AT_CHUNKS);
+            mirror = next;
+        }
+        assert_eq!(coalesced, 2);
+        assert!(same_wire(&mirror.materialize(), &history));
+    }
+
+    #[test]
+    fn wire_eq_ignores_bookkeeping_metadata_but_not_wire_fields() {
+        let a = user("x");
+        let mut b = user("x");
+        b.metadata.db_id = Some(7);
+        b.metadata.embedding = Some(vec![1.0]);
+        assert!(wire_eq(&a, &b));
+        b.metadata.visibility = zeph_llm::provider::MessageVisibility::AgentOnly;
+        assert!(!wire_eq(&a, &b));
+    }
+
+    #[derive(Debug, Clone)]
+    enum HistoryOp {
+        Append(Vec<String>),
+        Mutate(usize, String),
+        Truncate(usize),
+    }
+
+    fn history_op() -> impl proptest::strategy::Strategy<Value = HistoryOp> {
+        use proptest::prelude::*;
+        prop_oneof![
+            proptest::collection::vec("[a-c]{0,3}", 0..4).prop_map(HistoryOp::Append),
+            (0..8_usize, "[a-c]{0,3}").prop_map(|(i, t)| HistoryOp::Mutate(i, t)),
+            (0..8_usize).prop_map(HistoryOp::Truncate),
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn mirror_is_wire_equal_to_history_after_any_sequence(
+            ops in proptest::collection::vec(history_op(), 0..40)
+        ) {
+            let mut history: Vec<Message> = Vec::new();
+            let mut mirror = HistoryChunks::default();
+            for op in ops {
+                let before = history.clone();
+                match op {
+                    HistoryOp::Append(texts) => history.extend(texts.iter().map(|t| user(t))),
+                    HistoryOp::Mutate(i, text) => {
+                        if let Some(m) = history.get_mut(i) {
+                            m.content = text;
+                        }
+                    }
+                    HistoryOp::Truncate(n) => history.truncate(n),
+                }
+                let (next, sync) = mirror.advance(&history);
+                proptest::prop_assert!(same_wire(&next.materialize(), &history));
+                proptest::prop_assert_eq!(next.len, history.len());
+                let is_extension = history.len() >= before.len()
+                    && same_wire(&history[..before.len()], &before);
+                if !is_extension && !before.is_empty() {
+                    proptest::prop_assert_eq!(sync, HistorySync::Rebuilt);
+                }
+                if is_extension && !before.is_empty() && history.len() > before.len() {
+                    proptest::prop_assert!(matches!(
+                        sync,
+                        HistorySync::Appended | HistorySync::Coalesced
+                    ));
+                }
+                mirror = next;
+            }
+        }
+    }
+
+    /// Timing probe for #7128: a full history copy against a tail-only capture. Prints numbers,
+    /// asserts none (wall time is not a reliable CI signal).
+    #[test]
+    #[ignore = "timing probe, run with --ignored --nocapture"]
+    fn history_capture_timing_probe() {
+        let body = "x".repeat(2048);
+        let history: Vec<Message> = (0..5_000).map(|_| user(&body)).collect();
+        let (mirror, _) = HistoryChunks::default().advance(&history);
+        let mut grown = history.clone();
+        grown.extend(messages(&["tool call", "tool result"]));
+
+        let started = std::time::Instant::now();
+        let full: Arc<[Message]> = Arc::from(grown.as_slice());
+        let full_copy = started.elapsed();
+
+        let started = std::time::Instant::now();
+        let (_, sync) = mirror.advance(&grown);
+        let tail_capture = started.elapsed();
+
+        eprintln!(
+            "history of {} messages x 2 KiB: full copy {full_copy:?}, mirror advance {tail_capture:?} ({sync:?})",
+            full.len()
+        );
+    }
+
+    #[test]
+    fn cost_gate_fails_closed_when_unpriced_and_thinking_is_on() {
+        let shared = Arc::new(Shared::default());
+        let thinking = thinking_priced_request(Some(2048));
+        let no_tracker = deps(&shared, None);
+        assert_eq!(
+            no_tracker.gate(&thinking, 0.0, STANDARD),
+            Some(StopReason::Unpriced)
+        );
+        let unknown_model = deps(&shared, Some(CostTracker::new(true, 0.0)));
+        assert_eq!(
+            unknown_model.gate(&thinking, 0.0, STANDARD),
+            Some(StopReason::Unpriced)
+        );
+        let tracking_off = deps(&shared, Some(CostTracker::new(false, 0.0)));
+        assert_eq!(
+            tracking_off.gate(&thinking, 0.0, STANDARD),
+            Some(StopReason::Unpriced)
+        );
+    }
+
+    #[test]
+    fn cost_gate_stays_open_when_unpriced_and_the_output_cap_is_one() {
+        let shared = Arc::new(Shared::default());
+        let plain = thinking_priced_request(None);
+        assert_eq!(deps(&shared, None).gate(&plain, 0.0, STANDARD), None);
+        let unknown_model = deps(&shared, Some(CostTracker::new(true, 0.0)));
+        assert_eq!(unknown_model.gate(&plain, 0.0, STANDARD), None);
+    }
+
+    #[test]
+    fn unpriced_is_cleared_by_a_provider_change_but_not_by_activity() {
+        let shared = armed(request_with(priced_mock("m"), "hi"));
+        let generation = shared.inner.lock().generation;
+        shared.begin_ping(generation).unwrap();
+        shared.stop(generation, StopReason::Unpriced);
+        shared.mark_activity();
+        assert_eq!(
+            shared.state(),
+            KeepaliveState::Stopped(StopReason::Unpriced)
+        );
+        shared.provider_changed();
+        assert_eq!(shared.state(), KeepaliveState::Idle);
     }
 }

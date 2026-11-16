@@ -314,9 +314,7 @@ impl LlmProvider for CocoonProvider {
             let text = crate::http::read_body(response).await?;
 
             if !status.is_success() {
-                let truncated: String = text.chars().take(256).collect();
-                crate::http::log_api_error_body("cocoon", status, &truncated);
-                return Err(crate::http::map_error_response(status, &text, "cocoon"));
+                return Err(crate::http::api_failure("cocoon", status, &text));
             }
 
             let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
@@ -359,9 +357,7 @@ impl LlmProvider for CocoonProvider {
             let status = response.status();
             if !status.is_success() {
                 let text = crate::http::read_body(response).await?;
-                let truncated: String = text.chars().take(256).collect();
-                crate::http::log_api_error_body("cocoon", status, &truncated);
-                return Err(crate::http::map_error_response(status, &text, "cocoon"));
+                return Err(crate::http::api_failure("cocoon", status, &text));
             }
             Ok(openai_sse_to_stream(response))
         }
@@ -405,9 +401,7 @@ impl LlmProvider for CocoonProvider {
                 });
             }
             if !status.is_success() {
-                let truncated: String = body_text.chars().take(256).collect();
-                crate::http::log_api_error_body("cocoon", status, &truncated);
-                return Err(LlmError::api_error("cocoon", status.as_u16(), &truncated));
+                return Err(crate::http::api_failure("cocoon", status, &body_text));
             }
 
             let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -467,13 +461,7 @@ impl LlmProvider for CocoonProvider {
                 });
             }
             if !status.is_success() {
-                let truncated_err: String = body_text.chars().take(256).collect();
-                crate::http::log_api_error_body("cocoon", status, &truncated_err);
-                return Err(LlmError::api_error(
-                    "cocoon",
-                    status.as_u16(),
-                    &truncated_err,
-                ));
+                return Err(crate::http::api_failure("cocoon", status, &body_text));
             }
 
             let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -521,9 +509,7 @@ impl LlmProvider for CocoonProvider {
             }
 
             if !status.is_success() {
-                let truncated: String = text.chars().take(256).collect();
-                crate::http::log_api_error_body("cocoon", status, &truncated);
-                return Err(LlmError::api_error("cocoon", status.as_u16(), &truncated));
+                return Err(crate::http::api_failure("cocoon", status, &text));
             }
 
             let result = self.inner.decode_tool_chat_response(&text, "cocoon")?;
@@ -561,9 +547,7 @@ impl LlmProvider for CocoonProvider {
             }
 
             if !status.is_success() {
-                let truncated: String = text.chars().take(256).collect();
-                crate::http::log_api_error_body("cocoon", status, &truncated);
-                return Err(LlmError::api_error("cocoon", status.as_u16(), &truncated));
+                return Err(crate::http::api_failure("cocoon", status, &text));
             }
 
             let resp: OpenAiChatResponse = serde_json::from_str(&text)?;

@@ -41,14 +41,16 @@ When the model lacks a fact only the user has (a choice between valid options, a
 |----|-------------|
 | FR-001 | An `ask_user` call suspends that tool call, shows the question on the active channel and returns the answer as the tool result. |
 | FR-002 | Question kinds: free text, single choice, multi choice (2 to 8 distinct options), each choice optionally accepting a free-text "other". |
-| FR-003 | The capability is one defaulted method on the `Channel` trait, `ask_user`, whose default declines (`Declined(NonInteractive)`). |
+| FR-003 | The capability is two defaulted methods on the `Channel` trait: `ask_user`, whose default declines (`Declined(NonInteractive)`), and `ask_user_support() -> AskUserSupport { Interactive, Unavailable }`, whose default is `Unavailable`. |
 | FR-004 | A non-interactive channel (piped stdin, no responder, Telegram guest context) returns `Declined` at once without blocking. |
 | FR-005 | The user cancelling (`cancel`, `/cancel`, a slash command, Esc, Ctrl-C/Ctrl-D, dismissed dialog, turn cancel) returns `Cancelled`. |
 | FR-006 | Implemented on CLI (TTY), TUI, Telegram, Discord, Slack and ACP. |
 | FR-007 | Off by default: `[tools.ask_user] enabled = false` removes the tool from the tool list. `--ask-user` enables it for a session. |
-| FR-008 | `timeout_secs` (default 300) bounds the wait; expiry returns `TimedOut`. The agent owns the deadline; channels apply none. |
+| FR-008 | `timeout_secs` (default 300, at most 3600) bounds the wait; expiry returns `TimedOut`. The agent owns the deadline; channels apply none. |
 | FR-009 | `max_questions_per_turn` (default 3) caps questions; question and option text are sanitized and bounded. |
 | FR-010 | `[tools.ask_user]` config, `--migrate-config` step, `--init` wizard step, CLI flag, playbook and coverage row. |
+| FR-011 | The tool is offered to the model, and a call is answered, only when `ask_user_offered()` holds: enabled, the turn origin is `User` and `ask_user_support()` is `Interactive`. Otherwise it is absent from the tool list and a call returns `Declined(NonInteractive)` with no channel call and no question slot used (#7122). |
+| FR-012 | A `[tools.permissions]` deny rule on `ask_user` removes it from the tool list (all rules `Deny`) and blocks a matching call before the channel is asked (spec 006, #7123). |
 
 ## 4. Non-Functional Requirements
 
@@ -61,7 +63,9 @@ When the model lacks a fact only the user has (a choice between valid options, a
 
 **Types** (`zeph-core::channel`): `AskUserRequest` (private `QuestionText`, `AskUserKind`), `ChoiceOptions`, `OtherAnswer`, `AskUserAnswer::{Text, Selected{indices}}`, `AskUserOutcome::{Answered, Declined(DeclineReason), Cancelled, TimedOut}`, `ReplyKind::{Cancel, Command, Answer}` with `classify_reply`, `parse_reply`, the form helpers `dialog_message`, `closed_choice_values`, `dialog_answer_hint`, `parse_dialog_answer`, and the constant `ASK_USER_HEADER`.
 
-**Tool**: a built-in answered in the agent loop (`agent/ask_user.rs`), listed only while enabled. Calls are serialized; calls refused by the pre-exec, quota or repeat gates get a failed reply and never reach the user. One choke point applies the per-turn cap, `timeout(cfg.timeout, channel.ask_user(req))` raced with the turn cancel token, and maps `ChannelClosed` to `Cancelled`. Tool input: `question` (required), `options` (2-8), `multi_select`, `allow_other`.
+**Support and origin** (#7122): overrides return `Interactive` for CLI (stdin is a TTY), TUI, Discord, Slack, Telegram (`Unavailable` while `guest_query_id` is set), Loopback/ACP (a responder is attached) and forward through `AnyChannel` and the app channel; the gateway wrapper returns `Unavailable` after a webhook `recv`. `AskUserState::begin_turn(origin)` records the `TurnOrigin`; scheduler, `/loop`, bot-sent and autonomous goal turns (`TurnOrigin::Injected`) never offer the tool.
+
+**Tool**: a built-in answered in the agent loop (`agent/ask_user.rs`), listed only while offered (FR-011). Calls are serialized; calls refused by the pre-exec, quota or repeat gates get a failed reply and never reach the user. One choke point applies the per-turn cap, `timeout(cfg.timeout, channel.ask_user(req))` raced with the turn cancel token, and maps `ChannelClosed` to `Cancelled`. Tool input: `question` (required), `options` (2-8), `multi_select`, `allow_other`.
 
 **Reply handling** (`classify_reply`): `cancel` or `/cancel` (trimmed, case-insensitive) cancels; text selecting a registered slash command (`CommandRegistry::find_handler` rule) cancels with the notice "Question cancelled - resend your command"; anything else, including `/home/me/proj`, is an answer. Bot prompts list `cancel` as an instruction, never as a numbered option.
 
@@ -79,7 +83,7 @@ When the model lacks a fact only the user has (a choice between valid options, a
 
 ## 7. Key Invariants
 
-1. Disabled by default; the tool is absent from the tool list while disabled.
+1. Disabled by default; the tool is absent from the tool list while disabled, on a channel that cannot answer, and in an injected-origin turn.
 2. Every outcome, including cancel and timeout, leaves a paired tool result and the turn continues.
 3. A channel applies no deadline; dropping its future releases stdin, the dialog and receivers.
 4. Answers are scrubbed before any persistence or model exposure.
@@ -102,7 +106,7 @@ When the model lacks a fact only the user has (a choice between valid options, a
 
 ## 10. Config and Operations
 
-`[tools.ask_user]` `enabled` (false), `timeout_secs` (300, non-zero), `max_questions_per_turn` (3, non-zero). Startup-only: not hot-reloaded. Migration step 118, wizard step, `--ask-user`.
+`[tools.ask_user]` `enabled` (false), `timeout_secs` (300, validated to `1..=3600` by `AskUserTimeout`; a value outside the range fails config loading), `max_questions_per_turn` (3, non-zero). Startup-only: not hot-reloaded. Migration step 118, wizard step, `--ask-user`.
 
 ## 11. See Also
 

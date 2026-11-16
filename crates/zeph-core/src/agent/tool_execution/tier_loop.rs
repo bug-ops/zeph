@@ -509,10 +509,12 @@ impl<C: Channel> Agent<C> {
                 ToolCall {
                     tool_id: tc.name.clone(),
                     params,
-                    caller_id: None,
+                    attribution: zeph_tools::CallAttribution::new(
+                        None,
+                        self.skill_attribution().into_iter().flatten(),
+                    ),
                     context: task_ctx.clone(),
                     tool_call_id: Some(tool_call_ids[idx].clone()),
-                    skill_name: self.skill_attribution(),
                 }
             })
             .collect();
@@ -1918,9 +1920,11 @@ impl<C: Channel> Agent<C> {
             builtins.push(crate::agent::focus::request_compaction_tool_definition());
         }
         builtins.extend(self.skill_state_tool_definition());
-        if self.runtime.ask_user.config.enabled {
+        if self.ask_user_offered() {
             builtins.push(crate::agent::ask_user::ask_user_tool_definition());
         }
+        let policy = &self.runtime.config.permission_policy;
+        builtins.retain(|d| !policy.is_fully_denied(d.name.as_str()));
         always_present.extend(builtins.iter().map(|d| d.name.clone()));
         tool_defs.extend(builtins);
 

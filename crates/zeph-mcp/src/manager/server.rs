@@ -17,7 +17,7 @@ use crate::tool::McpTool;
 
 use super::ingest::{apply_injection_penalties, ingest_tools};
 use super::retry::connect_entry;
-use super::{IngestConfig, McpManager, ServerEntry, tools_in_server_order};
+use super::{IngestConfig, McpManager, ServerEntry, server_ids_in_order, tools_in_server_order};
 
 impl McpManager {
     /// Take the elicitation receiver to wire into the agent loop.
@@ -85,6 +85,26 @@ impl McpManager {
             .write()
             .await
             .insert(server_id.into(), tools);
+    }
+
+    /// Register `server_id` as connected with `tools`, backed by a stub client without a
+    /// transport.
+    ///
+    /// Records the tool diagnostics (collisions) as a real connect would. Test support to seed [`list_servers`](Self::list_servers), [`is_server_connected`](Self::is_server_connected)
+    /// and [`tool_snapshot`](Self::tool_snapshot); gated like
+    /// [`inject_tools_for_testing`](Self::inject_tools_for_testing).
+    #[cfg(any(test, feature = "mock"))]
+    #[doc(hidden)]
+    pub async fn register_connected_for_testing(&self, server_id: &str, tools: Vec<McpTool>) {
+        let id = McpServerId::from(server_id);
+        self.clients
+            .write()
+            .await
+            .insert(id.clone(), McpClient::new_disconnected_for_test(id.clone()));
+        self.connected_server_ids.write().insert(id.clone());
+        self.server_tools.write().await.insert(id, tools);
+        let all = self.tool_snapshot().await;
+        self.record_tool_diagnostics(&all).await;
     }
 
     /// Publish `tools` on the tool-change watch as the refresh task would after a
@@ -375,16 +395,18 @@ impl McpManager {
         parts.join("\n\n")
     }
 
-    /// Return sorted list of connected server IDs.
+    /// Return the connected server IDs in dispatch order: configured servers first (in config
+    /// order), then the remaining ids ascending.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "mcp.manager.list_servers", skip_all)
     )]
     pub async fn list_servers(&self) -> Vec<String> {
         let clients = self.clients.read().await;
-        let mut ids: Vec<String> = clients.keys().map(ToString::to_string).collect();
-        ids.sort();
-        ids
+        server_ids_in_order(clients.keys(), &self.configured_order)
+            .into_iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     /// Returns `true` when the given server currently has a live client entry.

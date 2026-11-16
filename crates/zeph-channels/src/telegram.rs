@@ -1324,6 +1324,15 @@ impl crate::confirm::ConfirmLoop for TelegramChannel {
 }
 
 impl Channel for TelegramChannel {
+    /// A guest reply is buffered rather than sent, so a question would never be shown.
+    fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+        if self.guest_query_id.is_some() {
+            zeph_core::channel::AskUserSupport::Unavailable
+        } else {
+            zeph_core::channel::AskUserSupport::Interactive
+        }
+    }
+
     /// Returns `false` — Telegram is a persistent remote channel with no
     /// meaningful concept of "session exit".
     fn supports_exit(&self) -> bool {
@@ -1669,8 +1678,7 @@ impl Channel for TelegramChannel {
         &mut self,
         request: zeph_core::channel::AskUserRequest,
     ) -> Result<zeph_core::channel::AskUserOutcome, ChannelError> {
-        // A guest reply is buffered rather than sent, so the question would never be shown.
-        if self.guest_query_id.is_some() {
+        if self.ask_user_support() == zeph_core::channel::AskUserSupport::Unavailable {
             return Ok(zeph_core::channel::AskUserOutcome::Declined(
                 zeph_core::channel::DeclineReason::NonInteractive,
             ));
@@ -2474,6 +2482,16 @@ mod tests {
         let request = AskUserRequest::free_text("Where?").unwrap();
         let out = channel.ask_user(request).await.unwrap();
         assert_eq!(out, AskUserOutcome::Declined(DeclineReason::NonInteractive));
+    }
+
+    #[tokio::test]
+    async fn ask_user_support_is_unavailable_only_in_guest_context() {
+        use zeph_core::channel::AskUserSupport;
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
+        assert_eq!(channel.ask_user_support(), AskUserSupport::Interactive);
+        channel.guest_query_id = Some("q1".into());
+        assert_eq!(channel.ask_user_support(), AskUserSupport::Unavailable);
     }
 
     #[test]

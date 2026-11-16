@@ -252,6 +252,10 @@ impl crate::confirm::ConfirmLoop for DiscordChannel {
 }
 
 impl Channel for DiscordChannel {
+    fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+        zeph_core::channel::AskUserSupport::Interactive
+    }
+
     fn supports_exit(&self) -> bool {
         false
     }

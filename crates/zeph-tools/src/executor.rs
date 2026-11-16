@@ -29,7 +29,7 @@ pub struct DiffData {
 /// # Example
 ///
 /// ```rust
-/// use zeph_tools::{ToolCall, ExecutionContext};
+/// use zeph_tools::{CallAttribution, ToolCall, ExecutionContext};
 /// use zeph_common::ToolName;
 ///
 /// let call = ToolCall {
@@ -39,10 +39,9 @@ pub struct DiffData {
 ///         m.insert("command".to_owned(), serde_json::Value::String("echo hello".to_owned()));
 ///         m
 ///     },
-///     caller_id: Some("user-42".to_owned()),
 ///     context: Some(ExecutionContext::new().with_name("repo")),
 ///     tool_call_id: None,
-///     skill_name: None,
+///     attribution: CallAttribution::for_caller("user-42"),
 /// };
 /// assert_eq!(call.tool_id, "bash");
 /// ```
@@ -52,55 +51,118 @@ pub struct ToolCall {
     pub tool_id: ToolName,
     /// JSON parameters for the tool call, deserialized into the tool's parameter struct.
     pub params: serde_json::Map<String, serde_json::Value>,
-    /// Opaque caller identifier propagated from the channel (user ID, session ID, etc.).
-    /// `None` for system-initiated calls (scheduler, self-learning, internal).
-    pub caller_id: Option<String>,
     /// Per-turn execution environment. `None` means use the executor default (process CWD
     /// and inherited env), which is identical to the behaviour before this field existed.
     pub context: Option<crate::ExecutionContext>,
     /// Agent-assigned execution id used to correlate [`ToolEvent::OutputChunk`] events with
     /// their originating tool call in the TUI. `None` for calls not issued by the agent loop.
     pub tool_call_id: Option<zeph_common::ToolExecutionId>,
-    /// Names of skills active in the turn that issued this tool call (turn-level attribution).
-    ///
-    /// This is a best-effort, turn-scoped field: it lists the skills injected into the
-    /// system prompt for the current turn, not the specific skill that caused this individual
-    /// call (the LLM does not report per-call causation). `None` for system-initiated or
-    /// internal tool calls that execute outside the skill-augmented agent loop.
-    pub skill_name: Option<Vec<String>>,
+    /// Who issued the call and which skills were active in its turn (turn-level, best-effort
+    /// attribution). Default (no caller, no skills) for system-initiated or internal calls.
+    pub attribution: CallAttribution,
+}
+
+/// Opaque caller identifier propagated from the channel (user id, session id, etc.).
+///
+/// A dedicated type so a caller id cannot be swapped with any other string. Serializes as a
+/// plain string.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_tools::CallerId;
+///
+/// let id = CallerId::new("user-1");
+/// assert_eq!(id.as_str(), "user-1");
+/// assert_eq!(serde_json::to_string(&id).unwrap(), "\"user-1\"");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct CallerId(std::sync::Arc<str>);
+
+impl CallerId {
+    /// Build a caller id from any string-like value.
+    #[must_use]
+    pub fn new(id: impl AsRef<str>) -> Self {
+        Self(std::sync::Arc::from(id.as_ref()))
+    }
+
+    /// The id as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// Caller attribution of one tool call: who issued it and which skills were active.
 ///
-/// Bundles the two attribution fields of [`ToolCall`] so executor helpers take one value instead
-/// of a positional `caller_id` / `skill_name` pair that can be swapped or forgotten.
+/// Embedded once as `attribution` in [`ToolCall`], [`AuditEntry`](crate::AuditEntry),
+/// [`EgressEvent`](crate::EgressEvent), [`PreDispatchBlock`](crate::PreDispatchBlock) and
+/// [`ToolEvent::OutputChunk`]. When flattened into a serialized record the keys are `caller_id`
+/// and `skill_name`, each omitted when empty.
 ///
 /// # Examples
 ///
 /// ```
 /// use zeph_tools::{CallAttribution, ToolCall};
 ///
-/// let call = ToolCall { caller_id: Some("user-1".into()), ..ToolCall::default() };
-/// let attribution = call.attribution();
-/// assert_eq!(attribution.caller_id.as_deref(), Some("user-1"));
-/// assert_eq!(CallAttribution::default().skill_name, None);
+/// let call = ToolCall {
+///     attribution: CallAttribution::for_caller("user-1"),
+///     ..ToolCall::default()
+/// };
+/// assert_eq!(call.attribution().caller.as_ref().map(|c| c.as_str()), Some("user-1"));
+/// assert!(CallAttribution::default().active_skills.is_empty());
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CallAttribution {
-    /// See [`ToolCall::caller_id`].
-    pub caller_id: Option<String>,
-    /// See [`ToolCall::skill_name`].
-    pub skill_name: Option<Vec<String>>,
+    /// Caller identity. `None` for system-initiated calls (scheduler, self-learning, internal).
+    #[serde(rename = "caller_id", skip_serializing_if = "Option::is_none")]
+    pub caller: Option<CallerId>,
+    /// Skills injected into the system prompt for the turn that issued the call. Turn-scoped, not
+    /// per-call causation. Empty for calls outside the skill-augmented agent loop.
+    #[serde(rename = "skill_name", skip_serializing_if = "Vec::is_empty")]
+    pub active_skills: Vec<zeph_common::SkillName>,
+}
+
+impl CallAttribution {
+    /// Attribution carrying only a caller.
+    #[must_use]
+    pub fn for_caller(caller: impl AsRef<str>) -> Self {
+        Self {
+            caller: Some(CallerId::new(caller)),
+            active_skills: Vec::new(),
+        }
+    }
+
+    /// Build an attribution from raw skill names, skipping (with a debug log) any name that is
+    /// not a valid [`SkillName`](zeph_common::SkillName).
+    #[must_use]
+    pub fn new<S: AsRef<str>>(
+        caller: Option<CallerId>,
+        skill_names: impl IntoIterator<Item = S>,
+    ) -> Self {
+        let active_skills = skill_names
+            .into_iter()
+            .filter_map(|name| match zeph_common::SkillName::parse(name.as_ref()) {
+                Ok(skill) => Some(skill),
+                Err(err) => {
+                    tracing::debug!(%err, "skipping invalid skill name in call attribution");
+                    None
+                }
+            })
+            .collect();
+        Self {
+            caller,
+            active_skills,
+        }
+    }
 }
 
 impl ToolCall {
     /// The attribution of this call, for passing to executor helpers and audit rows.
     #[must_use]
-    pub fn attribution(&self) -> CallAttribution {
-        CallAttribution {
-            caller_id: self.caller_id.clone(),
-            skill_name: self.skill_name.clone(),
-        }
+    pub const fn attribution(&self) -> &CallAttribution {
+        &self.attribution
     }
 }
 
@@ -615,8 +677,8 @@ pub enum ToolEvent {
         /// Execution id matching the corresponding [`ToolEvent::Started`] event.
         /// `None` when the executor does not have access to the call ID.
         tool_call_id: Option<zeph_common::ToolExecutionId>,
-        /// Skills active in the turn that triggered this tool call (turn-level attribution).
-        skill_name: Option<Vec<String>>,
+        /// Caller and skills active in the turn that triggered this tool call.
+        attribution: CallAttribution,
     },
     /// The tool finished. Contains the full output and optional filter/diff data.
     Completed {
@@ -1517,7 +1579,10 @@ mod tests {
 
     #[test]
     fn test_tool_output_default_media_empty() {
-        assert!(ToolOutput::default().media.is_empty());
+        assert_eq!(
+            ToolOutput::default().media,
+            Vec::<zeph_llm::ImageData>::new()
+        );
     }
 
     #[test]
@@ -1804,11 +1869,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("anything"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1974,11 +2038,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("bash"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -2350,11 +2413,10 @@ mod tests {
         ToolCall {
             tool_id: ToolName::new("test"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

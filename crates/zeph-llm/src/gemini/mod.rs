@@ -501,11 +501,10 @@ impl GeminiProvider {
         let status = response.status();
         if !status.is_success() {
             let body = crate::http::read_body(response).await.unwrap_or_default();
-            tracing::debug!(status = %status, body = %body, "Gemini list_models_remote error");
-            return Err(LlmError::api_error("gemini", status.as_u16(), &body));
+            return Err(crate::http::api_failure("gemini", status, &body));
         }
 
-        let list: GeminiModelList = response.json().await?;
+        let list: GeminiModelList = crate::http::read_json(response).await?;
         let models: Vec<crate::model_cache::RemoteModelInfo> = list
             .models
             .into_iter()

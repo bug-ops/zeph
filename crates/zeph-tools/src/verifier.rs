@@ -77,10 +77,8 @@ pub struct PreDispatchBlock {
     pub reason: String,
     /// The call arguments serialized as JSON, kept for the audit row.
     pub args_json: String,
-    /// Caller identity of the refused call, when it has one.
-    pub caller_id: Option<String>,
-    /// Skills active in the turn that issued the call.
-    pub skill_name: Option<Vec<String>>,
+    /// Caller and skills active in the turn that issued the refused call.
+    pub attribution: crate::executor::CallAttribution,
 }
 
 impl PreDispatchBlock {
@@ -180,8 +178,7 @@ pub fn evaluate_pre_dispatch(
                     verifier: verifier.name(),
                     reason,
                     args_json: serde_json::to_string(args).unwrap_or_default(),
-                    caller_id: attribution.caller_id.clone(),
-                    skill_name: attribution.skill_name.clone(),
+                    attribution: attribution.clone(),
                 });
                 break;
             }

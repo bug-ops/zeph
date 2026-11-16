@@ -252,11 +252,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -267,11 +266,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -387,11 +385,10 @@ mod tests {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("bash"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
