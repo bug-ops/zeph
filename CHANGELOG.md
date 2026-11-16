@@ -25,8 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`, `zeph-plugins`, `zeph`, `zeph-channels`: goal list surfaces store errors, one shared plugin overlay renderer, serve factory applies `[memory.store_routing]`, Telegram guest proxy body capped at 20 MiB (#7078)
 - workspace: `map_or_default` and `assert_matches!` replace remaining multi-line `map(..).unwrap_or_default()` and `assert!(matches!(..))` sites (#7078)
 - `zeph-config`, `zeph-mcp`, `zeph`: `McpServerId` carried through `McpServerConfig.id`, manager maps and outcomes (breaking: `McpServerConfig.id` is `McpServerId`) (#PR)
-- `zeph-mcp`, `zeph-tools`, `zeph-core`: sanitized ids and tool definitions cached at publish time, dispatch ids shared via `Arc` (breaking: new `ToolExecutor::mcp_dispatch_ids` default method) (#PR)
-- `zeph-core`, `zeph-acp`: MCP tool-list refresh scoped per ACP session, skipped when unchanged, and run for ACP and the daemon on one shared task (breaking: `Agent::with_mcp_tool_rx` takes an `McpToolScope`; `McpManager::spawn_refresh_task` is idempotent) (#PR)
+- `zeph-mcp`, `zeph-tools`, `zeph-core`: sanitized ids and tool definitions cached at publish time, dispatch ids shared via `Arc`, and `publish_pruned` fails closed on tools missing from the published list, in release builds too (breaking: new `ToolExecutor::mcp_dispatch_ids` default method) (#PR)
+- `zeph-core`, `zeph-acp`, `zeph`: MCP tool-list refresh scoped per ACP session and skipped when unchanged, with sessions seeded from the live scope-filtered tool snapshot and the refresh task spawned for ACP and the daemon (breaking: `Agent::with_mcp_tool_rx` takes an `McpToolScope`; `McpManager::spawn_refresh_task` is idempotent) (#PR)
 
 ### Fixed
 
