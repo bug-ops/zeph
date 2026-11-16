@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
+use zeph_common::types::McpServerId;
 
 use crate::client::{McpClient, ToolRefreshEvent};
 use crate::elicitation::ElicitationEvent;
@@ -81,7 +82,7 @@ impl McpManager {
         tracing::instrument(name = "mcp.manager.add_server", skip(self, entry), fields(server_id = %entry.id), err)
     )]
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
-        self.check_not_already_connected(&entry.id).await?;
+        self.check_not_already_connected(entry.id.as_str()).await?;
 
         // NOTE: add_server retains single-attempt behaviour intentionally; retry policy for
         // dynamic connections requires idempotency review of probe/ingest/commit stages.
@@ -89,7 +90,7 @@ impl McpManager {
         let tx = self
             .clone_refresh_tx()
             .ok_or_else(|| McpError::ManagerShuttingDown {
-                server_id: entry.id.clone(),
+                server_id: entry.id.to_string(),
             })?;
 
         let (client, raw_tools) = self.connect_and_list_tools(entry, tx).await?;
@@ -110,7 +111,7 @@ impl McpManager {
         let (tools, sanitize_result, new_fingerprints) = ingest_tools(
             raw_tools,
             &IngestConfig {
-                server_id: &entry.id,
+                server_id: entry.id.as_str(),
                 trust_level: entry.trust_level,
                 allowlist: entry.tool_allowlist.as_deref(),
                 allow_untrusted_without_allowlist: entry.allow_untrusted_without_allowlist,
@@ -123,7 +124,7 @@ impl McpManager {
         );
         apply_injection_penalties(
             self.trust_store.as_ref(),
-            &entry.id,
+            entry.id.as_str(),
             &sanitize_result,
             &self.server_trust,
         )
@@ -144,7 +145,7 @@ impl McpManager {
         self.record_tool_diagnostics(&all_tools).await;
 
         tracing::info!(
-            server_id = entry.id,
+            server_id = %entry.id,
             tools = tools.len(),
             "dynamically added MCP server"
         );
@@ -207,7 +208,7 @@ impl McpManager {
         entry: &ServerEntry,
         client: &McpClient,
     ) -> Result<(), McpError> {
-        if let Err(e) = self.run_probe(&entry.id, client).await {
+        if let Err(e) = self.run_probe(entry.id.as_str(), client).await {
             self.tool_list_locked.remove(&entry.id);
             return Err(e);
         }
@@ -219,7 +220,7 @@ impl McpManager {
         if let Some(ref instructions) = client.server_instructions() {
             let truncated = crate::sanitize::truncate_instructions(
                 instructions,
-                &entry.id,
+                entry.id.as_str(),
                 self.max_instructions_bytes,
             );
             self.server_instructions
@@ -250,7 +251,7 @@ impl McpManager {
                 drop(add_remove_guard);
                 client.shutdown().await;
                 return Err(McpError::ServerAlreadyConnected {
-                    server_id: entry.id.clone(),
+                    server_id: entry.id.to_string(),
                 });
             }
             clients.insert(entry.id.clone(), client);
@@ -359,7 +360,7 @@ impl McpManager {
     )]
     pub async fn list_servers(&self) -> Vec<String> {
         let clients = self.clients.read().await;
-        let mut ids: Vec<String> = clients.keys().cloned().collect();
+        let mut ids: Vec<String> = clients.keys().map(ToString::to_string).collect();
         ids.sort();
         ids
     }
@@ -407,19 +408,19 @@ impl McpManager {
         let _ = self.refresh_tx.lock().take();
 
         let mut clients = self.clients.write().await;
-        let drained: Vec<(String, McpClient)> = clients.drain().collect();
+        let drained: Vec<(McpServerId, McpClient)> = clients.drain().collect();
         self.connected_server_ids.write().clear();
         self.server_tools.write().await.clear();
         self.server_fingerprints.write().await.clear();
         self.last_refresh.clear();
         self.tool_list_locked.clear();
         for (id, client) in drained {
-            tracing::info!(server_id = id, "shutting down MCP client");
+            tracing::info!(server_id = %id, "shutting down MCP client");
             if tokio::time::timeout(Duration::from_secs(5), client.shutdown())
                 .await
                 .is_err()
             {
-                tracing::warn!(server_id = id, "MCP client shutdown timed out");
+                tracing::warn!(server_id = %id, "MCP client shutdown timed out");
             }
         }
     }

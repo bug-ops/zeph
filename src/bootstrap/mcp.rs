@@ -42,7 +42,7 @@ pub fn create_mcp_manager_with_vault(
                 .elicitation_enabled
                 .unwrap_or(config.mcp.elicitation_enabled);
             zeph_mcp::ServerEntry {
-                id: s.id.to_string(),
+                id: s.id.clone(),
                 transport,
                 timeout: std::time::Duration::from_secs(s.timeout),
                 trust_level: s.trust_level,
@@ -110,7 +110,7 @@ pub fn create_mcp_manager_with_vault(
             }
             _ => Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new()),
         };
-        manager = manager.with_oauth_credential_store(s.id.to_string(), store);
+        manager = manager.with_oauth_credential_store(s.id.clone(), store);
     }
 
     manager

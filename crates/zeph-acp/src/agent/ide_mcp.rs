@@ -150,7 +150,7 @@ impl IdeMcpRegistry {
         let mut tools = Vec::new();
         let mut attached = Vec::new();
         for entry in entries {
-            let server_id = McpServerId::from(entry.id.as_str());
+            let server_id = entry.id.clone();
             let may_recover = owners.insert(server_id.clone(), lease).is_some();
             match add_with_recovery(manager, &entry, may_recover).await {
                 Ok(server_tools) => {
@@ -242,7 +242,7 @@ async fn add_with_recovery(
     match manager.add_server(entry).await {
         Err(e @ McpError::ServerAlreadyConnected { .. }) if !may_recover => Err(e),
         Err(McpError::ServerAlreadyConnected { .. }) => {
-            match manager.remove_server(&entry.id).await {
+            match manager.remove_server(entry.id.as_str()).await {
                 Ok(()) | Err(McpError::ServerNotFound { .. }) => {}
                 Err(e) => return Err(e),
             }
@@ -253,9 +253,9 @@ async fn add_with_recovery(
 }
 
 /// Scope an IDE-chosen server id to a session: `"{ide_id}-{first 8 chars of session id}"`.
-fn scoped_server_id(ide_id: &str, session_id: &str) -> String {
+fn scoped_server_id(ide_id: &str, session_id: &str) -> McpServerId {
     let suffix: String = session_id.chars().take(SESSION_SUFFIX_CHARS).collect();
-    format!("{ide_id}-{suffix}")
+    McpServerId::from(format!("{ide_id}-{suffix}"))
 }
 
 /// Convert, de-duplicate by IDE id (first wins) and scope the servers of one request.
@@ -273,7 +273,7 @@ fn scoped_entries(
                 tracing::warn!(server_id = %entry.id, "duplicate IDE MCP server id in request ignored");
                 return None;
             }
-            entry.id = scoped_server_id(&entry.id, session_id);
+            entry.id = scoped_server_id(entry.id.as_str(), session_id);
             Some(entry)
         })
         .collect()
@@ -383,17 +383,17 @@ mod tests {
         }
 
         fn add(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
-            if self.failing.lock().contains(&entry.id) {
+            if self.failing.lock().contains(entry.id.as_str()) {
                 return Err(McpError::ServerNotFound {
-                    server_id: entry.id.clone(),
+                    server_id: entry.id.to_string(),
                 });
             }
-            if !self.connected.lock().insert(entry.id.clone()) {
+            if !self.connected.lock().insert(entry.id.to_string()) {
                 return Err(McpError::ServerAlreadyConnected {
-                    server_id: entry.id.clone(),
+                    server_id: entry.id.to_string(),
                 });
             }
-            Ok(vec![tool(&entry.id)])
+            Ok(vec![tool(entry.id.as_str())])
         }
 
         fn remove(&self, server_id: &str) -> Result<(), McpError> {
@@ -441,7 +441,7 @@ mod tests {
 
     fn entry(id: &str) -> ServerEntry {
         ServerEntry {
-            id: id.to_owned(),
+            id: id.into(),
             transport: zeph_mcp::McpTransport::Stdio {
                 command: "unused".to_owned(),
                 args: Vec::new(),

@@ -498,9 +498,7 @@ async fn connect_all_with_http_entries_skips_failing() {
 
 impl McpManager {
     fn mark_server_connected_for_test(&self, server_id: &str) {
-        self.connected_server_ids
-            .write()
-            .insert(server_id.to_owned());
+        self.connected_server_ids.write().insert(server_id.into());
     }
 
     /// Insert a trust entry directly, bypassing the real connection path.
@@ -508,7 +506,7 @@ impl McpManager {
         self.server_trust
             .write()
             .await
-            .insert(server_id.to_owned(), (level, None, Vec::new(), false));
+            .insert(server_id.into(), (level, None, Vec::new(), false));
     }
 
     /// Read back the trust level for a server, or `None` if the entry was removed.
@@ -525,7 +523,7 @@ impl McpManager {
         self.server_tools
             .write()
             .await
-            .insert(server_id.to_owned(), vec![]);
+            .insert(server_id.into(), vec![]);
     }
 
     /// Return `true` if `server_tools` still contains an entry for `server_id`.
@@ -535,7 +533,7 @@ impl McpManager {
 
     /// Insert a lock entry directly, bypassing the real connect path.
     fn inject_tool_list_locked_for_test(&self, server_id: &str) {
-        self.tool_list_locked.insert(server_id.to_owned(), ());
+        self.tool_list_locked.insert(server_id.into(), ());
     }
 
     /// Return `true` if `tool_list_locked` still contains an entry for `server_id`.
@@ -712,7 +710,7 @@ async fn refresh_task_populates_and_updates_fingerprints_when_expected_tools_con
     mgr.spawn_refresh_task(None);
 
     mgr.server_trust.write().await.insert(
-        "srv1".to_owned(),
+        "srv1".into(),
         (
             McpTrustLevel::Trusted,
             None,
@@ -905,7 +903,7 @@ async fn refresh_task_logs_drift_warning_when_tool_changes_between_reconnects() 
     mgr.spawn_refresh_task(None);
 
     mgr.server_trust.write().await.insert(
-        "srv1".to_owned(),
+        "srv1".into(),
         (
             McpTrustLevel::Trusted,
             None,
@@ -1658,7 +1656,7 @@ async fn make_trust_store() -> Arc<TrustScoreStore> {
 
 fn make_server_trust(server_id: &str, level: McpTrustLevel) -> ServerTrust {
     let mut map = HashMap::new();
-    map.insert(server_id.to_owned(), (level, None, Vec::new(), false));
+    map.insert(server_id.into(), (level, None, Vec::new(), false));
     Arc::new(tokio::sync::RwLock::new(map))
 }
 

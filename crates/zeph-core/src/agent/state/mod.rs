@@ -1312,7 +1312,7 @@ impl McpState {
         self.server_outcomes
             .iter()
             .map(|o| crate::metrics::McpServerStatus {
-                id: o.id.clone(),
+                id: o.id.to_string(),
                 status: if o.connected {
                     crate::metrics::McpServerConnectionStatus::Connected
                 } else {
@@ -1324,7 +1324,7 @@ impl McpState {
                 output_schemas_dropped: o.output_schemas_dropped,
                 shadowed_tools: collisions
                     .iter()
-                    .filter(|c| c.server_b.as_str() == o.id)
+                    .filter(|c| c.server_b.as_str() == o.id.as_str())
                     .count(),
             })
             .collect()

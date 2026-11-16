@@ -12,11 +12,14 @@ use dashmap::DashMap;
 use tokio::sync::RwLock;
 use tokio::sync::{mpsc, watch};
 
+use zeph_common::types::McpServerId;
 use zeph_llm::status::StatusSender;
 /// Per-server trust config: (`trust_level`, `tool_allowlist`, `expected_tools`,
 /// `allow_untrusted_without_allowlist`).
 type ServerTrust = Arc<
-    tokio::sync::RwLock<HashMap<String, (McpTrustLevel, Option<Vec<String>>, Vec<String>, bool)>>,
+    tokio::sync::RwLock<
+        HashMap<McpServerId, (McpTrustLevel, Option<Vec<String>>, Vec<String>, bool)>,
+    >,
 >;
 
 use rmcp::transport::auth::CredentialStore;
@@ -181,7 +184,7 @@ impl serde::Serialize for McpTransport {
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerEntry {
-    pub id: String,
+    pub id: McpServerId,
     pub transport: McpTransport,
     pub timeout: Duration,
     /// Trust level for this server. Controls SSRF validation and tool filtering.
@@ -247,19 +250,22 @@ struct IngestLimits {
 /// completes, so write guards are never held across `.await` points.
 struct ConnectOutput {
     /// `Some((server_id, client))` on success, `None` on failure.
-    client_entry: Option<(String, McpClient)>,
+    client_entry: Option<(McpServerId, McpClient)>,
     /// `Some((server_id, tools))` on success, `None` on failure.
-    tools_entry: Option<(String, Vec<McpTool>)>,
+    tools_entry: Option<(McpServerId, Vec<McpTool>)>,
     /// Flattened tool list to extend `all_tools` (empty on failure).
     tools: Vec<McpTool>,
     /// Per-server outcome (both success and failure).
     outcome: ServerConnectOutcome,
     /// `Some((server_id, truncated_instructions))` when the server sent instructions.
-    instructions: Option<(String, String)>,
+    instructions: Option<(McpServerId, String)>,
     /// `Some((server_id, fingerprints))` when attestation computed fingerprints for this
     /// connection (i.e. `expected_tools` is configured for the server). `None` on failure
     /// or when attestation is unconfigured.
-    fingerprints: Option<(String, HashMap<String, crate::attestation::ToolFingerprint>)>,
+    fingerprints: Option<(
+        McpServerId,
+        HashMap<String, crate::attestation::ToolFingerprint>,
+    )>,
 }
 
 /// Outcome of a single server connection attempt from [`McpManager::connect_all`].
@@ -269,7 +275,7 @@ struct ConnectOutput {
 #[derive(Debug, Clone)]
 pub struct ServerConnectOutcome {
     /// Server ID from [`ServerEntry::id`].
-    pub id: String,
+    pub id: McpServerId,
     /// `true` if the connection and tool list retrieval succeeded.
     pub connected: bool,
     /// Number of tools registered after sanitization and trust filtering.
@@ -317,12 +323,12 @@ fn tools_in_server_order(
 pub struct McpManager {
     configs: Vec<ServerEntry>,
     allowed_commands: Vec<String>,
-    clients: Arc<RwLock<HashMap<String, McpClient>>>,
-    connected_server_ids: SyncRwLock<HashSet<String>>,
+    clients: Arc<RwLock<HashMap<McpServerId, McpClient>>>,
+    connected_server_ids: SyncRwLock<HashSet<McpServerId>>,
     enforcer: Arc<PolicyEnforcer>,
     suppress_stderr: bool,
     /// Per-server tool lists; updated by the refresh task.
-    server_tools: Arc<RwLock<HashMap<String, Vec<McpTool>>>>,
+    server_tools: Arc<RwLock<HashMap<McpServerId, Vec<McpTool>>>>,
     /// Sender half of the refresh event channel; cloned into each `ToolListChangedHandler`.
     /// Wrapped in Mutex<Option<...>> so `shutdown_all_shared()` can drop it while holding `&self`.
     /// When this sender and all handler senders are dropped, the refresh task terminates.
@@ -333,10 +339,10 @@ pub struct McpManager {
     /// Broadcasts the full flattened tool list after any server refresh.
     tools_watch_tx: watch::Sender<Vec<McpTool>>,
     /// Shared rate-limit state across all `ToolListChangedHandler` instances.
-    last_refresh: Arc<DashMap<String, Instant>>,
+    last_refresh: Arc<DashMap<McpServerId, Instant>>,
     /// Per-server OAuth credential stores. Keyed by server ID.
     /// Set via `with_oauth_credential_store` before `connect_all()`.
-    oauth_credentials: HashMap<String, Arc<dyn CredentialStore>>,
+    oauth_credentials: HashMap<McpServerId, Arc<dyn CredentialStore>>,
     /// Optional status sender for OAuth authorization messages.
     /// When set, the authorization URL is sent as a status message instead of
     /// (or in addition to) printing to stderr — required for TUI and Telegram modes.
@@ -351,7 +357,7 @@ pub struct McpManager {
     /// `expected_tools` configured (attestation must be configured for drift detection
     /// to run — see [`crate::attestation::attest_tools`]).
     server_fingerprints:
-        Arc<RwLock<HashMap<String, HashMap<String, crate::attestation::ToolFingerprint>>>>,
+        Arc<RwLock<HashMap<McpServerId, HashMap<String, crate::attestation::ToolFingerprint>>>>,
     /// Optional pre-connect prober. When set, called on every new server connection.
     prober: Option<DefaultMcpProber>,
     /// Optional persistent trust score store. When set, probe results are persisted.
@@ -359,22 +365,22 @@ pub struct McpManager {
     /// Optional embedding anomaly guard. When set, called after every successful tool call.
     embedding_guard: Option<EmbeddingAnomalyGuard>,
     /// Per-server tool metadata overrides. Immutable after construction.
-    server_tool_metadata: Arc<HashMap<String, HashMap<String, ToolSecurityMeta>>>,
+    server_tool_metadata: Arc<HashMap<McpServerId, HashMap<String, ToolSecurityMeta>>>,
     /// Configurable cap for tool description length (bytes). Default: 2048.
     max_description_bytes: usize,
     /// Configurable cap for server instructions length (bytes). Default: 2048.
     max_instructions_bytes: usize,
     /// Server instructions collected after handshake, keyed by server ID.
-    server_instructions: Arc<RwLock<HashMap<String, String>>>,
+    server_instructions: Arc<RwLock<HashMap<McpServerId, String>>>,
     /// Sender half of the bounded elicitation event channel; cloned into each
     /// `ToolListChangedHandler` that has elicitation enabled.
     elicitation_tx: SyncMutex<Option<mpsc::Sender<ElicitationEvent>>>,
     /// Receiver half; taken once by `take_elicitation_rx()` and wired into the agent loop.
     elicitation_rx: SyncMutex<Option<mpsc::Receiver<ElicitationEvent>>>,
     /// Per-server elicitation enabled flags (populated from `ServerEntry`).
-    server_elicitation: HashMap<String, bool>,
+    server_elicitation: HashMap<McpServerId, bool>,
     /// Per-server elicitation timeout in seconds.
-    server_elicitation_timeout: HashMap<String, u64>,
+    server_elicitation_timeout: HashMap<McpServerId, u64>,
     /// Serializes all add/remove operations to prevent the `commit_added_server` + `remove_server` race.
     ///
     /// Without this lock a concurrent `remove_server` could remove a client from `clients` after
@@ -409,7 +415,7 @@ pub struct McpManager {
     /// Set of server IDs whose tool lists are locked. A server is added here atomically
     /// before `connect_entry` is called so the lock is in place before the server can
     /// send a `tools/list_changed` notification (MF-2: no TOCTOU window).
-    tool_list_locked: Arc<DashMap<String, ()>>,
+    tool_list_locked: Arc<DashMap<McpServerId, ()>>,
     /// Shadowed-tool report from the latest diagnostic pass; replaced on every tool-list change.
     tool_collisions: Arc<SyncRwLock<Vec<ToolCollision>>>,
 }

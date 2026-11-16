@@ -72,7 +72,7 @@ pub fn acp_mcp_servers_to_entries(
                     .map(|e| (e.name.clone(), e.value.clone()))
                     .collect();
                 Some(ServerEntry {
-                    id: stdio.name.clone(),
+                    id: stdio.name.clone().into(),
                     transport: McpTransport::Stdio {
                         command: stdio.command.display().to_string(),
                         args: stdio.args.clone(),
@@ -95,7 +95,7 @@ pub fn acp_mcp_servers_to_entries(
                 })
             }
             acp::schema::v1::McpServer::Http(http) => Some(ServerEntry {
-                id: http.name.clone(),
+                id: http.name.clone().into(),
                 transport: McpTransport::Http {
                     url: http.url.clone(),
                     headers: std::collections::HashMap::new(),
@@ -119,7 +119,7 @@ pub fn acp_mcp_servers_to_entries(
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
                 // backward-compatible. rmcp's StreamableHttpClientTransport handles both.
                 Some(ServerEntry {
-                    id: sse.name.clone(),
+                    id: sse.name.clone().into(),
                     transport: McpTransport::Http {
                         url: sse.url.clone(),
                         headers: std::collections::HashMap::new(),

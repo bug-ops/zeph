@@ -898,7 +898,7 @@ async fn check_mcp_server(
         .unwrap_or(mcp_config.elicitation_enabled);
 
     let entry = ServerEntry {
-        id: server.id.to_string(),
+        id: server.id.clone(),
         transport,
         timeout: Duration::from_secs(server.timeout),
         trust_level: server.trust_level,

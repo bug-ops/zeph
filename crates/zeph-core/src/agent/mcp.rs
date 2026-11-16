@@ -111,7 +111,7 @@ impl<C: Channel> Agent<C> {
                 ))
             }
             Err(e) => {
-                tracing::warn!(server_id = entry.id, "MCP add failed: {e:#}");
+                tracing::warn!(server_id = %entry.id, "MCP add failed: {e:#}");
                 Ok(format!("Failed to connect server '{}': {e}", entry.id))
             }
         }
@@ -693,7 +693,7 @@ fn build_server_entry(id: &str, target: &str, extra_args: &[&str]) -> zeph_mcp::
         }
     };
     zeph_mcp::ServerEntry {
-        id: id.to_owned(),
+        id: id.into(),
         transport,
         timeout: std::time::Duration::from_secs(30),
         trust_level: zeph_config::McpTrustLevel::Untrusted,
