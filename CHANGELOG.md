@@ -31,14 +31,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-config`, `zeph-mcp`, `zeph`: `McpServerId` carried through `McpServerConfig.id`, manager maps and outcomes (breaking: `McpServerConfig.id` is `McpServerId`) (#7119)
 - `zeph-mcp`, `zeph-tools`, `zeph-core`: sanitized ids and tool definitions cached at publish time, dispatch ids shared via `Arc`, and `publish_pruned` fails closed on tools missing from the published list, in release builds too (breaking: new `ToolExecutor::mcp_dispatch_ids` default method) (#7119)
 - `zeph-core`, `zeph-acp`, `zeph`: MCP tool-list refresh scoped per ACP session and skipped when unchanged, with sessions seeded from the live scope-filtered tool snapshot and the refresh task spawned for ACP and the daemon (breaking: `Agent::with_mcp_tool_rx` takes an `McpToolScope`; `McpManager::spawn_refresh_task` is idempotent) (#7119)
-- `zeph-llm`: new `LlmError::ResponseTooLarge`; provider response bodies are read with a 32 MiB cap and 400 bodies of cocoon and gonka log at debug (#PR)
-- `zeph-config`, `zeph-llm`, `zeph`: shipped defaults and `--init` select `claude-sonnet-5-5`, migration step 118 rewrites the retired `claude-sonnet-4-5-20250929`, and a startup WARN names the replacement (#PR)
-- `zeph-llm`, `zeph-core`, `zeph-channels`, `zeph-acp`, `zeph-bench`: one `TokenUsage` struct replaces positional token counters (breaking: `AuxiliaryUsage`, `UsageTokens` and `TurnUsage` removed, `cache_creation` renamed `cache_write`, `price_of`, `record_usage` and `Channel::send_usage` take `TokenUsage`, `price_of_auxiliary` removed) (#PR)
-- `zeph-common`, `zeph-tools`, `zeph-sanitizer`, `zeph-subagent`, `zeph-core`: native tool ids and the web-egress set come from one typed `native_tools` module, `CallAttribution` carries caller and skill in tool helpers, and `web_search` now counts in the Web rate-limit bucket (breaking: `PreDispatchBlockSink` has new methods) (#PR)
-- `zeph-subagent`, `zeph-tools`, `zeph-core`: sub-agents share the parent's `evaluate_pre_dispatch` gates, so verifier warnings and exfiltration flags reach metrics and security events (#PR)
-- `zeph-context`: session-gap microcompact treats `web_scrape` output as low-value (#PR)
-- `zeph-common`, `zeph-acp`, `zeph`: `TaskSupervisor::scoped` gives ACP and serve sessions scoped task names, and `AcpIdeMcpGrant` has private fields built via `new` (breaking: `AcpContext.ide_mcp_tools` and `IdeMcpAttachment.tools` removed) (#PR)
-- `zeph-channels`: `ConfirmLoop::run_confirm` keeps messages that arrive during a confirmation and returns them to the agent (breaking: `ConfirmLoop::confirm_receiver` type) (#PR)
+- `zeph-llm`: new `LlmError::ResponseTooLarge`; provider response bodies are read with a 32 MiB cap and 400 bodies of cocoon and gonka log at debug (#7140)
+- `zeph-config`, `zeph-llm`, `zeph`: shipped defaults and `--init` select `claude-sonnet-5-5`, migration step 118 rewrites the retired `claude-sonnet-4-5-20250929`, and a startup WARN names the replacement (#7140)
+- `zeph-llm`, `zeph-core`, `zeph-channels`, `zeph-acp`, `zeph-bench`: one `TokenUsage` struct replaces positional token counters (breaking: `AuxiliaryUsage`, `UsageTokens` and `TurnUsage` removed, `cache_creation` renamed `cache_write`, `price_of`, `record_usage` and `Channel::send_usage` take `TokenUsage`, `price_of_auxiliary` removed) (#7140)
+- `zeph-common`, `zeph-tools`, `zeph-sanitizer`, `zeph-subagent`, `zeph-core`: native tool ids and the web-egress set come from one typed `native_tools` module, `CallAttribution` carries caller and skill in tool helpers, and `web_search` now counts in the Web rate-limit bucket (breaking: `PreDispatchBlockSink` has new methods) (#7140)
+- `zeph-subagent`, `zeph-tools`, `zeph-core`: sub-agents share the parent's `evaluate_pre_dispatch` gates, so verifier warnings and exfiltration flags reach metrics and security events (#7140)
+- `zeph-context`: session-gap microcompact treats `web_scrape` output as low-value (#7140)
+- `zeph-common`, `zeph-acp`, `zeph`: `TaskSupervisor::scoped` gives ACP and serve sessions scoped task names, and `AcpIdeMcpGrant` has private fields built via `new` (breaking: `AcpContext.ide_mcp_tools` and `IdeMcpAttachment.tools` removed) (#7140)
+- `zeph-channels`: `ConfirmLoop::run_confirm` keeps messages that arrive during a confirmation and returns them to the agent (breaking: `ConfirmLoop::confirm_receiver` type) (#7140)
 
 ### Fixed
 
@@ -50,11 +50,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ci`: workspace is clean on rustc 1.100 (`used_underscore_items`, `needless_range_loop`, unused `zeph-tools`/`bytemuck` dependencies, redundant `homepage`) (#7084)
 - `zeph-common`: secret scrubber recognizes non-SGR CSI, colon SGR, quoted-printable `=3D` and tokens split by escape runs (#7078)
 - `ci`: release builds allow `build.warnings` (and pass it through to `cross`) so the `proc-macro-error2` future-incompat note no longer fails every target (#7077)
-- `zeph-llm`: HTTP 400 bodies of OpenAI-compatible embeddings, Gemini, cocoon, gonka and Ollama are scrubbed, stripped of control characters and capped before reaching the user or logs (#PR)
-- `zeph-channels`: Discord and Slack neutralize model-authored mentions, and a confirmation ignores replies from other channels (#PR)
-- `zeph-core`, `zeph-mcp`: `/mcp list` shows shadowed tools through the command-registry path, an MCP tool id equal to a native id is reported once, and results are attributed to the server that was dispatched (#PR)
-- `zeph-core`, `zeph-acp`: an ACP session whose MCP servers drop to zero tools clears its tool list (#PR)
-- `ci`: `add-spdx-headers.sh` resolves the repository root and fails when `src` or `crates` is missing, and two files gained missing SPDX headers (#PR)
+- `zeph-llm`: HTTP 400 bodies of OpenAI-compatible embeddings, Gemini, cocoon, gonka and Ollama are scrubbed, stripped of control characters and capped before reaching the user or logs (#7140)
+- `zeph-channels`: Discord and Slack neutralize model-authored mentions, and a confirmation ignores replies from other channels (#7140)
+- `zeph-core`, `zeph-mcp`: `/mcp list` shows shadowed tools through the command-registry path, an MCP tool id equal to a native id is reported once, and results are attributed to the server that was dispatched (#7140)
+- `zeph-core`, `zeph-acp`: an ACP session whose MCP servers drop to zero tools clears its tool list (#7140)
+- `ci`: `add-spdx-headers.sh` resolves the repository root and fails when `src` or `crates` is missing, and two files gained missing SPDX headers (#7140)
 
 ## [0.23.0] - 2026-11-13
 
