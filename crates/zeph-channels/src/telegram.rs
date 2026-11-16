@@ -817,8 +817,6 @@ struct GuestProxyState {
 }
 
 /// Parsed shape of a teloxide request path received by the guest proxy.
-// STUB(#7079): wired into `proxy_handler` by the implementation step.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 enum UpstreamRoute<'a> {
     /// `/bot<T>/bot<T>/<method>`
@@ -827,11 +825,29 @@ enum UpstreamRoute<'a> {
     File(&'a str),
 }
 
-/// Maps a raw request path onto an [`UpstreamRoute`], or `None` when it is malformed.
-// STUB(#7079): signature only.
-#[allow(dead_code)]
-fn route_upstream<'a>(_path: &'a str, _bot_segment: &str) -> Option<UpstreamRoute<'a>> {
-    todo!()
+/// Maps a raw (still percent-encoded) request path onto an [`UpstreamRoute`].
+///
+/// Returns `None` when the path does not carry this bot's segment in both
+/// positions or when the trailing method or file path is empty. The file path is
+/// returned undecoded so the upstream request is byte-identical to teloxide's.
+fn route_upstream<'a>(path: &'a str, bot_segment: &str) -> Option<UpstreamRoute<'a>> {
+    let rest = path
+        .strip_prefix('/')?
+        .strip_prefix(bot_segment)?
+        .strip_prefix('/')?;
+    let (is_file, rest) = match rest.strip_prefix("file/") {
+        Some(r) => (true, r),
+        None => (false, rest),
+    };
+    let tail = rest.strip_prefix(bot_segment)?.strip_prefix('/')?;
+    if tail.is_empty() {
+        return None;
+    }
+    Some(if is_file {
+        UpstreamRoute::File(tail)
+    } else {
+        UpstreamRoute::Method(tail)
+    })
 }
 
 /// Guest Mode transparent HTTP proxy.
@@ -922,18 +938,24 @@ fn spawn_guest_proxy(
 ///    variants, so the extra entries are silently dropped by the dispatcher.
 #[tracing::instrument(name = "channels.telegram.proxy_handler", skip_all)]
 async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>) -> Response {
-    // Path structure from teloxide: /bot<TOKEN>/<method>
-    // proxy_url passed to Bot::set_api_url is http://127.0.0.1:<port>/bot<TOKEN>
-    // teloxide appends /<method> to base_url, so path is /bot<TOKEN>/<method>
-    let path = req.uri().path();
+    // teloxide appends `/bot<T>/<method>` (or `/file/bot<T>/<percent-encoded path>`)
+    // to the proxy base URL `http://127.0.0.1:<port>/bot<T>`.
     let query = req.uri().query().map_or_default(|q| format!("?{q}"));
-    let method_part = path.splitn(4, '/').nth(3).unwrap_or("");
-    let upstream_url = format!(
-        "{}/{}/{method_part}{query}",
-        state.upstream_origin, state.bot_segment
-    );
-
-    let is_get_updates = method_part == "getUpdates";
+    let Some(route) = route_upstream(req.uri().path(), &state.bot_segment) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let upstream_url = match route {
+        UpstreamRoute::Method(m) => {
+            format!("{}/{}/{m}{query}", state.upstream_origin, state.bot_segment)
+        }
+        UpstreamRoute::File(f) => {
+            format!(
+                "{}/file/{}/{f}{query}",
+                state.upstream_origin, state.bot_segment
+            )
+        }
+    };
+    let is_get_updates = route == UpstreamRoute::Method("getUpdates");
 
     let method = req.method().clone();
     let headers = req.headers().clone();
