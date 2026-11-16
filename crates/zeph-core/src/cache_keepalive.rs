@@ -7,10 +7,10 @@
 //! turn pays a full cache write. This module keeps the cache warm: one supervised task per agent
 //! replays the last successful main-loop request as a minimal ping shortly before the TTL ends.
 //!
-//! The agent captures a [`KeepaliveRequest`](zeph_llm::provider::KeepaliveRequest) snapshot only
+//! The agent captures a [`KeepaliveRequest`] snapshot only
 //! after a successful main response and marks activity at every turn start; the service never
 //! observes provider state directly. Its [`KeepaliveState`] is published through
-//! [`MetricsSnapshot`](crate::metrics::MetricsSnapshot).
+//! [`MetricsSnapshot`].
 //!
 //! Stop rules:
 //! - [`StopReason::CapReached`] and [`StopReason::BudgetExhausted`] limit one idle period, so
@@ -19,7 +19,7 @@
 //!
 //! Cost: before each ping a gate prices the worst case (the whole prefix read at the cache-hit
 //! price plus the largest output the ping may generate, see
-//! [`keepalive_output_cap`](zeph_llm::provider::keepalive_output_cap)) and refuses to ping when
+//! [`keepalive_output_cap`]) and refuses to ping when
 //! that, added to what earlier pings of the idle period cost, reaches the cache write the pings
 //! avoid. Without a cost tracker nothing can be priced, so the gate is open and only
 //! `max_consecutive_pings` bounds the spend.
