@@ -89,8 +89,10 @@ impl McpManager {
             .iter()
             .map(|c| (c.id.clone(), c.elicitation_timeout_secs))
             .collect();
+        let configured_order: Arc<[McpServerId]> = configs.iter().map(|c| c.id.clone()).collect();
         Self {
             configs,
+            configured_order,
             allowed_commands,
             clients: Arc::new(RwLock::new(HashMap::new())),
             connected_server_ids: SyncRwLock::new(HashSet::new()),

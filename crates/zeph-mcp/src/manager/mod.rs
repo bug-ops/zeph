@@ -290,14 +290,24 @@ pub struct ServerConnectOutcome {
     pub output_schemas_dropped: usize,
 }
 
-/// Flatten per-server tool lists in configured order, then remaining server ids ascending.
-// STUB(#7087): implemented when `server_tools` iteration is made deterministic.
-#[allow(dead_code)]
+/// Flatten per-server tool lists deterministically: configured servers first (in config order),
+/// then every other server id (dynamic or IDE-attached) ascending.
+///
+/// `HashMap` iteration order is unspecified, and the first server to register a sanitized tool id
+/// wins dispatch, so every flattening of `server_tools` goes through this function.
 fn tools_in_server_order(
-    _tools: &HashMap<zeph_common::types::McpServerId, Vec<McpTool>>,
-    _configured: &[zeph_common::types::McpServerId],
+    tools: &HashMap<McpServerId, Vec<McpTool>>,
+    configured: &[McpServerId],
 ) -> Vec<McpTool> {
-    todo!()
+    let mut rest: Vec<&McpServerId> = tools.keys().filter(|id| !configured.contains(id)).collect();
+    rest.sort();
+    configured
+        .iter()
+        .chain(rest)
+        .filter_map(|id| tools.get(id))
+        .flatten()
+        .cloned()
+        .collect()
 }
 
 /// Multi-server MCP lifecycle manager.
@@ -322,6 +332,8 @@ fn tools_in_server_order(
 /// safe to share across async tasks. Most methods take `&self`.
 pub struct McpManager {
     configs: Vec<ServerEntry>,
+    /// Ids of `configs` in configured order; the deterministic head of every tool flattening.
+    configured_order: Arc<[McpServerId]>,
     allowed_commands: Vec<String>,
     clients: Arc<RwLock<HashMap<McpServerId, McpClient>>>,
     connected_server_ids: SyncRwLock<HashSet<McpServerId>>,

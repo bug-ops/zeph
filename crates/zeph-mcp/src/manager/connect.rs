@@ -25,7 +25,7 @@ use super::ingest::{apply_injection_penalties, ingest_tools};
 use super::retry::connect_with_retry;
 use super::{
     ConnectOutput, IngestConfig, IngestLimits, McpManager, McpTransport, McpTrustLevel,
-    ServerConnectOutcome, ServerEntry, ServerTrust, StatusSender,
+    ServerConnectOutcome, ServerEntry, ServerTrust, StatusSender, tools_in_server_order,
 };
 
 impl McpManager {
@@ -105,6 +105,7 @@ impl McpManager {
             .expect("spawn_refresh_task must only be called once");
 
         let server_tools = Arc::clone(&self.server_tools);
+        let configured_order = Arc::clone(&self.configured_order);
         let tools_watch_tx = self.tools_watch_tx.clone();
         let server_trust = Arc::clone(&self.server_trust);
         let server_fingerprints = Arc::clone(&self.server_fingerprints);
@@ -173,7 +174,7 @@ impl McpManager {
                 let all_tools = {
                     let mut guard = server_tools.write().await;
                     guard.insert(event.server_id.clone(), filtered);
-                    guard.values().flatten().cloned().collect::<Vec<_>>()
+                    tools_in_server_order(&guard, &configured_order)
                 };
                 tracing::info!(
                     server_id = %event.server_id,
@@ -314,6 +315,13 @@ impl McpManager {
         let mut pending_fingerprints: Vec<(McpServerId, _)> = Vec::new();
         let mut all_tools = Vec::new();
         let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
+        let mut outputs = outputs;
+        outputs.sort_by_key(|o| {
+            self.configured_order
+                .iter()
+                .position(|id| *id == o.outcome.id)
+                .unwrap_or(usize::MAX)
+        });
         for output in outputs {
             if let Some((sid, instr)) = output.instructions {
                 pending_instructions.push((sid, instr));
@@ -353,7 +361,7 @@ impl McpManager {
             for (sid, tools) in pending_tools {
                 g.insert(sid, tools);
             }
-            g.values().flatten().cloned().collect::<Vec<McpTool>>()
+            tools_in_server_order(&g, &self.configured_order)
         };
         (all_tools, outcomes, server_tools_snapshot)
     }

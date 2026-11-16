@@ -58,8 +58,8 @@ fn tools_in_server_order_colliding_id_resolves_to_configured_first_in_both_order
     for configured in [[sid("a.b"), sid("a")], [sid("a"), sid("a.b")]] {
         for insertion in [["a.b", "a"], ["a", "a.b"]] {
             let ordered = tools_in_server_order(&map_in_order(&insertion), &configured);
-            let (_writer, _reader) = McpToolList::new(ordered.clone());
-            let ids = _writer.ids_handle().snapshot();
+            let (writer, _reader) = McpToolList::new(ordered.clone());
+            let ids = writer.ids_handle().snapshot();
             let winner = ids.server_id("a_b_c").map(|s| s.as_str().to_owned());
             assert_eq!(winner.as_deref(), Some(configured[0].as_str()));
             assert_eq!(ordered[0].server_id, configured[0]);
@@ -105,9 +105,13 @@ fn failing_entry(id: &str) -> ServerEntry {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connect_all_outcomes_follow_configured_order() {
-    let ids = ["delta", "alpha", "charlie", "bravo"];
+    // Many servers in a non-alphabetical order, so completion order and map order both differ
+    // from the configured order unless the outcomes are sorted by it.
+    let ids: Vec<String> = (0..48)
+        .map(|i| format!("srv-{:02}", (i * 17) % 48))
+        .collect();
     let mgr = McpManager::new(
         ids.iter().map(|id| failing_entry(id)).collect(),
         vec![],
