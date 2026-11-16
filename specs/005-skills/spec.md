@@ -951,8 +951,8 @@ rejection messages always name the correct skill regardless of completion order.
 
 ## Skill Egress Attribution (#4682, #4684)
 
-`ToolCall`, `AuditEntry`, and `EgressEvent` gain `skill_name: Option<Vec<String>>` carrying the
-names of all skills injected into the system prompt for the current turn. Attribution is
+`ToolCall`, `AuditEntry`, and `EgressEvent` carry the names of all skills injected into the system
+prompt for the current turn as `CallAttribution::active_skills: Vec<SkillName>` (spec 006, PR #7148; serialized as the omit-when-empty key `skill_name`, formerly `skill_name: Option<Vec<String>>`). Attribution is
 turn-scoped, not per-call. All decorator executors (`ScopedToolExecutor`, policy gate, adversarial
 gate) and all `scrape.rs` egress sites propagate the field. `ToolCall` derives `Default` to avoid
 breaking existing struct literals.
@@ -960,8 +960,8 @@ breaking existing struct literals.
 ### Key Invariants
 
 - Attribution is turn-scoped — NEVER per-call attribution (that would require per-tool injection tracking)
-- All executor decorators must propagate `skill_name` — single-path propagation is incomplete
-- NEVER emit a non-`None` `skill_name` for turns with no injected skills
+- All executor decorators must propagate the `CallAttribution` — single-path propagation is incomplete
+- NEVER emit a non-empty `active_skills` for turns with no injected skills
 
 ---
 

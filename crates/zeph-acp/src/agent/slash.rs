@@ -53,9 +53,9 @@ impl ZephAcpAgentState {
     /// Dispatch a slash command, returning a short-circuit `PromptResponse`.
     pub(crate) async fn handle_slash_command(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
         text: &str,
-    ) -> acp::Result<acp::schema::v1::PromptResponse> {
+    ) -> acp::Result<acp::v1::schema::PromptResponse> {
         let mut parts = text.splitn(2, ' ');
         let cmd = parts.next().unwrap_or("").trim();
         let arg = parts.next().unwrap_or("").trim();
@@ -76,15 +76,15 @@ impl ZephAcpAgentState {
                     let entry = sessions
                         .get(session_id)
                         .ok_or_else(|| acp::Error::invalid_request().data("session not found"))?;
-                    *entry.current_mode.lock() = acp::schema::v1::SessionModeId::new(arg);
+                    *entry.current_mode.lock() = acp::v1::schema::SessionModeId::new(arg);
                 }
-                let update = acp::schema::v1::SessionUpdate::CurrentModeUpdate(
-                    acp::schema::v1::CurrentModeUpdate::new(acp::schema::v1::SessionModeId::new(
+                let update = acp::v1::schema::SessionUpdate::CurrentModeUpdate(
+                    acp::v1::schema::CurrentModeUpdate::new(acp::v1::schema::SessionModeId::new(
                         arg,
                     )),
                 );
                 let notification =
-                    acp::schema::v1::SessionNotification::new(session_id.clone(), update);
+                    acp::v1::schema::SessionNotification::new(session_id.clone(), update);
                 if let Err(e) = self.send_notification(session_id, notification).await {
                     tracing::warn!(error = %e, "failed to send current_mode_update from /mode");
                 }
@@ -132,22 +132,22 @@ impl ZephAcpAgentState {
             }
         };
 
-        let update = acp::schema::v1::SessionUpdate::AgentMessageChunk(
-            acp::schema::v1::ContentChunk::new(reply.clone().into()),
+        let update = acp::v1::schema::SessionUpdate::AgentMessageChunk(
+            acp::v1::schema::ContentChunk::new(reply.clone().into()),
         );
-        let notification = acp::schema::v1::SessionNotification::new(session_id.clone(), update);
+        let notification = acp::v1::schema::SessionNotification::new(session_id.clone(), update);
         if let Err(e) = self.send_notification(session_id, notification).await {
             tracing::warn!(error = %e, "failed to send command reply");
         }
 
-        Ok(acp::schema::v1::PromptResponse::new(
-            acp::schema::v1::StopReason::EndTurn,
+        Ok(acp::v1::schema::PromptResponse::new(
+            acp::v1::schema::StopReason::EndTurn,
         ))
     }
 
     async fn handle_model_command(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
         arg: &str,
     ) -> acp::Result<String> {
         let available_models = self.available_models_snapshot();
@@ -178,13 +178,13 @@ impl ZephAcpAgentState {
     }
 
     /// Fire-and-forget the `AvailableCommandsUpdate` notification for a session.
-    pub(crate) fn send_commands_update_nowait(&self, session_id: &acp::schema::v1::SessionId) {
-        let cmds_update = acp::schema::v1::SessionUpdate::AvailableCommandsUpdate(
-            acp::schema::v1::AvailableCommandsUpdate::new(build_available_commands()),
+    pub(crate) fn send_commands_update_nowait(&self, session_id: &acp::v1::schema::SessionId) {
+        let cmds_update = acp::v1::schema::SessionUpdate::AvailableCommandsUpdate(
+            acp::v1::schema::AvailableCommandsUpdate::new(build_available_commands()),
         );
         self.send_notification_nowait(
             session_id,
-            acp::schema::v1::SessionNotification::new(session_id.clone(), cmds_update),
+            acp::v1::schema::SessionNotification::new(session_id.clone(), cmds_update),
         );
     }
 }
@@ -204,13 +204,13 @@ mod slash_command_wiring_tests {
     fn make_agent(
         provider_factory: Option<ProviderFactory>,
         available_models: Vec<String>,
-    ) -> (ZephAcpAgent, acp::schema::v1::SessionId) {
+    ) -> (ZephAcpAgent, acp::v1::schema::SessionId) {
         let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
         let mut agent = ZephAcpAgent::new(spawner, 4, 1800, None);
         if let Some(factory) = provider_factory {
             agent = agent.with_provider_factory(factory, Arc::new(RwLock::new(available_models)));
         }
-        let session_id = acp::schema::v1::SessionId::new("slash-cmd-test".to_owned());
+        let session_id = acp::v1::schema::SessionId::new("slash-cmd-test".to_owned());
         (agent, session_id)
     }
 
@@ -223,8 +223,8 @@ mod slash_command_wiring_tests {
         available_models: Vec<String>,
     ) -> (
         ZephAcpAgent,
-        acp::schema::v1::SessionId,
-        tokio::sync::oneshot::Receiver<acp::schema::v1::SessionNotification>,
+        acp::v1::schema::SessionId,
+        tokio::sync::oneshot::Receiver<acp::v1::schema::SessionNotification>,
     ) {
         let (agent, session_id) = make_agent(provider_factory, available_models);
 
@@ -281,15 +281,15 @@ mod slash_command_wiring_tests {
             .handle_slash_command(&session_id, "/help")
             .await
             .expect("/help must succeed");
-        assert_eq!(response.stop_reason, acp::schema::v1::StopReason::EndTurn);
+        assert_eq!(response.stop_reason, acp::v1::schema::StopReason::EndTurn);
 
         let notification = captured_rx
             .await
             .expect("handle_slash_command must push a notification carrying the /help reply");
-        let acp::schema::v1::SessionUpdate::AgentMessageChunk(chunk) = notification.update else {
+        let acp::v1::schema::SessionUpdate::AgentMessageChunk(chunk) = notification.update else {
             panic!("expected AgentMessageChunk carrying the /help reply");
         };
-        let acp::schema::v1::ContentBlock::Text(text) = chunk.content else {
+        let acp::v1::schema::ContentBlock::Text(text) = chunk.content else {
             panic!("expected ContentBlock::Text");
         };
 
@@ -424,10 +424,10 @@ mod owner_key_threading_tests {
     /// the handler under test forwards to `input_tx`.
     fn make_agent_with_owner_key(
         owner_key: &str,
-    ) -> (ZephAcpAgent, acp::schema::v1::SessionId, LoopbackChannel) {
+    ) -> (ZephAcpAgent, acp::v1::schema::SessionId, LoopbackChannel) {
         let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
         let agent = ZephAcpAgent::new(spawner, 4, 1800, None).with_owner_key(owner_key);
-        let session_id = acp::schema::v1::SessionId::new("owner-key-test".to_owned());
+        let session_id = acp::v1::schema::SessionId::new("owner-key-test".to_owned());
 
         let (channel, handle) = LoopbackChannel::pair(4);
         let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
@@ -454,10 +454,10 @@ mod owner_key_threading_tests {
     async fn review_command_threads_connection_owner_key_into_channel_message() {
         let (agent, session_id, mut channel) = make_agent_with_owner_key("acp:alice");
 
-        let review_request = acp::schema::v1::PromptRequest::new(
+        let review_request = acp::v1::schema::PromptRequest::new(
             session_id.clone(),
-            vec![acp::schema::v1::ContentBlock::Text(
-                acp::schema::v1::TextContent::new("/review".to_owned()),
+            vec![acp::v1::schema::ContentBlock::Text(
+                acp::v1::schema::TextContent::new("/review".to_owned()),
             )],
         );
 

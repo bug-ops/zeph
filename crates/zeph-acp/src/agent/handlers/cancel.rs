@@ -11,8 +11,8 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `cancel` notification.
 pub(crate) async fn handle_cancel(
-    notif: acp::schema::v1::CancelNotification,
-    _cx: acp::ConnectionTo<acp::Client>,
+    notif: acp::v1::schema::CancelNotification,
+    _cx: acp::v1::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     state.do_cancel(notif).await

@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
-use acp::schema::v1::{EnvVariable, McpServer, McpServerHttp, McpServerStdio};
+use acp::v1::schema::{EnvVariable, McpServer, McpServerHttp, McpServerStdio};
 use parking_lot::Mutex as SyncMutex;
 use zeph_config::{AcpIdeMcpConfig, AcpIdeMcpGrant, AcpIdeMcpTarget};
 

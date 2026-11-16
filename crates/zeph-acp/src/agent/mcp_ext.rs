@@ -20,8 +20,8 @@ struct McpRemoveParams {
 impl ZephAcpAgentState {
     pub(crate) async fn ext_method_mcp(
         &self,
-        args: &acp::schema::v1::ExtRequest,
-    ) -> acp::Result<acp::schema::v1::ExtResponse> {
+        args: &acp::v1::schema::ExtRequest,
+    ) -> acp::Result<acp::v1::schema::ExtResponse> {
         let method = args.method.as_ref();
         match method {
             "_agent/mcp/list" => {
@@ -38,7 +38,7 @@ impl ZephAcpAgentState {
                         tracing::error!(error = %e, "failed to build MCP list response");
                         acp::Error::internal_error().data("internal error")
                     })?;
-                Ok(acp::schema::v1::ExtResponse::new(raw.into()))
+                Ok(acp::v1::schema::ExtResponse::new(raw.into()))
             }
             "_agent/mcp/add" => {
                 let Some(ref manager) = self.mcp_manager else {
@@ -56,7 +56,7 @@ impl ZephAcpAgentState {
                         tracing::error!(error = %e, "failed to build MCP add response");
                         acp::Error::internal_error().data("internal error")
                     })?;
-                Ok(acp::schema::v1::ExtResponse::new(raw.into()))
+                Ok(acp::v1::schema::ExtResponse::new(raw.into()))
             }
             "_agent/mcp/remove" => {
                 let Some(ref manager) = self.mcp_manager else {
@@ -75,9 +75,9 @@ impl ZephAcpAgentState {
                     tracing::error!(error = %e, "failed to build MCP remove response");
                     acp::Error::internal_error().data("internal error")
                 })?;
-                Ok(acp::schema::v1::ExtResponse::new(raw.into()))
+                Ok(acp::v1::schema::ExtResponse::new(raw.into()))
             }
-            _ => Ok(acp::schema::v1::ExtResponse::new(
+            _ => Ok(acp::v1::schema::ExtResponse::new(
                 serde_json::value::RawValue::NULL.to_owned().into(),
             )),
         }

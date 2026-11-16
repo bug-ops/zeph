@@ -51,7 +51,7 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// # Examples
 ///
 /// ```
-/// use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
+/// use agent_client_protocol::v1::schema::{McpServer, McpServerStdio};
 /// use zeph_acp::acp_mcp_servers_to_entries;
 ///
 /// let servers = vec![
@@ -63,13 +63,13 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// ```
 #[must_use]
 pub fn acp_mcp_servers_to_entries(
-    servers: &[acp::schema::v1::McpServer],
+    servers: &[acp::v1::schema::McpServer],
     elicitation_default_timeout_secs: u64,
 ) -> Vec<ServerEntry> {
     servers
         .iter()
         .filter_map(|s| match s {
-            acp::schema::v1::McpServer::Stdio(stdio) => {
+            acp::v1::schema::McpServer::Stdio(stdio) => {
                 let env: HashMap<String, String> = stdio
                     .env
                     .iter()
@@ -99,7 +99,7 @@ pub fn acp_mcp_servers_to_entries(
                     media_passthrough: false,
                 })
             }
-            acp::schema::v1::McpServer::Http(http) => Some(ServerEntry {
+            acp::v1::schema::McpServer::Http(http) => Some(ServerEntry {
                 id: http.name.clone().into(),
                 transport: McpTransport::Http {
                     url: http.url.clone(),
@@ -120,7 +120,7 @@ pub fn acp_mcp_servers_to_entries(
                 env_isolation: false,
                 media_passthrough: false,
             }),
-            acp::schema::v1::McpServer::Sse(sse) => {
+            acp::v1::schema::McpServer::Sse(sse) => {
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
                 // backward-compatible. rmcp's StreamableHttpClientTransport handles both.
                 Some(ServerEntry {

@@ -68,7 +68,7 @@ pub type ProviderFactory = Arc<dyn Fn(&str) -> Option<AnyProvider> + Send + Sync
 /// persistent history in that case.
 pub struct SessionContext {
     /// ACP-assigned session identifier.
-    pub session_id: acp::schema::v1::SessionId,
+    pub session_id: acp::v1::schema::SessionId,
     /// `SQLite` conversation ID for persisting message history, if available.
     pub conversation_id: Option<ConversationId>,
     /// Working directory reported by the IDE for this session.
@@ -141,7 +141,7 @@ impl AcpContext {
     #[must_use]
     pub fn ask_user_responder(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
     ) -> Option<Arc<dyn zeph_core::channel::AskUserResponder>> {
         let bridge = self.elicitation_bridge.clone()?;
         Some(Arc::new(elicitation::AcpAskUserResponder::new(
@@ -200,11 +200,11 @@ pub type SendAgentSpawner = AgentSpawner;
 /// `pub` (not `pub(crate)`) solely so [`SessionStatusNotifier::new`] can appear in the public
 /// API: it lets integration tests outside this crate construct a real notifier bound to a
 /// plain `mpsc::channel`, without a full `AcpContext`/ACP connection.
-pub type NotifySender = mpsc::Sender<(acp::schema::v1::SessionNotification, oneshot::Sender<()>)>;
+pub type NotifySender = mpsc::Sender<(acp::v1::schema::SessionNotification, oneshot::Sender<()>)>;
 
 /// Receiver half paired with [`NotifySender`].
 pub(crate) type NotifyReceiver =
-    mpsc::Receiver<(acp::schema::v1::SessionNotification, oneshot::Sender<()>)>;
+    mpsc::Receiver<(acp::v1::schema::SessionNotification, oneshot::Sender<()>)>;
 
 /// Fire-and-forget handle for pushing a client-visible status update outside of the normal
 /// prompt-drain path.
@@ -222,7 +222,7 @@ pub(crate) type NotifyReceiver =
 #[derive(Clone)]
 pub struct SessionStatusNotifier {
     notify_tx: NotifySender,
-    session_id: acp::schema::v1::SessionId,
+    session_id: acp::v1::schema::SessionId,
 }
 
 impl SessionStatusNotifier {
@@ -237,7 +237,7 @@ impl SessionStatusNotifier {
     /// # Examples
     ///
     /// ```
-    /// use agent_client_protocol::schema::v1::SessionId;
+    /// use agent_client_protocol::v1::schema::SessionId;
     /// use tokio::sync::mpsc;
     /// use zeph_acp::SessionStatusNotifier;
     ///
@@ -247,7 +247,7 @@ impl SessionStatusNotifier {
     /// assert!(rx.try_recv().is_ok());
     /// ```
     #[must_use]
-    pub fn new(notify_tx: NotifySender, session_id: acp::schema::v1::SessionId) -> Self {
+    pub fn new(notify_tx: NotifySender, session_id: acp::v1::schema::SessionId) -> Self {
         Self {
             notify_tx,
             session_id,
@@ -265,11 +265,11 @@ impl SessionStatusNotifier {
         if text.is_empty() {
             return;
         }
-        let update = acp::schema::v1::SessionUpdate::AgentThoughtChunk(
-            acp::schema::v1::ContentChunk::new(text.into()),
+        let update = acp::v1::schema::SessionUpdate::AgentThoughtChunk(
+            acp::v1::schema::ContentChunk::new(text.into()),
         );
         let notification =
-            acp::schema::v1::SessionNotification::new(self.session_id.clone(), update);
+            acp::v1::schema::SessionNotification::new(self.session_id.clone(), update);
         let (ack_tx, _) = oneshot::channel();
         if let Err(e) = self.notify_tx.try_send((notification, ack_tx)) {
             tracing::warn!(
@@ -327,7 +327,7 @@ pub(crate) struct SessionEntry {
     /// Currently selected model identifier (display / tracking only).
     current_model: Mutex<String>,
     /// Current session mode (ask / architect / code).
-    current_mode: Mutex<acp::schema::v1::SessionModeId>,
+    current_mode: Mutex<acp::v1::schema::SessionModeId>,
     /// Set after the first successful prompt so title generation fires only once.
     first_prompt_done: AtomicBool,
     /// Auto-generated session title; populated after first prompt via `SessionTitle` event.
@@ -412,7 +412,7 @@ impl SessionEntry {
     }
 }
 
-type SessionMap = Arc<Mutex<std::collections::HashMap<acp::schema::v1::SessionId, SessionEntry>>>;
+type SessionMap = Arc<Mutex<std::collections::HashMap<acp::v1::schema::SessionId, SessionEntry>>>;
 
 /// Per-connection ACP agent state.
 ///
@@ -432,7 +432,7 @@ pub struct ZephAcpAgentState {
     pub(crate) session_data_dir: Option<std::path::PathBuf>,
     permission_file: Option<std::path::PathBuf>,
     /// IDE capabilities received during `initialize()`; used by `build_acp_context`.
-    pub(crate) client_caps: RwLock<acp::schema::v1::ClientCapabilities>,
+    pub(crate) client_caps: RwLock<acp::v1::schema::ClientCapabilities>,
     /// Factory for creating a new provider by `{provider}:{model}` key.
     pub(crate) provider_factory: Option<ProviderFactory>,
     /// Available model identifiers advertised in `new_session` `config_options`.
@@ -501,7 +501,7 @@ impl ZephAcpAgentState {
     #[cfg(feature = "unstable-cancel-request")]
     pub(crate) fn session_cancel_signal(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
     ) -> Option<Arc<tokio::sync::Notify>> {
         self.sessions
             .lock()
@@ -512,8 +512,8 @@ impl ZephAcpAgentState {
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub(crate) async fn build_acp_context(
         &self,
-        session_id: &acp::schema::v1::SessionId,
-        cx: &acp::ConnectionTo<acp::Client>,
+        session_id: &acp::v1::schema::SessionId,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
         cancel_signal: Arc<tokio::sync::Notify>,
         provider_override: Arc<RwLock<Option<AnyProvider>>>,
         cwd: PathBuf,
@@ -595,8 +595,8 @@ impl ZephAcpAgentState {
 
     pub(crate) async fn send_notification(
         &self,
-        session_id: &acp::schema::v1::SessionId,
-        notification: acp::schema::v1::SessionNotification,
+        session_id: &acp::v1::schema::SessionId,
+        notification: acp::v1::schema::SessionNotification,
     ) -> acp::Result<()> {
         let tx = self
             .sessions
@@ -626,8 +626,8 @@ impl ZephAcpAgentState {
     /// Fire-and-forget notification via the session's notify channel (no ack).
     pub(crate) fn send_notification_nowait(
         &self,
-        session_id: &acp::schema::v1::SessionId,
-        notification: acp::schema::v1::SessionNotification,
+        session_id: &acp::v1::schema::SessionId,
+        notification: acp::v1::schema::SessionNotification,
     ) {
         let tx = self
             .sessions
@@ -649,8 +649,8 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.initialize")]
     pub(crate) async fn do_initialize(
         &self,
-        args: acp::schema::v1::InitializeRequest,
-    ) -> acp::Result<acp::schema::v1::InitializeResponse> {
+        args: acp::v1::schema::InitializeRequest,
+    ) -> acp::Result<acp::v1::schema::InitializeResponse> {
         tracing::debug!("ACP initialize");
         #[cfg(feature = "unstable-elicitation")]
         {
@@ -673,10 +673,10 @@ impl ZephAcpAgentState {
             serde_json::json!("authentication required"),
         );
 
-        let mut caps = acp::schema::v1::AgentCapabilities::new()
+        let mut caps = acp::v1::schema::AgentCapabilities::new()
             .load_session(true)
             .prompt_capabilities(
-                acp::schema::v1::PromptCapabilities::new()
+                acp::v1::schema::PromptCapabilities::new()
                     .image(true)
                     .embedded_context(true),
             )
@@ -699,50 +699,50 @@ impl ZephAcpAgentState {
         // Only StreamableHTTP (http=true) is supported; SSE is deprecated in MCP spec 2025-11-25.
         if self.mcp_manager.is_some() {
             caps = caps.mcp_capabilities(
-                acp::schema::v1::McpCapabilities::new()
+                acp::v1::schema::McpCapabilities::new()
                     .http(true)
                     .sse(false),
             );
         }
         let caps = {
-            let mut session_caps = acp::schema::v1::SessionCapabilities::new();
-            session_caps = session_caps.list(acp::schema::v1::SessionListCapabilities::default());
+            let mut session_caps = acp::v1::schema::SessionCapabilities::new();
+            session_caps = session_caps.list(acp::v1::schema::SessionListCapabilities::default());
             {
                 session_caps =
-                    session_caps.close(acp::schema::v1::SessionCloseCapabilities::default());
+                    session_caps.close(acp::v1::schema::SessionCloseCapabilities::default());
             }
             #[cfg(feature = "unstable-session-fork")]
             {
                 session_caps =
-                    session_caps.fork(acp::schema::v1::SessionForkCapabilities::default());
+                    session_caps.fork(acp::v1::schema::SessionForkCapabilities::default());
             }
             {
                 session_caps =
-                    session_caps.resume(acp::schema::v1::SessionResumeCapabilities::default());
+                    session_caps.resume(acp::v1::schema::SessionResumeCapabilities::default());
             }
             caps.session_capabilities(session_caps)
         };
 
         let caps = caps.auth(
-            acp::schema::v1::AgentAuthCapabilities::default()
-                .logout(acp::schema::v1::LogoutCapabilities::default()),
+            acp::v1::schema::AgentAuthCapabilities::default()
+                .logout(acp::v1::schema::LogoutCapabilities::default()),
         );
 
-        let auth_methods: Vec<acp::schema::v1::AuthMethod> = self
+        let auth_methods: Vec<acp::v1::schema::AuthMethod> = self
             .auth_methods_config
             .iter()
             .map(|_m| {
-                acp::schema::v1::AuthMethod::Agent(acp::schema::v1::AuthMethodAgent::new(
+                acp::v1::schema::AuthMethod::Agent(acp::v1::schema::AuthMethodAgent::new(
                     "zeph", "Zeph",
                 ))
             })
             .collect();
 
         Ok(
-            acp::schema::v1::InitializeResponse::new(acp::schema::ProtocolVersion::LATEST)
+            acp::v1::schema::InitializeResponse::new(acp::schema::ProtocolVersion::LATEST)
                 .auth_methods(auth_methods)
                 .agent_info(
-                    acp::schema::v1::Implementation::new(&self.agent_name, &self.agent_version)
+                    acp::v1::schema::Implementation::new(&self.agent_name, &self.agent_version)
                         .title(title),
                 )
                 .agent_capabilities(caps)
@@ -753,8 +753,8 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.dispatch")]
     pub(crate) async fn do_ext_method(
         &self,
-        args: acp::schema::v1::ExtRequest,
-    ) -> acp::Result<acp::schema::v1::ExtResponse> {
+        args: acp::v1::schema::ExtRequest,
+    ) -> acp::Result<acp::v1::schema::ExtResponse> {
         if let Some(fut) = crate::custom::dispatch(self, &args) {
             return fut.await;
         }
@@ -769,8 +769,8 @@ impl ZephAcpAgentState {
 
     pub(crate) async fn do_ext_notification(
         &self,
-        args: acp::schema::v1::ExtNotification,
-        cx: &acp::ConnectionTo<acp::Client>,
+        args: acp::v1::schema::ExtNotification,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
     ) -> acp::Result<()> {
         tracing::debug!(method = %args.method, "received ext_notification");
         match args.method.as_ref() {
@@ -789,26 +789,26 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.authenticate")]
     pub(crate) async fn do_authenticate(
         &self,
-        _args: acp::schema::v1::AuthenticateRequest,
-    ) -> acp::Result<acp::schema::v1::AuthenticateResponse> {
-        Ok(acp::schema::v1::AuthenticateResponse::default())
+        _args: acp::v1::schema::AuthenticateRequest,
+    ) -> acp::Result<acp::v1::schema::AuthenticateResponse> {
+        Ok(acp::v1::schema::AuthenticateResponse::default())
     }
 
     #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.logout")]
     pub(crate) async fn do_logout(
         &self,
-        _args: acp::schema::v1::LogoutRequest,
-    ) -> acp::Result<acp::schema::v1::LogoutResponse> {
+        _args: acp::v1::schema::LogoutRequest,
+    ) -> acp::Result<acp::v1::schema::LogoutResponse> {
         tracing::debug!("ACP logout (no-op: vault-based auth)");
-        Ok(acp::schema::v1::LogoutResponse::default())
+        Ok(acp::v1::schema::LogoutResponse::default())
     }
 
     #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.cancel", fields(session_id = %args.session_id))]
     pub(crate) async fn do_cancel(
         &self,
-        args: acp::schema::v1::CancelNotification,
+        args: acp::v1::schema::CancelNotification,
     ) -> acp::Result<()> {
         tracing::debug!(session_id = %args.session_id, "ACP cancel");
         if let Some(entry) = self.sessions.lock().get(&args.session_id) {
@@ -831,31 +831,31 @@ impl ZephAcpAgentState {
 /// full `serve_connection` ACP harness — see `tests::session_event_to_updates_*` below.
 fn session_event_to_updates(
     event: zeph_session::SessionEvent,
-) -> Vec<acp::schema::v1::SessionUpdate> {
+) -> Vec<acp::v1::schema::SessionUpdate> {
     match event {
         zeph_session::SessionEvent::UserMessage { text, .. } => {
-            vec![acp::schema::v1::SessionUpdate::UserMessageChunk(
-                acp::schema::v1::ContentChunk::new(text.into()),
+            vec![acp::v1::schema::SessionUpdate::UserMessageChunk(
+                acp::v1::schema::ContentChunk::new(text.into()),
             )]
         }
         zeph_session::SessionEvent::AssistantMessage { parts } => parts
             .into_iter()
             .filter_map(|part| match part {
                 zeph_llm::provider::MessagePart::ToolUse { id, name, input } => {
-                    Some(acp::schema::v1::SessionUpdate::ToolCall(
-                        acp::schema::v1::ToolCall::new(id.to_string(), name).raw_input(input),
+                    Some(acp::v1::schema::SessionUpdate::ToolCall(
+                        acp::v1::schema::ToolCall::new(id.to_string(), name).raw_input(input),
                     ))
                 }
                 other => other.as_plain_text().map(|text| {
-                    acp::schema::v1::SessionUpdate::AgentMessageChunk(
-                        acp::schema::v1::ContentChunk::new(text.to_owned().into()),
+                    acp::v1::schema::SessionUpdate::AgentMessageChunk(
+                        acp::v1::schema::ContentChunk::new(text.to_owned().into()),
                     )
                 }),
             })
             .collect(),
         zeph_session::SessionEvent::ToolCall { id, name, input } => {
-            vec![acp::schema::v1::SessionUpdate::ToolCall(
-                acp::schema::v1::ToolCall::new(id.as_str().to_owned(), name).raw_input(input),
+            vec![acp::v1::schema::SessionUpdate::ToolCall(
+                acp::v1::schema::ToolCall::new(id.as_str().to_owned(), name).raw_input(input),
             )]
         }
         zeph_session::SessionEvent::ToolResult {
@@ -865,14 +865,14 @@ fn session_event_to_updates(
             ..
         } => {
             let status = if is_error {
-                acp::schema::v1::ToolCallStatus::Failed
+                acp::v1::schema::ToolCallStatus::Failed
             } else {
-                acp::schema::v1::ToolCallStatus::Completed
+                acp::v1::schema::ToolCallStatus::Completed
             };
-            vec![acp::schema::v1::SessionUpdate::ToolCallUpdate(
-                acp::schema::v1::ToolCallUpdate::new(
+            vec![acp::v1::schema::SessionUpdate::ToolCallUpdate(
+                acp::v1::schema::ToolCallUpdate::new(
                     id.as_str().to_owned(),
-                    acp::schema::v1::ToolCallUpdateFields::new()
+                    acp::v1::schema::ToolCallUpdateFields::new()
                         .status(status)
                         .content(vec![output.into()]),
                 ),
@@ -996,14 +996,14 @@ pub async fn warm_model_caches(
 fn compute_stop_reason(
     cancelled: bool,
     stop_hint: Option<StopHint>,
-) -> acp::schema::v1::StopReason {
+) -> acp::v1::schema::StopReason {
     if cancelled {
-        acp::schema::v1::StopReason::Cancelled
+        acp::v1::schema::StopReason::Cancelled
     } else {
         match stop_hint {
-            Some(StopHint::MaxTokens) => acp::schema::v1::StopReason::MaxTokens,
-            Some(StopHint::MaxTurnRequests) => acp::schema::v1::StopReason::MaxTurnRequests,
-            None | Some(_) => acp::schema::v1::StopReason::EndTurn,
+            Some(StopHint::MaxTokens) => acp::v1::schema::StopReason::MaxTokens,
+            Some(StopHint::MaxTurnRequests) => acp::v1::schema::StopReason::MaxTurnRequests,
+            None | Some(_) => acp::v1::schema::StopReason::EndTurn,
         }
     }
 }
@@ -1011,14 +1011,14 @@ fn compute_stop_reason(
 /// Construct the `PromptResponse`, attaching per-turn token usage when the
 /// `unstable-session-usage` feature is enabled.
 fn build_prompt_response(
-    stop_reason: acp::schema::v1::StopReason,
+    stop_reason: acp::v1::schema::StopReason,
     #[cfg(feature = "unstable-session-usage")] turn_usage: zeph_llm::provider::TokenUsage,
-) -> acp::schema::v1::PromptResponse {
-    let r = acp::schema::v1::PromptResponse::new(stop_reason);
+) -> acp::v1::schema::PromptResponse {
+    let r = acp::v1::schema::PromptResponse::new(stop_reason);
     #[cfg(feature = "unstable-session-usage")]
     let r = {
         let total = turn_usage.input.saturating_add(turn_usage.output);
-        let usage = acp::schema::v1::Usage::new(total, turn_usage.input, turn_usage.output)
+        let usage = acp::v1::schema::Usage::new(total, turn_usage.input, turn_usage.output)
             // thought_tokens: not tracked for MVP — provider may fold them into output_tokens
             .cached_read_tokens((turn_usage.cache_read > 0).then_some(turn_usage.cache_read))
             .cached_write_tokens((turn_usage.cache_write > 0).then_some(turn_usage.cache_write));
@@ -1126,7 +1126,7 @@ pub async fn run_agent(
     };
 
     let builder = acp::Agent
-        .builder()
+        .v1()
         .on_receive_request(
             req_handler!(state, initialize::handle_initialize),
             acp::on_receive_request!(),
@@ -1246,7 +1246,7 @@ mod notify_timeout_tests {
     #[tokio::test]
     async fn send_notification_returns_error_when_ack_times_out() {
         let agent = make_agent_for_timeout();
-        let session_id = acp::schema::v1::SessionId::new("timeout-test".to_owned());
+        let session_id = acp::v1::schema::SessionId::new("timeout-test".to_owned());
 
         let (_, handle) = LoopbackChannel::pair(4);
         let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
@@ -1268,10 +1268,10 @@ mod notify_timeout_tests {
         // Insert without starting the drainer — no ack will ever be sent.
         agent.sessions.lock().insert(session_id.clone(), entry);
 
-        let update = acp::schema::v1::SessionUpdate::AgentMessageChunk(
-            acp::schema::v1::ContentChunk::new("hello".into()),
+        let update = acp::v1::schema::SessionUpdate::AgentMessageChunk(
+            acp::v1::schema::ContentChunk::new("hello".into()),
         );
-        let notif = acp::schema::v1::SessionNotification::new(session_id.clone(), update);
+        let notif = acp::v1::schema::SessionNotification::new(session_id.clone(), update);
         let result = agent.send_notification(&session_id, notif).await;
         assert!(
             result.is_err(),
@@ -1289,7 +1289,7 @@ mod session_status_notifier_tests {
     #[tokio::test]
     async fn notify_status_nowait_delivers_agent_thought_chunk_immediately() {
         let (notify_tx, mut notify_rx) = mpsc::channel(4);
-        let session_id = acp::schema::v1::SessionId::new("notifier-test".to_owned());
+        let session_id = acp::v1::schema::SessionId::new("notifier-test".to_owned());
         let notifier = SessionStatusNotifier::new(notify_tx, session_id.clone());
 
         notifier.notify_status_nowait("degraded");
@@ -1299,8 +1299,8 @@ mod session_status_notifier_tests {
         );
         assert_eq!(notification.session_id, session_id);
         match notification.update {
-            acp::schema::v1::SessionUpdate::AgentThoughtChunk(chunk) => match chunk.content {
-                acp::schema::v1::ContentBlock::Text(t) => assert_eq!(t.text, "degraded"),
+            acp::v1::schema::SessionUpdate::AgentThoughtChunk(chunk) => match chunk.content {
+                acp::v1::schema::ContentBlock::Text(t) => assert_eq!(t.text, "degraded"),
                 other => panic!("expected ContentBlock::Text, got {other:?}"),
             },
             other => panic!("expected AgentThoughtChunk, got {other:?}"),
@@ -1312,7 +1312,7 @@ mod session_status_notifier_tests {
     #[tokio::test]
     async fn notify_status_nowait_skips_empty_text() {
         let (notify_tx, mut notify_rx) = mpsc::channel(4);
-        let session_id = acp::schema::v1::SessionId::new("notifier-empty-test".to_owned());
+        let session_id = acp::v1::schema::SessionId::new("notifier-empty-test".to_owned());
         let notifier = SessionStatusNotifier::new(notify_tx, session_id);
 
         notifier.notify_status_nowait("");
@@ -1339,7 +1339,7 @@ mod session_event_replay_tests {
         assert_eq!(updates.len(), 1);
         assert_matches!(
             updates[0],
-            acp::schema::v1::SessionUpdate::UserMessageChunk(_)
+            acp::v1::schema::SessionUpdate::UserMessageChunk(_)
         );
     }
 
@@ -1353,7 +1353,7 @@ mod session_event_replay_tests {
         assert_eq!(updates.len(), 1);
         assert_matches!(
             updates[0],
-            acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
+            acp::v1::schema::SessionUpdate::AgentMessageChunk(_)
         );
     }
 
@@ -1367,7 +1367,7 @@ mod session_event_replay_tests {
             }],
         });
         assert_eq!(updates.len(), 1);
-        assert_matches!(updates[0], acp::schema::v1::SessionUpdate::ToolCall(_));
+        assert_matches!(updates[0], acp::v1::schema::SessionUpdate::ToolCall(_));
     }
 
     #[test]
@@ -1385,10 +1385,10 @@ mod session_event_replay_tests {
             ],
         });
         assert_eq!(updates.len(), 2);
-        assert_matches!(updates[0], acp::schema::v1::SessionUpdate::ToolCall(_));
+        assert_matches!(updates[0], acp::v1::schema::SessionUpdate::ToolCall(_));
         assert_matches!(
             updates[1],
-            acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
+            acp::v1::schema::SessionUpdate::AgentMessageChunk(_)
         );
     }
 
@@ -1402,12 +1402,12 @@ mod session_event_replay_tests {
             duration_ms: 10,
         });
         assert_eq!(updates.len(), 1);
-        let acp::schema::v1::SessionUpdate::ToolCallUpdate(update) = &updates[0] else {
+        let acp::v1::schema::SessionUpdate::ToolCallUpdate(update) = &updates[0] else {
             panic!("expected ToolCallUpdate");
         };
         assert_eq!(
             update.fields.status,
-            Some(acp::schema::v1::ToolCallStatus::Completed)
+            Some(acp::v1::schema::ToolCallStatus::Completed)
         );
     }
 
@@ -1420,12 +1420,12 @@ mod session_event_replay_tests {
             is_error: true,
             duration_ms: 10,
         });
-        let acp::schema::v1::SessionUpdate::ToolCallUpdate(update) = &updates[0] else {
+        let acp::v1::schema::SessionUpdate::ToolCallUpdate(update) = &updates[0] else {
             panic!("expected ToolCallUpdate");
         };
         assert_eq!(
             update.fields.status,
-            Some(acp::schema::v1::ToolCallStatus::Failed)
+            Some(acp::v1::schema::ToolCallStatus::Failed)
         );
     }
 
@@ -1473,7 +1473,7 @@ mod session_event_replay_tests {
         assert_eq!(updates.len(), 1);
         assert_matches!(
             updates[0],
-            acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
+            acp::v1::schema::SessionUpdate::AgentMessageChunk(_)
         );
     }
 }

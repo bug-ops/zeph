@@ -249,6 +249,18 @@ max_files = 7
 > [!NOTE]
 > Use `--log-file <PATH>` at the CLI to override the log file path for one session. The file-level filter is independent of `RUST_LOG` — stderr output and file output can use different levels simultaneously. The `/log` slash command shows the active config and tails recent entries.
 
+## Interactive features (opt-in)
+
+Two features are off by default and enabled per config section.
+
+| Feature | Config | CLI / slash | Behavior |
+|---------|--------|-------------|----------|
+| Model-callable `ask_user` | `[tools.ask_user]` (`enabled`, `timeout_secs` 1..=3600, default 300; `max_questions_per_turn`, default 3) | `--ask-user` | Lets the model ask the user a question mid-turn. Offered only on user turns of interactive channels (CLI, TUI, Telegram, Discord, Slack, ACP); questions carry a warning header, are secret-scrubbed, and are capped per turn. `[tools.permissions]` deny rules apply to it like any built-in tool |
+| Prompt-cache keepalive | `[llm.cache_keepalive]` (`enabled`, `keepalive_provider`, `max_consecutive_pings` 1..=50, default 6) | `--cache-keepalive`, `/keepalive on\|off\|status` | Sends periodic pings to keep the provider prompt cache warm, gated by a worst-case cost check; stops on unpriced pings. Ping count and cost appear in `/cost` and the TUI status bar |
+
+> [!NOTE]
+> `Channel` implementations now provide `ask_user` and `ask_user_support`, and token counters travel as one named `TokenUsage` (`input`, `output`, `cache_write`, `cache_read`) from `zeph-llm`.
+
 ## Skill commands
 
 | Command | Description |

@@ -803,7 +803,7 @@ PolicyGateExecutor → AdversarialPolicyGateExecutor → TrustGateExecutor → .
   WHOLE turn — independent of which specific tool call or skill is the actual target. This is
   intentional defense-in-depth: it prevents a Quarantined (potentially prompt-injected) skill's
   content from steering the model into invoking other tools/skills as a side channel.
-- The denial message names the turn's full active-skill set (`ToolCall::skill_name`) rather
+- The denial message names the turn's full active-skill set (`ToolCall::attribution().active_skills`) rather
   than implying the specific tool/skill being invoked is itself untrusted — see #5729, which
   fixed the prior misleading `"{tool_id} denied (trust=quarantined)"` message that read as if
   `tool_id` (or its target skill) was the untrusted party.
@@ -891,9 +891,13 @@ tools = ["tool_name", ...]
 
 Rules appended after `[tools.policy]` rules. `[tools.policy]` has precedence (first-match-wins). Disabled by default — no behavioral change for existing configs.
 
-### `caller_id` on `ToolCall`
+### `CallAttribution` on `ToolCall` (PR #7148, #7140)
 
-`ToolCall::caller_id: Option<String>` — set by orchestrator when a sub-agent dispatches a call. Recorded in audit log. Primary agent leaves `None`.
+`ToolCall::attribution: CallAttribution { caller: Option<CallerId>, active_skills: Vec<SkillName> }` (`zeph-tools`) replaces the former `caller_id` / `skill_name` field pairs. `caller` is set by the orchestrator when a sub-agent dispatches a call and is `None` for the primary agent and system-initiated calls; `active_skills` are the skills injected into the system prompt for the turn (turn-scoped, empty outside the skill-augmented loop; invalid names are skipped with a debug log by `CallAttribution::new`). One `CallAttribution` is embedded in `ToolCall`, `AuditEntry`, `EgressEvent`, `PreDispatchBlock` and `ToolEvent::OutputChunk`; `ToolCall::attribution()` and executor helpers pass it by reference. Serialized records keep the keys `caller_id` and `skill_name`, each omitted when empty, written after the other keys of the record.
+
+### Native tool ids (`zeph_common::native_tools`, PR #7140)
+
+The ids of the native web-egress tools (`web_scrape`, `fetch`, `web_search`) come from one enum, `WebEgressTool` (`ALL`, `id`, `from_id`), with the constants `WEB_SCRAPE_ID`, `FETCH_ID`, `WEB_SEARCH_ID`, `WEB_SCRAPE_OUTPUT_NAME` (`"web-scrape"`, the fenced-block path's output name) and the predicates `is_web_egress_tool` / `is_web_egress_output`. The executors, the trust classifier, the sub-agent network deny list, the guarded-tools default, the TUI tool view and the microcompact low-value set derive from it, so a new web-egress tool cannot be missed by one consumer. `web_search` therefore counts in the `Web` rate-limit bucket (`tool_category`).
 
 ### Key Invariants
 

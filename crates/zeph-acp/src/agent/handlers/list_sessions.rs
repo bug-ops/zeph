@@ -11,9 +11,9 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/list` request.
 pub(crate) async fn handle_list_sessions(
-    req: acp::schema::v1::ListSessionsRequest,
-    responder: acp::Responder<acp::schema::v1::ListSessionsResponse>,
-    _cx: acp::ConnectionTo<acp::Client>,
+    req: acp::v1::schema::ListSessionsRequest,
+    responder: acp::v1::Responder<acp::v1::schema::ListSessionsResponse>,
+    _cx: acp::v1::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     let resp = state.do_list_sessions(req).await?;

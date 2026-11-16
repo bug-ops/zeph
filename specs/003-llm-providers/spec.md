@@ -222,6 +222,14 @@ character). `map_error_response` always receives the full capped body (`crate::h
 never a pre-cut one: the cocoon/gonka 256-char cut let a secret straddling the cut escape the
 redaction pattern and hid context-length bodies from `body_is_context_length_error`.
 
+### Retired Claude Models and Shipped Default (PR #7140)
+
+`zeph_config::RETIRED_CLAUDE_MODELS` (`&[(retired id, replacement id)]`, currently `claude-sonnet-4-5-20250929` -> `claude-sonnet-5-5`) is the single source for three consumers: the `--migrate-config` rewrite (step 119, see [[037-config-schema/spec]]), the startup WARN of `ClaudeProvider::new` (it names the replacement and points at `--migrate-config`; ids that are only stale rather than retired get a separate "not a current release" WARN), and the tests that keep shipped defaults off retired models. Shipped defaults and the `--init` wizard select `claude-sonnet-5-5`. Add a pair to the table when a model retires; never hardcode a replacement elsewhere.
+
+### Usage Type (PR #7140, #7148)
+
+One `TokenUsage { input, output, cache_write, cache_read }` (`zeph-llm`, `Copy`, saturating `Add`) replaces the positional token counters: `AuxiliaryUsage`, `UsageTokens` and `TurnUsage` are removed and `cache_creation` is renamed `cache_write`. `CostTracker::record_usage`, `price_of`, `Channel::send_usage`, `LoopbackEvent::Usage` and `UsageRecord` (`zeph-memory`) take it; `price_of_auxiliary` is removed. Background and ensemble usage is billed at the serving provider's speed, cache counters and model price (PR #7078).
+
 ### Chain-of-Entropy Scope (#7096)
 
 CoE (`[llm.coe]`) covers `RouterProvider::chat()` only: logprobs are requested and intra-entropy

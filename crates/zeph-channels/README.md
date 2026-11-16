@@ -23,7 +23,8 @@ Implements I/O channel adapters that connect the agent to different frontends. S
 | `discord` | Discord adapter (optional feature) |
 | `slack` | Slack adapter (optional feature); audio file detection and download with Bearer auth |
 | `streaming` | Shared chunking/flush logic used by the streaming-capable adapters |
-| `confirm` | Interactive tool-confirmation prompt shared across channels |
+| `ask_user` | Shared `ask_user` flow of the Telegram, Discord, and Slack adapters: renders the prompt with the fixed warning header, accepts replies only from the prompt's channel, and neutralizes model-authored mentions |
+| `confirm` | Interactive tool-confirmation prompt shared across channels (`ConfirmLoop`); messages arriving during a confirmation are returned to the agent, and Telegram confirmations ignore bot senders |
 | `auth` | Per-channel sender authorization |
 | `any` | `AnyChannel` — enum dispatch over all channels |
 | `markdown` | `markdown_to_telegram` renders CommonMark to Telegram `MarkdownV2` (Bot API 10.1 rich text); multi-line blockquotes prefix every line with `>`, nested quotes flatten to a single level (MarkdownV2 has no nested-quote grammar), and long quotes render as Bot API 10.1 expandable (collapsed-by-default) blockquotes at or above `expandable_blockquote_min_lines` |

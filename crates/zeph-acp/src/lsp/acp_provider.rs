@@ -62,7 +62,7 @@ impl AcpLspProvider {
     /// - `max_references` — truncation limit for `lsp/references` results.
     /// - `max_workspace_symbols` — truncation limit for `lsp/workspaceSymbol` results.
     pub fn new(
-        conn: std::sync::Arc<acp::ConnectionTo<acp::Client>>,
+        conn: std::sync::Arc<acp::v1::ConnectionTo<acp::Client>>,
         ide_supports_lsp: bool,
         request_timeout_secs: u64,
         max_references: usize,
@@ -107,7 +107,7 @@ impl AcpLspProvider {
 }
 
 async fn run_lsp_handler(
-    conn: std::sync::Arc<acp::ConnectionTo<acp::Client>>,
+    conn: std::sync::Arc<acp::v1::ConnectionTo<acp::Client>>,
     mut rx: mpsc::UnboundedReceiver<LspRequest>,
 ) {
     while let Some(request) = rx.recv().await {

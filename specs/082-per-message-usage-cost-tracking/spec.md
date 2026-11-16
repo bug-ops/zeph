@@ -77,6 +77,10 @@ SO THAT I can pinpoint the expensive or slow turn instead of only seeing a daily
 - **RESOLVED (was: TTFT capture point)**: Non-streaming path records a TTFB proxy in `zeph-llm`'s per-provider `UsageTracker`, measured per-attempt inside `retry::send_with_retry` (or the equivalent per-attempt retry loop for gonka) so a retried call's value is never inflated by the backoff sleep between attempts, and exposed via `LlmProvider::last_ttft_ms()` (delegated through `AnyProvider`/`MaskedProvider`/`TriageRouter` to whichever concrete provider handled the call). The one production streaming path (speculative decoding) records true TTFT separately, at its own stream-consumption point in `zeph-core` (`agent::speculative::stream_drainer::SpeculativeStreamDrainer::drive`, elapsed time to the first SSE event), which `Agent::build_usage_record` prefers over the provider-level TTFB proxy when present. Candle (in-process) leaves it `NULL`.
 - **RESOLVED (was: reconciliation scope)**: Every `CostTracker`-feeding site (turn loop, `plan.rs` planner + aggregator, `scheduler_loop.rs` ensemble members) emits a `usage_records` row using the same computed cost, so current-day `SUM` reconciles with the aggregate. See §3 invariants.
 
+## Typed Usage (PR #7140, #7148)
+
+- Token counters travel as one `zeph_llm::TokenUsage { input, output, cache_write, cache_read }`: `CostTracker::price_of` and `record_usage`, `Channel::send_usage`, `LoopbackEvent::Usage` and `zeph_memory::UsageRecord` take it, so a call site can no longer swap two positional counters. The single-pricing-source rule above is unchanged.
+
 ## Keepalive Ping Usage (#6911, spec 091)
 
 - A keepalive ping is not a provider request and writes no per-message `usage_records` row. `CostTracker::record_keepalive_usage` adds its cost to the daily spend, and the service keeps `cache_keepalive_pings` and `cache_keepalive_cost_cents` in `MetricsSnapshot` (shown in `/keepalive status`, TUI `/cost` and the status bar).

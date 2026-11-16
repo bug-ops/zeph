@@ -138,6 +138,10 @@ THEN the same hex string is returned (deterministic)
 | FR-010 | WHEN `sanitize` utilities are called THEN the system SHALL provide content sanitization helpers usable by any crate without depending on `zeph-sanitizer` | should |
 | FR-011 | WHEN `BlockingSpawner::spawn_blocking_named` is called THEN the system SHALL dispatch the closure to the OS blocking thread pool with the given `Arc<str>` task name | must |
 | FR-012 | WHEN the `http` feature is enabled THEN `http::read_capped` / `http::read_prefix` SHALL bound a `reqwest::Response` body by a `BodyLimit(NonZeroUsize)`: `Content-Length` above the limit is rejected before any body byte is read, otherwise the read aborts at the first chunk crossing the limit (`BodyReadError::TooLarge`); `read_prefix` never fails (#7041) | must |
+| FR-013 | WHEN `BodyLimit::from_const` is evaluated in a const context THEN it SHALL yield a `BodyLimit` for a non-zero byte count and fail compilation for zero (PR #7078) | must |
+| FR-014 | `types::McpServerId` SHALL be an `Arc<str>` identity newtype without `Default` or validation, used wherever an MCP server identity crosses a crate boundary (`ToolResultSource::Mcp`, `DataFlowViolation::SensitivityTrustMismatch`, MCP registries; PR #7078) | must |
+| FR-015 | `native_tools::WebEgressTool` SHALL be the single source of the native web-egress tool ids (`web_scrape`, `fetch`, `web_search`) with `is_web_egress_tool` / `is_web_egress_output` predicates (PR #7140, see [[006-tools/spec]]) | must |
+| FR-016 | `task_supervisor::AbortOnDrop<R>` SHALL wrap a `BlockingHandle<R>` and abort the supervised task when dropped; `unique_session_scope(session_id)` SHALL return `{session_id}.{instance}` unique within the process (PR #7148) | must |
 
 ---
 

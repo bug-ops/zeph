@@ -6,67 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-16
+
 ### Added
 
-- `zeph-config`, `zeph-core`: `KeepalivePingCap` (1..=50) and `AskUserTimeout` (1..=3600) newtypes (breaking: out-of-range `max_consecutive_pings` and `timeout_secs` fail config load), and `StopReason::Unpriced` stops keepalive when a ping cannot be priced (#7148)
-- `zeph-core`, `zeph-channels`, `zeph-tui`: `Channel::ask_user_support` (breaking: new trait method, default `Unavailable`); `ask_user` is offered only on user turns of interactive channels, never on scheduler, `/loop`, autonomous goal or webhook turns (#7148)
-- `zeph-common`: `AbortOnDrop<R>` guard for supervised one-shot tasks (#7148)
-- `zeph-mcp`: `NativeToolIds` (breaking: `McpToolListWriter::publish_full` takes `&NativeToolIds`, `detect_native_shadows` takes `&NativeToolIds`), and `McpManager::register_connected_for_testing` under the `mock` feature (#7148)
-- `zeph-core`, `zeph-channels`, `zeph-tui`, `zeph-acp`, `zeph-tools`, `zeph-config`: opt-in model-callable `ask_user` tool (`[tools.ask_user]`, `--ask-user`) with a fixed warning header, secret scrubbing, per-turn cap and timeout on CLI, TUI, Telegram, Discord, Slack and ACP (breaking: new `Channel::ask_user` method, `Agent::with_interaction_config` and `InteractionConfig` without `Default`, `ConfirmLoop::run_reply`, `ClaimSource::UserAnswer`) (#7130)
-- `zeph-llm`, `zeph-core`, `zeph-commands`, `zeph-tui`, `zeph-config`: opt-in prompt-cache keepalive pings (`[llm.cache_keepalive]`, `--cache-keepalive`, `/keepalive on|off|status`) through `LlmProvider::keepalive_ping` with a worst-case cost gate and ping count and cost in `/cost` and the status bar (#7130)
-- `zeph-config`: `--migrate-config` step 118 and `--init` wizard step for `[tools.ask_user]` and `[llm.cache_keepalive]` (#7130)
-- `zeph-common`: `BodyLimit::from_const` and `McpServerId` newtype (breaking: `ToolResultSource::Mcp`, `DataFlowViolation::SensitivityTrustMismatch` and MCP registries take `McpServerId`) (#7078)
-- `zeph-mcp`, `zeph-tools`, `zeph-core`, `zeph-subagent`: single-writer `McpToolList` and shared `McpToolIdsHandle` replace four separate MCP tool id registries and colon-split server id derivation (breaking: `SpawnContext.session_mcp_servers`, `SpawnContext.mcp_tool_names`, `TranscriptMeta.mcp_tool_names`, `McpToolExecutor::set_tools`, `Agent::with_mcp_shared_tools` and `with_mcp_tool_ids_handle` removed in favor of `with_mcp_tool_list`, `SpawnContext.mcp_tool_ids` and `TrustGateExecutor`/`ShadowSentinel::with_mcp_tool_ids`) (#7078)
-- `zeph-mcp`, `zeph-tui`: `/mcp list` and the TUI show MCP tools shadowed by an id collision; long tool id warning is logged once per tool-list change; new pub `McpServerStatus.shadowed_tools` and `AcpContext.ide_mcp_tools` (#7078)
-- `zeph-acp`: IDE `mcpServers` are registered per session on new, load, fork and resume with session-suffixed ids and released on session or connection close; tools stay hidden without an allowlist (#7078)
-- `zeph-llm`, `zeph-config`, `zeph-core`: chain-of-entropy intra escalation fed by logprobs for OpenAI, compatible and Ollama; `llm.coe.intra_threshold` accepts any finite value >= 0 (`NonNegativeF64`, breaking range change); shadow-call usage is reported as auxiliary (#7078)
-- `zeph-llm`: Claude `usage.speed` parsing, one-shot latch after a 400 rejecting `speed`, speed line in `/provider status` (#7078)
-- `zeph-subagent`, `zeph-tools`, `zeph-core`, `zeph`: sub-agent pre-dispatch blocks record the metric, security event and audit row; inherited trust floor is stored in the transcript sidecar and honored by `zeph knowledge import --source subagents` (#7078)
-- `ci`: clippy matrix entries for `zeph-skills/miner` and `test-utils` of zeph-db, zeph-memory, zeph-index and zeph-orchestration, plus a weekly stable-toolchain clippy workflow (#7078)
-- `zeph-config`, `zeph-acp`, `zeph`: `[acp.ide_mcp]` per-session cap (default 10) and operator grants pinned to exact command+args/url and env keys for IDE-attached MCP servers, with a wizard prompt and migration step (#7119)
+- `zeph-core`, `zeph-channels`, `zeph-tui`, `zeph-acp`, `zeph-tools`, `zeph-config`: opt-in model-callable `ask_user` tool (`[tools.ask_user]`, `--ask-user`) with warning header, secret scrubbing, per-turn cap and timeout on CLI, TUI, Telegram, Discord, Slack and ACP; offered only on user turns of interactive channels (breaking: `Channel::ask_user` and `Channel::ask_user_support`, `Agent::with_interaction_config`, `InteractionConfig` without `Default`, `ConfirmLoop::run_reply`, `ClaimSource::UserAnswer`) (#7130, #7148)
+- `zeph-llm`, `zeph-core`, `zeph-commands`, `zeph-tui`, `zeph-config`: opt-in prompt-cache keepalive pings (`[llm.cache_keepalive]`, `--cache-keepalive`, `/keepalive on|off|status`) with a worst-case cost gate, stop on unpriced pings, and ping count and cost in `/cost` and the status bar (#7130, #7148)
+- `zeph-config`: `KeepalivePingCap` (1..=50), `AskUserTimeout` (1..=3600) and `NonNegativeF64` newtypes (breaking: out-of-range `max_consecutive_pings`, `timeout_secs` and `llm.coe.intra_threshold` fail config load); `--migrate-config` step 118 and `--init` wizard step for `[tools.ask_user]` and `[llm.cache_keepalive]` (#7078, #7130, #7148)
+- `zeph-mcp`, `zeph-tools`, `zeph-core`, `zeph-subagent`, `zeph-common`: single-writer `McpToolList`, shared `McpToolIdsHandle`, `NativeToolIds` and `McpServerId` newtype replace four MCP tool id registries and colon-split server ids (breaking: `SpawnContext`, `TranscriptMeta`, `McpToolExecutor::set_tools`, `Agent::with_mcp_*`, `ToolResultSource::Mcp`, `McpToolListWriter::publish_full` and `detect_native_shadows` signatures) (#7078, #7148)
+- `zeph-mcp`, `zeph-tui`: `/mcp list` and the TUI show MCP tools shadowed by an id collision, and the long tool id warning is logged once per tool-list change (#7078)
+- `zeph-acp`: IDE `mcpServers` are registered per session on new, load, fork and resume with session-suffixed ids and released on close; tools stay hidden without an allowlist (#7078)
+- `zeph-config`, `zeph-acp`, `zeph`: `[acp.ide_mcp]` per-session cap (default 10) and operator grants pinned to exact command+args/url and env keys, with a wizard prompt and migration step (#7119)
+- `zeph-llm`, `zeph-core`: chain-of-entropy intra escalation fed by logprobs for OpenAI, compatible and Ollama, Claude `usage.speed` parsing with a speed line in `/provider status`, and shadow-call usage reported as auxiliary (#7078)
+- `zeph-subagent`, `zeph-tools`, `zeph-core`, `zeph`: sub-agent pre-dispatch blocks record metric, security event and audit row, and the inherited trust floor is honored by `zeph knowledge import --source subagents` (#7078)
+- `zeph-common`: `AbortOnDrop<R>` guard and `BodyLimit::from_const` (#7078, #7148)
+- `ci`: clippy matrix entries for `zeph-skills/miner` and `test-utils` features plus a weekly stable-toolchain clippy workflow (#7078)
 
 ### Changed
 
-- `zeph-tools`, `zeph-core`, `zeph-subagent`, `zeph-mcp`, `zeph-index`, `zeph-acp`, `zeph-bench`: one typed `CallAttribution` (`CallerId`, `SkillName` list) replaces the `caller_id` and `skill_name` field pairs (breaking: struct fields and constructors; audit and egress JSONL write `caller_id` and `skill_name` after the other keys) (#7148)
-- `zeph-core`, `zeph-acp`, `zeph-memory`: `LoopbackEvent::Usage` and `UsageRecord` carry `TokenUsage` instead of positional counters (breaking) (#7148)
-- `zeph-core`: keepalive history capture shares chunked storage and copies only the new tail instead of the whole history (#7148)
-- `zeph-common`, `zeph-core`, `zeph`: ACP and serve session task scope gets a per-instance suffix, and the cancel bridge and speculative sweeper are aborted on agent drop (#7148)
-- `zeph-llm`, `zeph-channels`, `zeph-skills`: Discord `send_message` returns `DiscordRestError` (breaking), and Ollama transport failures stay `LlmError::Http` (#7148)
-- `zeph-llm`, `zeph-core`: Claude API error detail reaches the user and is logged once (breaking: `LlmError::ApiError` carries `detail`); raw API bodies are logged at debug after scrubbing (#7078)
-- `zeph-core`: background and ensemble usage is billed at the serving provider's speed, cache counters and model price (#7078)
-- `zeph-core`, `zeph-plugins`, `zeph`, `zeph-channels`: goal list surfaces store errors, one shared plugin overlay renderer, serve factory applies `[memory.store_routing]`, Telegram guest proxy body capped at 20 MiB (#7078)
-- workspace: `map_or_default` and `assert_matches!` replace remaining multi-line `map(..).unwrap_or_default()` and `assert!(matches!(..))` sites (#7078)
-- `zeph-acp`: server config shares IDE MCP and timeout settings by `Arc` (breaking: `AcpServerConfig.ide_mcp` is `Arc<AcpIdeMcpConfig>`, `AcpServerConfig.timeouts` is now `Arc<AcpTimeoutsConfig>`, `with_ide_mcp_config` takes an `Arc`) (#7119)
-- `zeph-config`, `zeph-mcp`, `zeph`: `McpServerId` carried through `McpServerConfig.id`, manager maps and outcomes (breaking: `McpServerConfig.id` is `McpServerId`) (#7119)
-- `zeph-mcp`, `zeph-tools`, `zeph-core`: sanitized ids and tool definitions cached at publish time, dispatch ids shared via `Arc`, and `publish_pruned` fails closed on tools missing from the published list, in release builds too (breaking: new `ToolExecutor::mcp_dispatch_ids` default method) (#7119)
-- `zeph-core`, `zeph-acp`, `zeph`: MCP tool-list refresh scoped per ACP session and skipped when unchanged, with sessions seeded from the live scope-filtered tool snapshot and the refresh task spawned for ACP and the daemon (breaking: `Agent::with_mcp_tool_rx` takes an `McpToolScope`; `McpManager::spawn_refresh_task` is idempotent) (#7119)
-- `zeph-llm`: new `LlmError::ResponseTooLarge`; provider response bodies are read with a 32 MiB cap and 400 bodies of cocoon and gonka log at debug (#7140)
-- `zeph-config`, `zeph-llm`, `zeph`: shipped defaults and `--init` select `claude-sonnet-5-5`, migration step 118 rewrites the retired `claude-sonnet-4-5-20250929`, and a startup WARN names the replacement (#7140)
-- `zeph-llm`, `zeph-core`, `zeph-channels`, `zeph-acp`, `zeph-bench`: one `TokenUsage` struct replaces positional token counters (breaking: `AuxiliaryUsage`, `UsageTokens` and `TurnUsage` removed, `cache_creation` renamed `cache_write`, `price_of`, `record_usage` and `Channel::send_usage` take `TokenUsage`, `price_of_auxiliary` removed) (#7140)
-- `zeph-common`, `zeph-tools`, `zeph-sanitizer`, `zeph-subagent`, `zeph-core`: native tool ids and the web-egress set come from one typed `native_tools` module, `CallAttribution` carries caller and skill in tool helpers, and `web_search` now counts in the Web rate-limit bucket (breaking: `PreDispatchBlockSink` has new methods) (#7140)
+- `zeph-tools`, `zeph-core`, `zeph-subagent`, `zeph-mcp`, `zeph-index`, `zeph-acp`, `zeph-bench`: one typed `CallAttribution` replaces the `caller_id` and `skill_name` field pairs; native tool ids and the web-egress set come from one `native_tools` module and `web_search` counts in the Web rate-limit bucket (breaking: struct fields, constructors, `PreDispatchBlockSink` methods; audit and egress JSONL key order) (#7140, #7148)
+- `zeph-llm`, `zeph-core`, `zeph-channels`, `zeph-acp`, `zeph-memory`, `zeph-bench`: one `TokenUsage` struct replaces positional token counters (breaking: `AuxiliaryUsage`, `UsageTokens`, `TurnUsage` removed, `cache_creation` renamed `cache_write`, `LoopbackEvent::Usage`, `UsageRecord`, `price_of`, `record_usage` and `Channel::send_usage` signatures) (#7140, #7148)
+- `zeph-mcp`, `zeph-tools`, `zeph-core`, `zeph-acp`, `zeph-config`, `zeph`: sanitized ids and tool definitions cached at publish time, `publish_pruned` fails closed in release builds, MCP tool-list refresh scoped per ACP session and skipped when unchanged, and `McpServerConfig.id` is `McpServerId` (breaking: `ToolExecutor::mcp_dispatch_ids`, `Agent::with_mcp_tool_rx` takes `McpToolScope`, `AcpServerConfig.ide_mcp` and `timeouts` are `Arc`) (#7119)
+- `zeph-llm`, `zeph-core`: Claude API error detail reaches the user and is logged once, raw bodies log at debug after scrubbing, provider response bodies are capped at 32 MiB with `LlmError::ResponseTooLarge` (breaking: `LlmError::ApiError` carries `detail`) (#7078, #7140)
+- `zeph-llm`, `zeph-channels`, `zeph-skills`: Discord `send_message` returns `DiscordRestError` and Ollama transport failures stay `LlmError::Http` (breaking) (#7148)
+- `zeph-config`, `zeph-llm`, `zeph`: shipped defaults and `--init` select `claude-sonnet-5-5`, migration step 119 rewrites the retired `claude-sonnet-4-5-20250929`, and startup warns with the replacement (#7140)
 - `zeph-subagent`, `zeph-tools`, `zeph-core`: sub-agents share the parent's `evaluate_pre_dispatch` gates, so verifier warnings and exfiltration flags reach metrics and security events (#7140)
-- `zeph-context`: session-gap microcompact treats `web_scrape` output as low-value (#7140)
-- `zeph-common`, `zeph-acp`, `zeph`: `TaskSupervisor::scoped` gives ACP and serve sessions scoped task names, and `AcpIdeMcpGrant` has private fields built via `new` (breaking: `AcpContext.ide_mcp_tools` and `IdeMcpAttachment.tools` removed) (#7140)
-- `zeph-channels`: `ConfirmLoop::run_confirm` keeps messages that arrive during a confirmation and returns them to the agent (breaking: `ConfirmLoop::confirm_receiver` type) (#7140)
+- `zeph-common`, `zeph-acp`, `zeph`, `zeph-core`: `TaskSupervisor::scoped` gives ACP and serve sessions per-instance task names, tasks are aborted on agent drop, and `AcpIdeMcpGrant` has private fields built via `new` (breaking: `AcpContext.ide_mcp_tools` and `IdeMcpAttachment.tools` removed) (#7140, #7148)
+- `zeph-channels`: `ConfirmLoop::run_confirm` returns messages that arrive during a confirmation to the agent (breaking: `ConfirmLoop::confirm_receiver` type) (#7140)
+- `zeph-core`, `zeph-context`, `zeph-plugins`, `zeph`, `zeph-channels`: background and ensemble usage billed at the serving provider's speed and price, keepalive history capture copies only the new tail, goal list surfaces store errors, serve factory applies `[memory.store_routing]`, Telegram guest proxy body capped at 20 MiB, and `web_scrape` output is low-value for session-gap microcompact (#7078, #7140, #7148)
+- workspace: `map_or_default` and `assert_matches!` replace remaining multi-line `map(..).unwrap_or_default()` and `assert!(matches!(..))` sites (#7078)
+
+### Dependencies
+
+- `zeph-acp`: migrated to `agent-client-protocol` 5.x (breaking: JSON-RPC batch requests to the HTTP `/acp` transport are rejected with one `-32600` error, and a sub-agent client surfaces prompt errors as `AcpClientError::Sdk`) (#PR)
+- workspace: `agent-client-protocol` 5.3.0 and `agent-client-protocol-schema` 1.18.0, `rmcp` 3.10.0, `nix` 0.32.0, `prometheus-client` 0.26.0, `rubato` 5.1.0, and patch bumps of `arc-swap`, `notify`, `rand`, `sysinfo`, `tree-sitter-sequel` and `uuid`
 
 ### Fixed
 
-- `zeph-llm`: Ollama show, embed, batch embed, model list and warmup errors are scrubbed, control-stripped and capped like chat errors; whisper, cocoon STT, Discord, miner and model-list bodies are size-capped and no longer panic on a multibyte truncation (#7148)
-- `zeph-core`, `zeph-mcp`: an MCP tool shadowed by a native tool id is dropped from the exposed list and `McpToolIds`, and a native executor added after `with_mcp` reports the collision at startup; `/mcp list` follows configured server order (#7148)
-- `zeph-core`: `[tools.permissions]` deny rules now apply to built-in agent-loop tools (`ask_user`, `compress_context`) at listing and dispatch (#7148)
-- `zeph-channels`: Telegram confirmations ignore bot senders; Discord and Slack confirmations accept replies only from the channel of the prompt (#7130)
-- `zeph-acp`: the `ask_user` elicitation bridge starts for loaded, forked and resumed sessions, not only new ones (MCP elicitation uses its own bridge) (#7130)
-- `zeph-channels`: Telegram guest proxy forwards file downloads to `/file/bot<T>/<path>` instead of a doubled upstream path and returns 404 for malformed paths (#7079)
-- `zeph-llm`: OpenAI 400 body embedded in `ModelCapabilityMismatch`/`InvalidInput` errors is scrubbed of secret shapes and control chars and capped at 500 chars (#7085)
-- `zeph-mcp`: tool and connect-outcome order follows configured server order, so the shadowed-id winner no longer flips after `tools/list_changed` (#7087)
-- `ci`: workspace is clean on rustc 1.100 (`used_underscore_items`, `needless_range_loop`, unused `zeph-tools`/`bytemuck` dependencies, redundant `homepage`) (#7084)
+- `zeph-llm`: HTTP error bodies of OpenAI, OpenAI-compatible embeddings, Gemini, cocoon, gonka and Ollama are scrubbed, control-stripped and capped; whisper, cocoon STT, Discord, miner and model-list bodies are size-capped and no longer panic on multibyte truncation (#7085, #7140, #7148)
+- `zeph-core`, `zeph-mcp`: an MCP tool shadowed by a native tool id is dropped and reported once, results are attributed to the dispatched server, tool and outcome order follows configured server order, and an ACP session with zero MCP tools clears its tool list (#7087, #7140, #7148)
+- `zeph-core`: `[tools.permissions]` deny rules apply to built-in agent-loop tools (`ask_user`, `compress_context`) (#7148)
+- `zeph-channels`: Telegram confirmations ignore bot senders, Discord and Slack accept replies only from the prompt's channel and neutralize model-authored mentions, and the Telegram guest proxy forwards file downloads to `/file/bot<T>/<path>` with 404 for malformed paths (#7079, #7130, #7140)
+- `zeph-acp`: the `ask_user` elicitation bridge starts for loaded, forked and resumed sessions (#7130)
 - `zeph-common`: secret scrubber recognizes non-SGR CSI, colon SGR, quoted-printable `=3D` and tokens split by escape runs (#7078)
-- `ci`: release builds allow `build.warnings` (and pass it through to `cross`) so the `proc-macro-error2` future-incompat note no longer fails every target (#7077)
-- `zeph-llm`: HTTP 400 bodies of OpenAI-compatible embeddings, Gemini, cocoon, gonka and Ollama are scrubbed, stripped of control characters and capped before reaching the user or logs (#7140)
-- `zeph-channels`: Discord and Slack neutralize model-authored mentions, and a confirmation ignores replies from other channels (#7140)
-- `zeph-core`, `zeph-mcp`: `/mcp list` shows shadowed tools through the command-registry path, an MCP tool id equal to a native id is reported once, and results are attributed to the server that was dispatched (#7140)
-- `zeph-core`, `zeph-acp`: an ACP session whose MCP servers drop to zero tools clears its tool list (#7140)
-- `ci`: `add-spdx-headers.sh` resolves the repository root and fails when `src` or `crates` is missing, and two files gained missing SPDX headers (#7140)
+- `ci`: workspace is clean on rustc 1.100, release builds allow `build.warnings` so the `proc-macro-error2` note no longer fails targets, and `add-spdx-headers.sh` resolves the repository root (#7077, #7084, #7140)
 
 ## [0.23.0] - 2026-11-13
 
@@ -18287,7 +18270,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 
 - Replace vulnerable `serde_yml`/`libyml` with manual frontmatter parser (GHSA high + medium)
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/bug-ops/zeph/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/bug-ops/zeph/compare/v0.22.5...v0.23.0
 [0.22.5]: https://github.com/bug-ops/zeph/compare/v0.22.4...v0.22.5
 [0.22.4]: https://github.com/bug-ops/zeph/compare/v0.22.3...v0.22.4

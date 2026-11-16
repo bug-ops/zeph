@@ -44,7 +44,7 @@ impl ZephAcpAgentState {
     pub(crate) async fn handle_lsp_did_save(
         &self,
         params: &str,
-        cx: &acp::ConnectionTo<acp::Client>,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
     ) {
         #[derive(serde::Deserialize)]
         struct DidSaveParams {

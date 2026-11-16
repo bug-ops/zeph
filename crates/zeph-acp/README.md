@@ -15,10 +15,10 @@ Implements the [Agent Client Protocol](https://agentclientprotocol.org) server s
 
 ```toml
 [dependencies]
-zeph-acp = "0.23"
+zeph-acp = "0.24"
 
 # With HTTP+SSE transport
-zeph-acp = { version = "0.23", features = ["acp-http"] }
+zeph-acp = { version = "0.24", features = ["acp-http"] }
 ```
 
 **Important:**
@@ -196,6 +196,21 @@ This signals to the IDE that the agent supports session config options (`session
 
 - Logs the notification method name at debug level.
 - Returns `Ok(())` for all known and unknown methods — unrecognized notifications are silently accepted.
+
+## IDE MCP servers per session
+
+IDE-supplied `mcpServers` are registered per session on new, load, fork, and resume, using session-suffixed ids, and are released when the session closes. Their tools stay hidden unless the operator grants them in `[acp.ide_mcp.servers.<name>]`, pinned to the exact `command` + `args` (or `url`) and `env_keys`; `max_servers_per_session` (default 10, `0` disables) caps attachments. The `ask_user` elicitation bridge starts for new, loaded, forked, and resumed sessions.
+
+```toml
+[acp.ide_mcp]
+max_servers_per_session = 10
+
+[acp.ide_mcp.servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/repo"]
+env_keys = []
+tools = ["read_file"]
+```
 
 ## MCP transport support (G8)
 

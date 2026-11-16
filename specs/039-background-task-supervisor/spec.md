@@ -391,6 +391,8 @@ TRACE: background task dropped class=enrichment task=graph-extract limit=4
 - `list_tasks()` includes blocking tasks and oneshot tasks — fully observable
 - Metrics snapshots are consistent (spawned ≥ dropped + completed at any point in time)
 - Agents that share one session `TaskSupervisor` (ACP sessions, `serve` sessions) receive `TaskSupervisor::scoped(<session id>)`, which appends `.{scope}` to the names of `spawn_oneshot`/`spawn_blocking` tasks, so a same-name spawn never aborts another session's task. `spawn` (static name) is never scoped: those tasks are shared services that rely on same-name replacement (#7126)
+- `AbortOnDrop<R>` (`zeph_common::task_supervisor`) wraps the `BlockingHandle` of a supervised one-shot task so the task cannot outlive its owner; dropping it aborts the task and the supervisor reaps the entry. Used for per-agent services (keepalive, speculative sweeper, ACP/serve cancel bridge), which are therefore aborted on agent drop (PR #7148).
+- The scope given to `TaskSupervisor::scoped` for ACP and serve sessions is `unique_session_scope(<session id>)` (`{session_id}.{instance}`), so a restarted serve session or an ACP `session/load` of a live id never shares scoped names with the still-draining previous actor (PR #7148).
 - `BlockingHandle::abort_handle()` returns a clone of the task's abort handle; callers that bound `join()` with a timeout take it first, because `join(self)` consumes the handle and `abort(&self)` is no longer reachable. Aborting a `spawn_blocking` task does not stop work already running on its thread (speculative commit timeout, spec 053)
 
 ### Ask First

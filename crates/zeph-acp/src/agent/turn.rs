@@ -55,7 +55,7 @@ const BLOCKED_PATH_COMPONENTS: &[&str] = &["proc", "sys", "dev", ".ssh", ".gnupg
 /// `session_cwd` is used as the allowed root for `file://` URIs. Only paths
 /// that are descendants of `session_cwd` are permitted.
 async fn resolve_resource_link(
-    link: &acp::schema::v1::ResourceLink,
+    link: &acp::v1::schema::ResourceLink,
     session_cwd: &std::path::Path,
 ) -> Result<String, crate::error::AcpError> {
     let uri = &link.uri;
@@ -260,7 +260,7 @@ struct DrainResult {
 #[must_use = "dropping this immediately clears the session's prompt-in-progress state"]
 struct PromptChannelGuard<'a> {
     state: &'a ZephAcpAgentState,
-    session_id: acp::schema::v1::SessionId,
+    session_id: acp::v1::schema::SessionId,
     generation: u64,
     rx: mpsc::Receiver<LoopbackEvent>,
 }
@@ -268,7 +268,7 @@ struct PromptChannelGuard<'a> {
 impl<'a> PromptChannelGuard<'a> {
     fn new(
         state: &'a ZephAcpAgentState,
-        session_id: acp::schema::v1::SessionId,
+        session_id: acp::v1::schema::SessionId,
         generation: u64,
         rx: mpsc::Receiver<LoopbackEvent>,
     ) -> Self {
@@ -340,7 +340,7 @@ impl ZephAcpAgentState {
     /// gap this note used to describe.
     fn acquire_prompt_channels(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
     ) -> acp::Result<(
         mpsc::Sender<ChannelMessage>,
         mpsc::Receiver<LoopbackEvent>,
@@ -373,8 +373,8 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.prompt", fields(session_id = %args.session_id))]
     pub(crate) async fn do_prompt(
         &self,
-        args: acp::schema::v1::PromptRequest,
-    ) -> acp::Result<acp::schema::v1::PromptResponse> {
+        args: acp::v1::schema::PromptRequest,
+    ) -> acp::Result<acp::v1::schema::PromptResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP prompt");
 
         // Capture session cwd for file:// boundary enforcement.
@@ -483,20 +483,20 @@ impl ZephAcpAgentState {
     /// Returns an error if the resulting text exceeds `MAX_PROMPT_BYTES`.
     async fn collect_prompt_content(
         &self,
-        blocks: &[acp::schema::v1::ContentBlock],
+        blocks: &[acp::v1::schema::ContentBlock],
         session_cwd: &std::path::Path,
     ) -> acp::Result<(String, Vec<zeph_core::channel::Attachment>)> {
         let mut text = String::new();
         let mut attachments = Vec::new();
         for block in blocks {
             match block {
-                acp::schema::v1::ContentBlock::Text(t) => {
+                acp::v1::schema::ContentBlock::Text(t) => {
                     if !text.is_empty() {
                         text.push('\n');
                     }
                     text.push_str(&t.text);
                 }
-                acp::schema::v1::ContentBlock::Image(img) => {
+                acp::v1::schema::ContentBlock::Image(img) => {
                     if !SUPPORTED_IMAGE_MIMES.contains(&img.mime_type.as_str()) {
                         tracing::debug!(mime_type = %img.mime_type, "unsupported image MIME type in ACP prompt, skipping");
                     } else if img.data.len() > MAX_IMAGE_BASE64_BYTES {
@@ -524,8 +524,8 @@ impl ZephAcpAgentState {
                         }
                     }
                 }
-                acp::schema::v1::ContentBlock::Resource(embedded) => {
-                    if let acp::schema::v1::EmbeddedResourceResource::TextResourceContents(res) =
+                acp::v1::schema::ContentBlock::Resource(embedded) => {
+                    if let acp::v1::schema::EmbeddedResourceResource::TextResourceContents(res) =
                         &embedded.resource
                     {
                         if !text.is_empty() {
@@ -550,10 +550,10 @@ impl ZephAcpAgentState {
                         }
                     }
                 }
-                acp::schema::v1::ContentBlock::Audio(_) => {
+                acp::v1::schema::ContentBlock::Audio(_) => {
                     tracing::warn!("unsupported content block: Audio — skipping");
                 }
-                acp::schema::v1::ContentBlock::ResourceLink(link) => {
+                acp::v1::schema::ContentBlock::ResourceLink(link) => {
                     match resolve_resource_link(link, session_cwd).await {
                         Ok(content) => {
                             // S-2: XML-escape URI (attribute) and content (body) using full escaping.
@@ -591,7 +591,7 @@ impl ZephAcpAgentState {
     #[allow(clippy::too_many_lines)] // dispatcher with multiple cfg-gated feature branches
     async fn drain_agent_events(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
         rx: &mut mpsc::Receiver<LoopbackEvent>,
         cancel_signal: Option<std::sync::Arc<tokio::sync::Notify>>,
     ) -> DrainResult {
@@ -649,7 +649,7 @@ impl ZephAcpAgentState {
                 };
                 for update in loopback_event_to_updates(event) {
                     let notification =
-                        acp::schema::v1::SessionNotification::new(session_id.clone(), update);
+                        acp::v1::schema::SessionNotification::new(session_id.clone(), update);
                     if let Err(e) = self.send_notification(session_id, notification).await {
                         tracing::warn!(error = %e, "failed to send usage notification");
                     }
@@ -680,7 +680,7 @@ impl ZephAcpAgentState {
                 // sessions created after this cutover, until it is migrated to
                 // `ReplayEngine::replay` alongside the other read handlers.
                 let notification =
-                    acp::schema::v1::SessionNotification::new(session_id.clone(), update);
+                    acp::v1::schema::SessionNotification::new(session_id.clone(), update);
                 if let Err(e) = self.send_notification(session_id, notification).await {
                     tracing::warn!(error = %e, "failed to send notification");
                     break;
@@ -784,8 +784,8 @@ mod output_rx_leak_regression_tests {
     fn register_test_session(
         agent: &ZephAcpAgent,
         id: &str,
-    ) -> (acp::schema::v1::SessionId, LoopbackChannel) {
-        let session_id = acp::schema::v1::SessionId::new(id.to_owned());
+    ) -> (acp::v1::schema::SessionId, LoopbackChannel) {
+        let session_id = acp::v1::schema::SessionId::new(id.to_owned());
         let (channel, handle) = LoopbackChannel::pair(4);
         let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
         let (notify_tx, notify_rx) = mpsc::channel(256);
@@ -808,13 +808,13 @@ mod output_rx_leak_regression_tests {
     }
 
     fn text_prompt_request(
-        session_id: acp::schema::v1::SessionId,
+        session_id: acp::v1::schema::SessionId,
         text: &str,
-    ) -> acp::schema::v1::PromptRequest {
-        acp::schema::v1::PromptRequest::new(
+    ) -> acp::v1::schema::PromptRequest {
+        acp::v1::schema::PromptRequest::new(
             session_id,
-            vec![acp::schema::v1::ContentBlock::Text(
-                acp::schema::v1::TextContent::new(text.to_owned()),
+            vec![acp::v1::schema::ContentBlock::Text(
+                acp::v1::schema::TextContent::new(text.to_owned()),
             )],
         )
     }

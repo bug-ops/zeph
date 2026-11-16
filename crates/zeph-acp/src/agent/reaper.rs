@@ -54,7 +54,7 @@ impl ZephAcpAgentState {
                         .unwrap_or(u64::MAX);
                         let idle_timeout_ms =
                             u64::try_from(idle_timeout.as_millis()).unwrap_or(u64::MAX);
-                        let expired: Vec<acp::schema::v1::SessionId> = sessions
+                        let expired: Vec<acp::v1::schema::SessionId> = sessions
                             .lock()
                             .iter()
                             .filter(|(_, e)| {

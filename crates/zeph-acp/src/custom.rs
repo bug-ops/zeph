@@ -122,11 +122,11 @@ pub(crate) struct WorkingDirUpdateResponse {
 /// Returns `None` if the method name is not recognized.
 pub(crate) fn dispatch<'a>(
     agent: &'a ZephAcpAgent,
-    req: &'a acp::schema::v1::ExtRequest,
+    req: &'a acp::v1::schema::ExtRequest,
 ) -> Option<
     Pin<
         Box<
-            dyn std::future::Future<Output = acp::Result<acp::schema::v1::ExtResponse>> + Send + 'a,
+            dyn std::future::Future<Output = acp::Result<acp::v1::schema::ExtResponse>> + Send + 'a,
         >,
     >,
 > {
@@ -150,12 +150,12 @@ fn parse_params<T: serde::de::DeserializeOwned>(raw: &Arc<RawValue>) -> acp::Res
     serde_json::from_str(raw.get()).map_err(|e| acp::Error::invalid_request().data(e.to_string()))
 }
 
-fn to_ext_response<T: Serialize>(value: &T) -> acp::Result<acp::schema::v1::ExtResponse> {
+fn to_ext_response<T: Serialize>(value: &T) -> acp::Result<acp::v1::schema::ExtResponse> {
     let json = serde_json::to_string(value)
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
     let raw = RawValue::from_string(json)
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-    Ok(acp::schema::v1::ExtResponse::new(Arc::from(raw)))
+    Ok(acp::v1::schema::ExtResponse::new(Arc::from(raw)))
 }
 
 fn session_not_found() -> acp::Error {
@@ -185,7 +185,7 @@ fn validate_session_id(id: &str) -> acp::Result<()> {
 async fn handle_session_list(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::v1::ExtResponse> {
+) -> acp::Result<acp::v1::schema::ExtResponse> {
     // Deprecated: use the native `list_sessions` ACP method instead.
     // This extension method returns a reduced `SessionListEntry` schema and will be removed
     // in a future release.
@@ -255,14 +255,14 @@ async fn handle_session_list(
 async fn handle_session_get(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::v1::ExtResponse> {
+) -> acp::Result<acp::v1::schema::ExtResponse> {
     let params: SessionGetParams = parse_params(raw)?;
     let sid = params.session_id.as_str();
     validate_session_id(sid)?;
 
     let (in_memory, created_at, busy) = {
         let sessions = agent.sessions.lock();
-        if let Some(entry) = sessions.get(&acp::schema::v1::SessionId::new(sid)) {
+        if let Some(entry) = sessions.get(&acp::v1::schema::SessionId::new(sid)) {
             let busy = entry.output_rx.lock().is_none();
             let created_at = entry.created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
             (true, created_at, busy)
@@ -317,12 +317,12 @@ async fn handle_session_get(
 async fn handle_session_delete(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::v1::ExtResponse> {
+) -> acp::Result<acp::v1::schema::ExtResponse> {
     tracing::warn!("_session/delete is deprecated, use session/delete instead");
     let params: SessionDeleteParams = parse_params(raw)?;
     validate_session_id(&params.session_id)?;
 
-    let acp_id = acp::schema::v1::SessionId::new(params.session_id.as_str());
+    let acp_id = acp::v1::schema::SessionId::new(params.session_id.as_str());
     let removed_memory = agent.sessions.lock().remove(&acp_id).is_some();
     if removed_memory {
         // cancel_signal already dropped with the entry; nothing extra needed.
@@ -352,7 +352,7 @@ async fn handle_session_delete(
 async fn handle_session_export(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::v1::ExtResponse> {
+) -> acp::Result<acp::v1::schema::ExtResponse> {
     let params: SessionExportParams = parse_params(raw)?;
     validate_session_id(&params.session_id)?;
 
@@ -392,7 +392,7 @@ async fn handle_session_export(
 async fn handle_session_import(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::v1::ExtResponse> {
+) -> acp::Result<acp::v1::schema::ExtResponse> {
     let params: SessionImportParams = parse_params(raw)?;
 
     if params.events.len() > MAX_IMPORT_EVENTS {
@@ -427,7 +427,7 @@ async fn handle_session_import(
 async fn handle_agent_tools(
     _agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::v1::ExtResponse> {
+) -> acp::Result<acp::v1::schema::ExtResponse> {
     let _params: AgentToolsParams = parse_params(raw)?;
 
     let tools = vec![
@@ -460,7 +460,7 @@ async fn handle_agent_tools(
 async fn handle_working_dir_update(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::v1::ExtResponse> {
+) -> acp::Result<acp::v1::schema::ExtResponse> {
     let params: WorkingDirUpdateParams = parse_params(raw)?;
     validate_session_id(&params.session_id)?;
 
@@ -472,7 +472,7 @@ async fn handle_working_dir_update(
         return Err(acp::Error::invalid_request().data("path traversal not allowed"));
     }
 
-    let acp_id = acp::schema::v1::SessionId::new(params.session_id.as_str());
+    let acp_id = acp::v1::schema::SessionId::new(params.session_id.as_str());
     let updated = {
         let sessions = agent.sessions.lock();
         if let Some(entry) = sessions.get(&acp_id) {

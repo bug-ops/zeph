@@ -18,7 +18,7 @@
 //!      └──send_prompt / read_update / close                     │
 //! ```
 //!
-//! The driver runs inside `Client.builder().connect_with(...)` and serialises all
+//! The driver runs inside `Client.v1().connect_with(...)` and serialises all
 //! ACP operations through a command channel. Callers interact only with
 //! [`SubagentHandle`].
 //!
@@ -55,10 +55,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::{
-    Agent, Client, SessionMessage, on_receive_request,
-    schema::v1::{
-        RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-        SelectedPermissionOutcome, SessionId, StopReason,
+    Agent, Client, on_receive_request,
+    v1::{
+        SessionMessage,
+        schema::{
+            RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+            SelectedPermissionOutcome, SessionId, StopReason,
+        },
     },
 };
 use futures::channel::mpsc;
@@ -374,11 +377,11 @@ async fn spawn_subagent_inner(cfg: SubagentConfig) -> Result<SubagentHandle, Acp
     let join_handle =
         tokio::spawn(async move {
             let result = Client
-            .builder()
+            .v1()
             .on_receive_request(
                 async move |req: RequestPermissionRequest,
-                      responder: agent_client_protocol::Responder<RequestPermissionResponse>,
-                      _cx: agent_client_protocol::ConnectionTo<Agent>| {
+                      responder: agent_client_protocol::v1::Responder<RequestPermissionResponse>,
+                      _cx: agent_client_protocol::v1::ConnectionTo<Agent>| {
                     let outcome = if auto_approve {
                         if let Some(opt) = req.options.first() {
                             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
@@ -395,7 +398,7 @@ async fn spawn_subagent_inner(cfg: SubagentConfig) -> Result<SubagentHandle, Acp
                 },
                 on_receive_request!(),
             )
-            .connect_with(transport, move |cx: agent_client_protocol::ConnectionTo<Agent>| {
+            .connect_with(transport, move |cx: agent_client_protocol::v1::ConnectionTo<Agent>| {
                 let ready_slot = ready_slot_clone;
                 let cfg = cfg_clone;
                 async move {

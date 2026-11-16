@@ -13,9 +13,9 @@ use crate::agent::ZephAcpAgentState;
 ///
 /// Stores client capabilities and responds with the agent's capabilities.
 pub(crate) async fn handle_initialize(
-    req: acp::schema::v1::InitializeRequest,
-    responder: acp::Responder<acp::schema::v1::InitializeResponse>,
-    _cx: acp::ConnectionTo<acp::Client>,
+    req: acp::v1::schema::InitializeRequest,
+    responder: acp::v1::Responder<acp::v1::schema::InitializeResponse>,
+    _cx: acp::v1::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     let resp = state.do_initialize(req).await?;

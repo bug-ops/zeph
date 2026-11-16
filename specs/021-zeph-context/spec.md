@@ -135,6 +135,8 @@ GIVEN a recent turn's tool results
 WHEN microcompact::is_low_value_result() is called
 THEN it returns true for outputs matching known low-signal patterns
 AND it returns false for results with meaningful content
+
+The low-value tool set includes the native web-egress ids (`fetch`, `web_search`, `web_scrape`, taken from `zeph_common::native_tools`), so session-gap microcompact clears `web_scrape` output like the other web tools (PR #7140).
 ```
 
 ---

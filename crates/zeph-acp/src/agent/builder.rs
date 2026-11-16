@@ -45,7 +45,7 @@ impl ZephAcpAgentState {
             store: None,
             session_data_dir: None,
             permission_file,
-            client_caps: RwLock::new(acp::schema::v1::ClientCapabilities::default()),
+            client_caps: RwLock::new(acp::v1::schema::ClientCapabilities::default()),
             provider_factory: None,
             available_models: Arc::new(RwLock::new(Vec::new())),
             mcp_manager: None,

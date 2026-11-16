@@ -4588,7 +4588,7 @@ mod tests {
     }
 
     /// Trivial stand-in for `AcpFileExecutor`/`AcpShellExecutor` in tests: the real types need
-    /// a live `acp::ConnectionTo<acp::Client>` (an IDE transport) to construct, which isn't
+    /// a live `acp::v1::ConnectionTo<acp::Client>` (an IDE transport) to construct, which isn't
     /// available in a unit test. This exposes the same tool ids the real executors use
     /// (`write_file` for `AcpFileExecutor`, `bash` for `AcpShellExecutor` — see
     /// `crates/zeph-acp/src/fs.rs`/`terminal.rs`) so tests can occupy the identical composite
@@ -5591,7 +5591,7 @@ mod tests {
         let (mut channel, _handle) = zeph_core::channel::LoopbackChannel::pair(8);
         let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel(8);
         let session_id =
-            agent_client_protocol::schema::v1::SessionId::new("already-locked-test".to_owned());
+            agent_client_protocol::v1::schema::SessionId::new("already-locked-test".to_owned());
         let status_notifier = Some(zeph_acp::SessionStatusNotifier::new(
             notify_tx,
             session_id.clone(),
@@ -5613,9 +5613,9 @@ mod tests {
         );
         assert_eq!(notification.session_id, session_id);
         match notification.update {
-            agent_client_protocol::schema::v1::SessionUpdate::AgentThoughtChunk(chunk) => {
+            agent_client_protocol::v1::schema::SessionUpdate::AgentThoughtChunk(chunk) => {
                 match chunk.content {
-                    agent_client_protocol::schema::v1::ContentBlock::Text(t) => {
+                    agent_client_protocol::v1::schema::ContentBlock::Text(t) => {
                         assert_eq!(t.text, SESSION_LOCK_DEGRADED_MESSAGE);
                     }
                     other => panic!("expected ContentBlock::Text, got {other:?}"),
