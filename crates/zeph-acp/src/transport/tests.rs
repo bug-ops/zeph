@@ -181,28 +181,18 @@ async fn post_with_existing_session_id_reuses_connection() {
     );
 }
 
-/// agent-client-protocol 2.0.0 added standard-transport support for JSON-RPC batches (an array
-/// body instead of a single object). `post_handler` relays the raw HTTP body byte-for-byte into
-/// the connection's duplex writer (`transport/http.rs`), so a batch now reaches the SDK's
-/// dispatch loop end-to-end without any Zeph-side code change. This test proves both batch
-/// entries are actually dispatched and individually answered — not silently dropped or
-/// short-circuited after the first entry — by checking the response carries both request ids
-/// (see spec.md "Breaking Changes Resolution (SDK 1.2.0 -> 2.0.0)"). Both entries below
-/// deliberately omit `params` so both come back as individual `Invalid params` errors rather
-/// than a real handshake — dispatch/response-tracking is what's under test, not `initialize`
-/// semantics, and the SDK aggregates all batch replies into a single JSON array on one SSE line
-/// (confirmed empirically), not one line per entry.
+/// agent-client-protocol 5.0.0 removed JSON-RPC batch support: an array body is one invalid
+/// request answered with a single `-32600` error. `post_handler` relays the raw HTTP body into
+/// the connection's duplex writer (`transport/http.rs`), so this test pins that the batch is
+/// rejected as a whole rather than dispatched entry by entry.
 #[tokio::test]
-async fn post_batch_body_dispatches_all_entries_and_returns_all_responses() {
-    use std::collections::HashSet;
+async fn post_batch_body_is_rejected_with_a_single_invalid_request_error() {
     use std::time::Duration;
 
     use futures::StreamExt as _;
 
-    // Keep `state` alive for the whole test: it owns the `connections` map, which in turn owns
-    // the duplex-pipe writer half and the broadcast sender the SSE stream reads from. Passing
-    // only `acp_router(test_state())` inline would drop `state` (and close the pipe) as soon as
-    // `oneshot()` returns, before the SSE body below is ever polled.
+    // Keep `state` alive: it owns the duplex-pipe writer and the broadcast sender the SSE
+    // stream reads from.
     let state = test_state();
     let router = acp_router(state.clone());
 
@@ -219,19 +209,18 @@ async fn post_batch_body_dispatches_all_entries_and_returns_all_responses() {
 
     let mut stream = response.into_body().into_data_stream();
     let mut buf = String::new();
-    let mut received_ids: HashSet<u64> = HashSet::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 
-    while received_ids.len() < 2 {
+    let error_code = 'read: loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         assert!(
             remaining > Duration::ZERO,
-            "timed out waiting for 2 batch responses, got {received_ids:?} so far"
+            "timed out waiting for the batch rejection"
         );
         let chunk = tokio::time::timeout(remaining, stream.next())
             .await
             .expect("timed out waiting for next SSE chunk")
-            .expect("SSE stream ended before both batch responses arrived")
+            .expect("SSE stream ended before the batch rejection arrived")
             .expect("SSE stream error");
         buf.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -244,21 +233,20 @@ async fn post_batch_body_dispatches_all_entries_and_returns_all_responses() {
             let Ok(json) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
                 continue;
             };
-            // Batch replies arrive aggregated as a single JSON array; a non-batch single-object
-            // reply (defensive fallback, in case framing ever changes) is handled too.
-            let entries: Vec<&serde_json::Value> = match &json {
-                serde_json::Value::Array(entries) => entries.iter().collect(),
-                other => vec![other],
-            };
-            for entry in entries {
-                if let Some(id) = entry.get("id").and_then(serde_json::Value::as_u64) {
-                    received_ids.insert(id);
-                }
+            assert!(
+                !json.is_array(),
+                "a batch must not be answered as a batch: {json}"
+            );
+            if let Some(code) = json
+                .pointer("/error/code")
+                .and_then(serde_json::Value::as_i64)
+            {
+                break 'read code;
             }
         }
-    }
+    };
 
-    assert_eq!(received_ids, HashSet::from([1, 2]));
+    assert_eq!(error_code, -32600);
 }
 
 #[tokio::test]

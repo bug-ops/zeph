@@ -34,7 +34,11 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `model_cache` | Disk-backed cache for remote model listings (24-hour TTL) |
 | `masking` | `MaskedProvider` / `OutboundMasker` — outbound secret masking |
 | `http` | `default_client()` — shared HTTP client with standard timeouts and user-agent |
-| `error` | `LlmError` — unified error type; `ContextLengthExceeded` variant with `is_context_length_error()` heuristic matching across provider error formats (Claude, OpenAI, Ollama) |
+| `error` | `LlmError` — unified error type; `ContextLengthExceeded` variant with `is_context_length_error()` heuristic matching across provider error formats (Claude, OpenAI, Ollama); `ApiError` carries a scrubbed `detail`, and `ResponseTooLarge` is returned when a provider response body exceeds the 32 MiB cap. HTTP error bodies are secret-scrubbed, control-stripped, and size-capped before they are logged or shown |
+| `provider` | `LlmProvider` trait plus `TokenUsage` — the single named usage type (`input`, `output`, `cache_write`, `cache_read`) shared by pricing, cost tracking, channels, and ACP |
+
+> [!NOTE]
+> Claude `usage.speed` is parsed and shown in `/provider status`; OpenAI, compatible, and Ollama providers expose logprobs for chain-of-entropy intra escalation.
 
 **Re-exports:** `LlmProvider`, `LlmProviderDyn`, `LlmError`, `Extractor`, `ChatStream`, `StreamChunk`, `CompatibleConfig`, `OpenAiConfig`, `MaskedProvider`, `SpeechToText`
 

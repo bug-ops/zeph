@@ -141,9 +141,10 @@ pub struct EgressEvent {
     /// Block reason: `"allowlist"` | `"blocklist"` | `"ssrf"` | `"scheme"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_reason: Option<&'static str>,
-    /// Caller identity propagated from `ToolCall::caller_id`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub caller_id: Option<String>,
+    /// Caller and active skills, propagated from `ToolCall::attribution` (PR #7148). Serialized as
+    /// the omit-when-empty keys `caller_id` and `skill_name`, written after the other keys.
+    #[serde(flatten)]
+    pub attribution: CallAttribution,
     /// Redirect hop index (0 for the initial request); distinguishes per-hop
     /// events sharing the same `correlation_id`.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
@@ -317,7 +318,7 @@ execute_tool_call
 | Redirect chain with block at hop 2 | Emit `EgressEvent{hop=0, status=Some(302)}`, `EgressEvent{hop=1, blocked=true, reason="ssrf"}`; no hop=2 event. |
 | DNS / connect / TLS failure | Emit `EgressEvent{status=None, blocked=false, block_reason=None, duration_ms=<measured>}`. |
 | Body exceeds `max_body_bytes` | Emit `EgressEvent{status=Some, response_bytes=<truncated_size>, blocked=false}`. |
-| Tool call caller_id missing | `caller_id: None` in both `EgressEvent` and `AuditEntry`; record still emitted. |
+| Tool call caller_id missing | `attribution.caller: None` (no `caller_id` key) in both `EgressEvent` and `AuditEntry`; record still emitted. |
 | Channel saturation | `egress_dropped_total += 1`, event discarded, executor continues. Drop counter is surfaced. |
 | Receiver dropped (shutdown) | `tracing::debug!` once; subsequent sends silently noop. No panic. |
 | Non-HTTP tool (shell, memory) | Not instrumented; no `EgressEvent`. Audit entry still carries `correlation_id`. |

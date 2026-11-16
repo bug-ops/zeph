@@ -44,6 +44,8 @@ Fast mode is honored only by models that advertise it: Opus 5.5, Fable 5.2 and M
 
 For providers that run in a non-standard speed, `/provider status` shows `Speed: configured X, last response Y`, where Y is parsed from the response `usage.speed` (`n/a` before the first response). If Claude rejects the `speed` parameter with a 400, Zeph stops sending it for that provider (one-shot latch) and continues at standard speed. Background and ensemble calls are billed at the speed and model of the provider that served them.
 
+The shipped defaults and `zeph --init` select `claude-sonnet-5-5`. If your config still names the retired `claude-sonnet-4-5-20250929`, Zeph logs a startup `WARN` naming the replacement, and `zeph migrate-config --in-place` rewrites the id for you.
+
 A Claude 404 is reported as `not_found_error: model: <id> (check the model id and account access)` and is logged once.
 
 ### Server-Side Compaction

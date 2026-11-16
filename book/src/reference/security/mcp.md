@@ -117,6 +117,8 @@ Collision warnings appear at connection time and when a dynamic server is added 
 
 `/mcp list` shows a "Shadowed tools" section listing every tool hidden by an MCP-vs-MCP id collision (the first server wins dispatch), and the TUI skills panel shows a `shadowed:N` badge next to the affected server.
 
+A tool that collides with a native tool id (a built-in such as `shell` or `web_search`) is stricter: the native tool always wins, the MCP tool is dropped from the exposed list, and the collision is reported once. Results are attributed to the server that was actually dispatched.
+
 ## Tool-List Snapshot Locking
 
 By default, Zeph accepts `notifications/tools/list_changed` from connected servers and fetches an updated tool list. This creates a window for mid-session tool injection: a compromised or misbehaving server could swap in tools after the operator has reviewed the initial list.

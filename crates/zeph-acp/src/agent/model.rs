@@ -106,7 +106,7 @@ impl ZephAcpAgentState {
     /// for up to 5s × N providers (#5986 critic finding M1).
     pub(crate) async fn model_refresh_as_string(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
     ) -> String {
         let Some(ref factory) = self.provider_factory else {
             return "model switching not configured".to_owned();

@@ -56,7 +56,7 @@ const AGENT_LOOP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// the caller to proceed in ephemeral (no-history) mode rather than failing the session.
 async fn resolve_conversation_id(
     store: &zeph_memory::store::SqliteStore,
-    session_id: &acp::schema::v1::SessionId,
+    session_id: &acp::v1::schema::SessionId,
 ) -> Option<ConversationId> {
     match store
         .get_acp_session_conversation_id(&session_id.to_string())
@@ -97,7 +97,7 @@ impl ZephAcpAgentState {
     /// consumed here; a second call would panic on the `expect`.
     fn spawn_notify_drainer(
         entry: &SessionEntry,
-        cx: &acp::ConnectionTo<acp::Client>,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
     ) -> acp::Result<()> {
         let mut notify_rx = entry
             .notify_rx
@@ -141,7 +141,7 @@ impl ZephAcpAgentState {
     /// would run untracked and unabortable under a `SessionId` that is now free to be reloaded.
     fn set_agent_loop_handle(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
         handle: tokio::task::JoinHandle<()>,
     ) {
         match self.sessions.lock().get(session_id) {
@@ -187,9 +187,9 @@ impl ZephAcpAgentState {
     /// Assemble the `NewSessionResponse` with config options and project rule metadata.
     fn build_new_session_response(
         &self,
-        session_id: acp::schema::v1::SessionId,
+        session_id: acp::v1::schema::SessionId,
         initial_model: &str,
-    ) -> acp::schema::v1::NewSessionResponse {
+    ) -> acp::v1::schema::NewSessionResponse {
         let available_models = self.available_models_snapshot();
         let config_options = build_config_options(
             &available_models,
@@ -198,8 +198,8 @@ impl ZephAcpAgentState {
             "suggest",
             self.model_config.default_temperature_preset,
         );
-        let default_mode_id = acp::schema::v1::SessionModeId::new(DEFAULT_MODE_ID);
-        let mut resp = acp::schema::v1::NewSessionResponse::new(session_id)
+        let default_mode_id = acp::v1::schema::SessionModeId::new(DEFAULT_MODE_ID);
+        let mut resp = acp::v1::schema::NewSessionResponse::new(session_id)
             .modes(build_mode_state(&default_mode_id));
         if !config_options.is_empty() {
             resp = resp.config_options(config_options);
@@ -225,7 +225,7 @@ impl ZephAcpAgentState {
     #[cfg(feature = "unstable-elicitation")]
     fn start_elicitation_bridge(
         &self,
-        cx: &acp::ConnectionTo<acp::Client>,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
         cancel_signal: &Arc<tokio::sync::Notify>,
     ) -> (
         Option<elicitation::ElicitationSender>,
@@ -246,14 +246,14 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.new_session")]
     pub(crate) async fn do_new_session(
         &self,
-        args: acp::schema::v1::NewSessionRequest,
-        cx: &acp::ConnectionTo<acp::Client>,
-    ) -> acp::Result<acp::schema::v1::NewSessionResponse> {
+        args: acp::v1::schema::NewSessionRequest,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
+    ) -> acp::Result<acp::v1::schema::NewSessionResponse> {
         self.validate_additional_directories(&args.additional_directories)
             .await?;
         self.evict_oldest_idle_session_if_full()?;
 
-        let session_id = acp::schema::v1::SessionId::new(uuid::Uuid::new_v4().to_string());
+        let session_id = acp::v1::schema::SessionId::new(uuid::Uuid::new_v4().to_string());
         tracing::debug!(%session_id, "new ACP session");
 
         let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
@@ -343,13 +343,13 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.close_session", fields(session_id = %args.session_id))]
     pub(crate) async fn do_close_session(
         &self,
-        args: acp::schema::v1::CloseSessionRequest,
-    ) -> acp::Result<acp::schema::v1::CloseSessionResponse> {
+        args: acp::v1::schema::CloseSessionRequest,
+    ) -> acp::Result<acp::v1::schema::CloseSessionResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP session closed");
         // Send cumulative usage summary BEFORE removing the session so the notify_tx is still live.
         #[cfg(feature = "unstable-session-usage")]
         {
-            use acp::schema::v1::{Cost, SessionNotification, SessionUpdate, UsageUpdate};
+            use acp::v1::schema::{Cost, SessionNotification, SessionUpdate, UsageUpdate};
             let snapshot = self
                 .sessions
                 .lock()
@@ -394,14 +394,14 @@ impl ZephAcpAgentState {
                 }
             }
         }
-        Ok(acp::schema::v1::CloseSessionResponse::default())
+        Ok(acp::v1::schema::CloseSessionResponse::default())
     }
 
     #[tracing::instrument(skip_all, name = "acp.handler.delete_session", fields(session_id = %args.session_id))]
     pub(crate) async fn do_delete_session(
         &self,
-        args: acp::schema::v1::DeleteSessionRequest,
-    ) -> acp::Result<acp::schema::v1::DeleteSessionResponse> {
+        args: acp::v1::schema::DeleteSessionRequest,
+    ) -> acp::Result<acp::v1::schema::DeleteSessionResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP session deleted");
         // Permanent deletion — no usage summary is sent. See do_close_session for graceful
         // close that emits a cumulative UsageUpdate before removing the session. In-memory
@@ -435,19 +435,19 @@ impl ZephAcpAgentState {
             // MemoryError Display could leak DB URL/SQL error text to the client.
             return Err(acp::Error::internal_error().data("session deletion not persisted"));
         }
-        Ok(acp::schema::v1::DeleteSessionResponse::default())
+        Ok(acp::v1::schema::DeleteSessionResponse::default())
     }
 
     #[tracing::instrument(skip_all, name = "acp.handler.load_session", fields(session_id = %args.session_id))]
     pub(crate) async fn do_load_session(
         &self,
-        args: acp::schema::v1::LoadSessionRequest,
-        cx: &acp::ConnectionTo<acp::Client>,
-    ) -> acp::Result<acp::schema::v1::LoadSessionResponse> {
+        args: acp::v1::schema::LoadSessionRequest,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
+    ) -> acp::Result<acp::v1::schema::LoadSessionResponse> {
         self.validate_additional_directories(&args.additional_directories)
             .await?;
         if self.sessions.lock().contains_key(&args.session_id) {
-            return Ok(acp::schema::v1::LoadSessionResponse::new());
+            return Ok(acp::v1::schema::LoadSessionResponse::new());
         }
 
         let Some(ref store) = self.store else {
@@ -552,9 +552,9 @@ impl ZephAcpAgentState {
 
         self.replay_session_events(&args.session_id, events).await;
 
-        let default_mode_id = acp::schema::v1::SessionModeId::new(DEFAULT_MODE_ID);
+        let default_mode_id = acp::v1::schema::SessionModeId::new(DEFAULT_MODE_ID);
         let load_resp =
-            acp::schema::v1::LoadSessionResponse::new().modes(build_mode_state(&default_mode_id));
+            acp::v1::schema::LoadSessionResponse::new().modes(build_mode_state(&default_mode_id));
 
         self.send_commands_update_nowait(&args.session_id);
 
@@ -564,9 +564,9 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.list_sessions")]
     pub(crate) async fn do_list_sessions(
         &self,
-        args: acp::schema::v1::ListSessionsRequest,
-    ) -> acp::Result<acp::schema::v1::ListSessionsResponse> {
-        let mut result: std::collections::HashMap<String, acp::schema::v1::SessionInfo> = {
+        args: acp::v1::schema::ListSessionsRequest,
+    ) -> acp::Result<acp::v1::schema::ListSessionsResponse> {
+        let mut result: std::collections::HashMap<String, acp::v1::schema::SessionInfo> = {
             let sessions = self.sessions.lock();
             sessions
                 .iter()
@@ -579,7 +579,7 @@ impl ZephAcpAgentState {
                     }
                     let meta = model_meta(&entry.current_model.lock());
                     let mut info =
-                        acp::schema::v1::SessionInfo::new(session_id.clone(), working_dir)
+                        acp::v1::schema::SessionInfo::new(session_id.clone(), working_dir)
                             .updated_at(entry.created_at.to_rfc3339())
                             .meta(meta);
                     if let Some(ref t) = *entry.title.lock() {
@@ -597,12 +597,12 @@ impl ZephAcpAgentState {
             {
                 Ok(persisted) => {
                     for persisted_info in persisted {
-                        let sid = acp::schema::v1::SessionId::new(&*persisted_info.id);
+                        let sid = acp::v1::schema::SessionId::new(&*persisted_info.id);
                         if result.contains_key(&persisted_info.id) {
                             continue;
                         }
                         let info =
-                            acp::schema::v1::SessionInfo::new(sid, std::path::PathBuf::new())
+                            acp::v1::schema::SessionInfo::new(sid, std::path::PathBuf::new())
                                 .title(persisted_info.title)
                                 .updated_at(persisted_info.updated_at);
                         result.insert(persisted_info.id, info);
@@ -614,10 +614,10 @@ impl ZephAcpAgentState {
             }
         }
 
-        let mut sessions_vec: Vec<acp::schema::v1::SessionInfo> = result.into_values().collect();
+        let mut sessions_vec: Vec<acp::v1::schema::SessionInfo> = result.into_values().collect();
         sessions_vec.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 
-        Ok(acp::schema::v1::ListSessionsResponse::new(sessions_vec))
+        Ok(acp::v1::schema::ListSessionsResponse::new(sessions_vec))
     }
 
     /// Resolve the config a new `SessionEntry` should inherit from `source_id` (#5373).
@@ -631,7 +631,7 @@ impl ZephAcpAgentState {
     /// Returns `(model, thinking_enabled, auto_approve_level, temperature_preset)`.
     async fn inherited_session_config(
         &self,
-        source_id: &acp::schema::v1::SessionId,
+        source_id: &acp::v1::schema::SessionId,
     ) -> (String, bool, String, zeph_config::AcpTemperaturePreset) {
         let inherited = if let Some(entry) = self.sessions.lock().get(source_id) {
             Some((
@@ -695,9 +695,9 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.fork_session")]
     pub(crate) async fn do_fork_session(
         &self,
-        args: acp::schema::v1::ForkSessionRequest,
-        cx: &acp::ConnectionTo<acp::Client>,
-    ) -> acp::Result<acp::schema::v1::ForkSessionResponse> {
+        args: acp::v1::schema::ForkSessionRequest,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
+    ) -> acp::Result<acp::v1::schema::ForkSessionResponse> {
         self.validate_additional_directories(&args.additional_directories)
             .await?;
         let in_memory = self.sessions.lock().contains_key(&args.session_id);
@@ -748,7 +748,7 @@ impl ZephAcpAgentState {
             }
         }
 
-        let new_id = acp::schema::v1::SessionId::new(uuid::Uuid::new_v4().to_string());
+        let new_id = acp::v1::schema::SessionId::new(uuid::Uuid::new_v4().to_string());
         tracing::debug!(source = %args.session_id, new = %new_id, "forking ACP session");
 
         let new_conversation_id = self.fork_conversation(&args.session_id, &new_id).await?;
@@ -828,8 +828,8 @@ impl ZephAcpAgentState {
             &inherited_auto_approve,
             inherited_preset,
         );
-        let default_mode_id = acp::schema::v1::SessionModeId::new(DEFAULT_MODE_ID);
-        let mut resp = acp::schema::v1::ForkSessionResponse::new(new_id)
+        let default_mode_id = acp::v1::schema::SessionModeId::new(DEFAULT_MODE_ID);
+        let mut resp = acp::v1::schema::ForkSessionResponse::new(new_id)
             .modes(build_mode_state(&default_mode_id));
         if !config_options.is_empty() {
             resp = resp.config_options(config_options);
@@ -841,13 +841,13 @@ impl ZephAcpAgentState {
     #[allow(clippy::too_many_lines)] // strictly sequential session setup, mirrors do_load_session
     pub(crate) async fn do_resume_session(
         &self,
-        args: acp::schema::v1::ResumeSessionRequest,
-        cx: &acp::ConnectionTo<acp::Client>,
-    ) -> acp::Result<acp::schema::v1::ResumeSessionResponse> {
+        args: acp::v1::schema::ResumeSessionRequest,
+        cx: &acp::v1::ConnectionTo<acp::Client>,
+    ) -> acp::Result<acp::v1::schema::ResumeSessionResponse> {
         self.validate_additional_directories(&args.additional_directories)
             .await?;
         if self.sessions.lock().contains_key(&args.session_id) {
-            return Ok(acp::schema::v1::ResumeSessionResponse::new());
+            return Ok(acp::v1::schema::ResumeSessionResponse::new());
         }
 
         let Some(ref store) = self.store else {
@@ -965,21 +965,21 @@ impl ZephAcpAgentState {
         );
         self.set_agent_loop_handle(&args.session_id, agent_loop_handle);
 
-        Ok(acp::schema::v1::ResumeSessionResponse::new())
+        Ok(acp::v1::schema::ResumeSessionResponse::new())
     }
 
     #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.set_session_config_option")]
     pub(crate) async fn do_set_session_config_option(
         &self,
-        args: acp::schema::v1::SetSessionConfigOptionRequest,
-    ) -> acp::Result<acp::schema::v1::SetSessionConfigOptionResponse> {
+        args: acp::v1::schema::SetSessionConfigOptionRequest,
+    ) -> acp::Result<acp::v1::schema::SetSessionConfigOptionResponse> {
         let config_id = args.config_id.0.clone();
         // `SessionConfigOptionValue::Boolean` was stabilized in acp-schema 1.1.0 and the enum
         // shape is now unconditional, so this always matches (no feature gate needed).
         let value_str: std::sync::Arc<str> = match &args.value {
-            acp::schema::v1::SessionConfigOptionValue::ValueId { value } => value.0.clone(),
-            acp::schema::v1::SessionConfigOptionValue::Boolean { value } => {
+            acp::v1::schema::SessionConfigOptionValue::ValueId { value } => value.0.clone(),
+            acp::v1::schema::SessionConfigOptionValue::Boolean { value } => {
                 if *value { "true" } else { "false" }.into()
             }
             _ => "".into(),
@@ -1013,26 +1013,26 @@ impl ZephAcpAgentState {
         let changed_option = config_options.iter().find(|o| o.id.0 == config_id).cloned();
 
         if let Some(option) = changed_option {
-            let update = acp::schema::v1::SessionUpdate::ConfigOptionUpdate(
-                acp::schema::v1::ConfigOptionUpdate::new(vec![option]),
+            let update = acp::v1::schema::SessionUpdate::ConfigOptionUpdate(
+                acp::v1::schema::ConfigOptionUpdate::new(vec![option]),
             );
             self.send_notification_nowait(
                 &args.session_id,
-                acp::schema::v1::SessionNotification::new(args.session_id.clone(), update),
+                acp::v1::schema::SessionNotification::new(args.session_id.clone(), update),
             );
 
             if config_id.as_ref() == "model" {
-                let info_update = acp::schema::v1::SessionUpdate::SessionInfoUpdate(
-                    acp::schema::v1::SessionInfoUpdate::new().meta(model_meta(&current_model)),
+                let info_update = acp::v1::schema::SessionUpdate::SessionInfoUpdate(
+                    acp::v1::schema::SessionInfoUpdate::new().meta(model_meta(&current_model)),
                 );
                 self.send_notification_nowait(
                     &args.session_id,
-                    acp::schema::v1::SessionNotification::new(args.session_id.clone(), info_update),
+                    acp::v1::schema::SessionNotification::new(args.session_id.clone(), info_update),
                 );
             }
         }
 
-        Ok(acp::schema::v1::SetSessionConfigOptionResponse::new(
+        Ok(acp::v1::schema::SetSessionConfigOptionResponse::new(
             config_options,
         ))
     }
@@ -1040,8 +1040,8 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.set_session_mode")]
     pub(crate) async fn do_set_session_mode(
         &self,
-        args: acp::schema::v1::SetSessionModeRequest,
-    ) -> acp::Result<acp::schema::v1::SetSessionModeResponse> {
+        args: acp::v1::schema::SetSessionModeRequest,
+    ) -> acp::Result<acp::v1::schema::SetSessionModeResponse> {
         let valid_ids: &[&str] = &["code", "architect", "ask"];
         let mode_str = args.mode_id.0.as_ref();
         if !valid_ids.contains(&mode_str) {
@@ -1058,16 +1058,16 @@ impl ZephAcpAgentState {
 
         tracing::debug!(session_id = %args.session_id, mode = %mode_str, "ACP session mode switched");
 
-        let update = acp::schema::v1::SessionUpdate::CurrentModeUpdate(
-            acp::schema::v1::CurrentModeUpdate::new(args.mode_id.clone()),
+        let update = acp::v1::schema::SessionUpdate::CurrentModeUpdate(
+            acp::v1::schema::CurrentModeUpdate::new(args.mode_id.clone()),
         );
         let notification =
-            acp::schema::v1::SessionNotification::new(args.session_id.clone(), update);
+            acp::v1::schema::SessionNotification::new(args.session_id.clone(), update);
         if let Err(e) = self.send_notification(&args.session_id, notification).await {
             tracing::warn!(error = %e, "failed to send current_mode_update");
         }
 
-        Ok(acp::schema::v1::SetSessionModeResponse::new())
+        Ok(acp::v1::schema::SetSessionModeResponse::new())
     }
 
     /// Validate `requested` paths against the configured allowlist.
@@ -1114,7 +1114,7 @@ impl ZephAcpAgentState {
         entry: &SessionEntry,
         config_id: &str,
         value: &str,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
     ) -> acp::Result<()> {
         match config_id {
             "model" => {
@@ -1196,8 +1196,8 @@ impl ZephAcpAgentState {
     #[allow(dead_code)]
     async fn fork_conversation(
         &self,
-        source_id: &acp::schema::v1::SessionId,
-        new_id: &acp::schema::v1::SessionId,
+        source_id: &acp::v1::schema::SessionId,
+        new_id: &acp::v1::schema::SessionId,
     ) -> acp::Result<Option<ConversationId>> {
         let Some(s) = &self.store else {
             return Ok(None);
@@ -1275,7 +1275,7 @@ impl ZephAcpAgentState {
     /// Spawn a background title-generation task for the session's first prompt.
     pub(crate) fn maybe_generate_session_title(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
         user_text: &str,
     ) {
         let (should_generate, current_model, notify_tx) = {
@@ -1340,10 +1340,10 @@ impl ZephAcpAgentState {
                 if let Some(entry) = sessions.lock().get(&sid) {
                     *entry.title.lock() = Some(title.clone());
                 }
-                let update = acp::schema::v1::SessionUpdate::SessionInfoUpdate(
-                    acp::schema::v1::SessionInfoUpdate::new().title(title),
+                let update = acp::v1::schema::SessionUpdate::SessionInfoUpdate(
+                    acp::v1::schema::SessionInfoUpdate::new().title(title),
                 );
-                let notification = acp::schema::v1::SessionNotification::new(sid, update);
+                let notification = acp::v1::schema::SessionNotification::new(sid, update);
                 let (tx, _rx) = oneshot::channel();
                 if let Err(e) = notify_tx.send((notification, tx)).await {
                     tracing::debug!(error = %e, "session title notification dropped");
@@ -1387,7 +1387,7 @@ impl ZephAcpAgentState {
             notify_rx: Mutex::new(Some(notify_rx)),
             provider_override,
             current_model: Mutex::new(initial_model),
-            current_mode: Mutex::new(acp::schema::v1::SessionModeId::new(DEFAULT_MODE_ID)),
+            current_mode: Mutex::new(acp::v1::schema::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: AtomicBool::new(false),
             title: Mutex::new(None),
             thinking_enabled: AtomicBool::new(config.thinking_enabled),
@@ -1432,13 +1432,13 @@ impl ZephAcpAgentState {
     /// Replay a session's durable `SessionEvent` log as ACP notifications (spec-068 §12.3, D-2).
     async fn replay_session_events(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
         events: Vec<zeph_session::SessionEventEnvelope>,
     ) {
         for envelope in events {
             for update in session_event_to_updates(envelope.kind) {
                 let notification =
-                    acp::schema::v1::SessionNotification::new(session_id.clone(), update);
+                    acp::v1::schema::SessionNotification::new(session_id.clone(), update);
                 if let Err(e) = self.send_notification(session_id, notification).await {
                     tracing::warn!(error = %e, "failed to replay notification");
                     return;
@@ -1450,7 +1450,7 @@ impl ZephAcpAgentState {
     /// Create a new conversation for `session_id` and persist the mapping.
     async fn create_session_conversation(
         &self,
-        session_id: &acp::schema::v1::SessionId,
+        session_id: &acp::v1::schema::SessionId,
     ) -> Option<ConversationId> {
         let store = self.store.as_ref()?;
         let sid = session_id.to_string();
@@ -1499,7 +1499,7 @@ mod inherited_session_config_tests {
             Arc::new(RwLock::new(vec!["claude:sonnet".to_owned()])),
         );
 
-        let session_id = acp::schema::v1::SessionId::new("source-session".to_owned());
+        let session_id = acp::v1::schema::SessionId::new("source-session".to_owned());
         let (_, handle) = LoopbackChannel::pair(4);
         let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
         let (notify_tx, notify_rx) = mpsc::channel(256);
@@ -1544,7 +1544,7 @@ mod inherited_session_config_tests {
     async fn closing_a_session_stops_its_elicitation_bridge() {
         let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
         let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
-        let session_id = acp::schema::v1::SessionId::new("restored".to_owned());
+        let session_id = acp::v1::schema::SessionId::new("restored".to_owned());
         let (_, handle) = LoopbackChannel::pair(4);
         let (notify_tx, notify_rx) = mpsc::channel(256);
         let mut entry = ZephAcpAgent::make_session_entry(

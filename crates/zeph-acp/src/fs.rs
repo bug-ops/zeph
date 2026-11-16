@@ -61,20 +61,20 @@ fn compute_diff_data(old: &str, new: &str, path: &str) -> DiffData {
 
 enum FsRequest {
     Read {
-        session_id: acp::schema::v1::SessionId,
+        session_id: acp::v1::schema::SessionId,
         path: PathBuf,
         line: Option<u32>,
         limit: Option<u32>,
         reply: oneshot::Sender<Result<String, AcpError>>,
     },
     Write {
-        session_id: acp::schema::v1::SessionId,
+        session_id: acp::v1::schema::SessionId,
         path: PathBuf,
         content: String,
         reply: oneshot::Sender<Result<(), AcpError>>,
     },
     ReadForDiff {
-        session_id: acp::schema::v1::SessionId,
+        session_id: acp::v1::schema::SessionId,
         path: PathBuf,
         reply: oneshot::Sender<Result<Option<String>, AcpError>>,
     },
@@ -87,7 +87,7 @@ enum FsRequest {
 /// capability.
 #[derive(Clone)]
 pub struct AcpFileExecutor {
-    session_id: acp::schema::v1::SessionId,
+    session_id: acp::v1::schema::SessionId,
     request_tx: mpsc::Sender<FsRequest>,
     can_read: bool,
     can_write: bool,
@@ -101,8 +101,8 @@ impl AcpFileExecutor {
     /// `can_read` / `can_write` gate which tool definitions are advertised.
     /// `permission_gate` is used to request user confirmation before writing files.
     pub async fn new(
-        conn: Arc<acp::ConnectionTo<acp::Client>>,
-        session_id: acp::schema::v1::SessionId,
+        conn: Arc<acp::v1::ConnectionTo<acp::Client>>,
+        session_id: acp::v1::schema::SessionId,
         can_read: bool,
         can_write: bool,
         cwd: PathBuf,
@@ -441,13 +441,13 @@ impl AcpFileExecutor {
 
         // REQ-P31-2: show diff preview and require approval
         if let Some(gate) = &self.permission_gate {
-            let diff = acp::schema::v1::Diff::new(resolved.clone(), params.content.clone())
+            let diff = acp::v1::schema::Diff::new(resolved.clone(), params.content.clone())
                 .old_text(old_content.clone());
-            let fields = acp::schema::v1::ToolCallUpdateFields::new()
+            let fields = acp::v1::schema::ToolCallUpdateFields::new()
                 .title("write_file".to_owned())
-                .content(vec![acp::schema::v1::ToolCallContent::Diff(diff)])
+                .content(vec![acp::v1::schema::ToolCallContent::Diff(diff)])
                 .raw_input(serde_json::json!({ "path": params.path }));
-            let tool_call = acp::schema::v1::ToolCallUpdate::new("write_file".to_owned(), fields);
+            let tool_call = acp::v1::schema::ToolCallUpdate::new("write_file".to_owned(), fields);
             let allowed = gate
                 .check_permission(self.session_id.clone(), tool_call)
                 .await
@@ -644,7 +644,7 @@ impl AcpFileExecutor {
 }
 
 async fn run_fs_handler(
-    conn: Arc<acp::ConnectionTo<acp::Client>>,
+    conn: Arc<acp::v1::ConnectionTo<acp::Client>>,
     mut rx: mpsc::Receiver<FsRequest>,
 ) {
     while let Some(req) = rx.recv().await {
@@ -656,7 +656,7 @@ async fn run_fs_handler(
                 limit,
                 reply,
             } => {
-                let req = acp::schema::v1::ReadTextFileRequest::new(session_id, path)
+                let req = acp::v1::schema::ReadTextFileRequest::new(session_id, path)
                     .line(line)
                     .limit(limit);
                 let result = conn
@@ -674,7 +674,7 @@ async fn run_fs_handler(
                 reply,
             } => {
                 let result = conn
-                    .send_request(acp::schema::v1::WriteTextFileRequest::new(
+                    .send_request(acp::v1::schema::WriteTextFileRequest::new(
                         session_id, path, content,
                     ))
                     .block_task()
@@ -688,10 +688,10 @@ async fn run_fs_handler(
                 path,
                 reply,
             } => {
-                let req = acp::schema::v1::ReadTextFileRequest::new(session_id, path);
+                let req = acp::v1::schema::ReadTextFileRequest::new(session_id, path);
                 let result = match conn.send_request(req).block_task().await {
                     Ok(r) => Ok(Some(r.content)),
-                    Err(e) if e.code == acp::ErrorCode::ResourceNotFound => Ok(None),
+                    Err(e) if e.code == acp::ErrorCode::RESOURCE_NOT_FOUND => Ok(None),
                     Err(e) => Err(AcpError::ClientError(e.to_string())),
                 };
                 reply.send(result).ok();

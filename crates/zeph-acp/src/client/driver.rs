@@ -12,11 +12,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::{
-    ActiveSession, Agent, ConnectionTo, SessionMessage,
+    Agent,
     schema::ProtocolVersion,
-    schema::v1::{
-        CancelNotification, ContentBlock, ContentChunk, InitializeRequest, SessionId,
-        SessionNotification, SessionUpdate,
+    v1::{
+        ActiveSession, ConnectionTo, SessionMessage, SessionSetup,
+        schema::{
+            CancelNotification, ContentBlock, ContentChunk, InitializeRequest, NewSessionResponse,
+            SessionId, SessionNotification, SessionUpdate,
+        },
     },
 };
 use futures::StreamExt;
@@ -52,7 +55,7 @@ pub(crate) enum SubagentCommand {
 
 /// Run the full ACP handshake + command loop for a single sub-agent session.
 ///
-/// This function is intended to be called inside `Client.builder().connect_with(transport, ...)`.
+/// This function is intended to be called inside `Client.v1().connect_with(transport, ...)`.
 /// It:
 /// 1. Sends `InitializeRequest` and waits for the response.
 /// 2. Builds a session via `build_session(session_cwd).block_task().run_until(...)`.
@@ -110,57 +113,60 @@ pub(crate) async fn run_driver(
     let run_result = cx_clone
         .build_session(session_cwd)
         .block_task()
-        .run_until(async move |mut session: ActiveSession<'_, Agent>| {
-            // Session is up — notify the waiting caller.
-            if let Some(tx) = ready_for_body
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-            {
-                let _ = tx.send(Ok(session.session_id().clone()));
-            }
+        .run_until(
+            async move |setup: SessionSetup<'_, Agent, NewSessionResponse>| {
+                let mut session = setup.session;
+                // Session is up — notify the waiting caller.
+                if let Some(tx) = ready_for_body
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    let _ = tx.send(Ok(session.session_id().clone()));
+                }
 
-            // Extract cmd_rx from the Arc<Mutex<Option<_>>>.
-            let Some(mut cmd_rx) = cmd_rx_for_body
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-            else {
-                return Ok(());
-            };
+                // Extract cmd_rx from the Arc<Mutex<Option<_>>>.
+                let Some(mut cmd_rx) = cmd_rx_for_body
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                else {
+                    return Ok(());
+                };
 
-            // Command loop.
-            while let Some(cmd) = cmd_rx.next().await {
-                match cmd {
-                    SubagentCommand::Prompt { text, reply } => {
-                        let r = session.send_prompt(text).map_err(AcpClientError::Sdk);
-                        let _ = reply.send(r);
-                    }
-                    SubagentCommand::ReadUpdate { reply } => {
-                        let r = read_one_with_preemption(&mut session, &mut cmd_rx).await;
-                        let _ = reply.send(r);
-                    }
-                    SubagentCommand::ReadToString { reply } => {
-                        let r = drain_until_stop(&mut session, &mut cmd_rx).await;
-                        let _ = reply.send(r);
-                    }
-                    SubagentCommand::Cancel { reply } => {
-                        let r = session
-                            .connection()
-                            .send_notification(CancelNotification::new(
-                                session.session_id().clone(),
-                            ))
-                            .map_err(AcpClientError::Sdk);
-                        let _ = reply.send(r);
-                    }
-                    SubagentCommand::Close { ack } => {
-                        let _ = ack.send(());
-                        break;
+                // Command loop.
+                while let Some(cmd) = cmd_rx.next().await {
+                    match cmd {
+                        SubagentCommand::Prompt { text, reply } => {
+                            let r = session.send_prompt(text).map_err(AcpClientError::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        SubagentCommand::ReadUpdate { reply } => {
+                            let r = read_one_with_preemption(&mut session, &mut cmd_rx).await;
+                            let _ = reply.send(r);
+                        }
+                        SubagentCommand::ReadToString { reply } => {
+                            let r = drain_until_stop(&mut session, &mut cmd_rx).await;
+                            let _ = reply.send(r);
+                        }
+                        SubagentCommand::Cancel { reply } => {
+                            let r = session
+                                .connection()
+                                .send_notification(CancelNotification::new(
+                                    session.session_id().clone(),
+                                ))
+                                .map_err(AcpClientError::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        SubagentCommand::Close { ack } => {
+                            let _ = ack.send(());
+                            break;
+                        }
                     }
                 }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .await;
 
     // If run_until failed before the body could run, surface a handshake error.
@@ -281,8 +287,8 @@ pub(crate) async fn drain_until_stop(
         };
 
         match update {
-            SessionMessage::SessionMessage(dispatch) => {
-                MatchDispatch::new(dispatch)
+            SessionMessage::Message(dispatch) => {
+                MatchDispatch::new(dispatch.into_raw())
                     .if_notification(async |notif: SessionNotification| {
                         match notif.update {
                             SessionUpdate::AgentMessageChunk(ContentChunk {
@@ -314,10 +320,11 @@ pub(crate) async fn drain_until_stop(
                     .otherwise_ignore()
                     .map_err(AcpClientError::Sdk)?;
             }
-            SessionMessage::StopReason(reason) => {
+            SessionMessage::PromptResponse(response) => {
+                let response = response.map_err(AcpClientError::Sdk)?;
                 return Ok(RunOutcome {
                     text,
-                    stop_reason: reason,
+                    stop_reason: response.stop_reason,
                 });
             }
             _ => {

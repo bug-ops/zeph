@@ -331,7 +331,7 @@ fn granted_allowlist(
 /// Servers stay `Untrusted` and `allow_untrusted_without_allowlist` stays `false`, so a server
 /// without a matching grant exposes zero tools.
 fn scoped_entries(
-    servers: &[acp::schema::v1::McpServer],
+    servers: &[acp::v1::schema::McpServer],
     session_id: &str,
     elicitation_default_timeout_secs: u64,
     grants: &zeph_config::AcpIdeMcpConfig,
@@ -374,8 +374,8 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.session.ide_mcp_attach")]
     pub(crate) async fn attach_ide_mcp_servers(
         &self,
-        session_id: &acp::schema::v1::SessionId,
-        servers: &[acp::schema::v1::McpServer],
+        session_id: &acp::v1::schema::SessionId,
+        servers: &[acp::v1::schema::McpServer],
     ) -> IdeMcpAttachment {
         let Some(ref manager) = self.mcp_manager else {
             return IdeMcpAttachment::empty();
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn duplicate_ide_ids_are_deduplicated_before_scoping() {
-        use acp::schema::v1::{McpServer, McpServerStdio};
+        use acp::v1::schema::{McpServer, McpServerStdio};
 
         let servers = vec![
             McpServer::Stdio(McpServerStdio::new("dup", "/bin/a")),

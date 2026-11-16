@@ -17,13 +17,13 @@ Provides foundational utilities used across multiple Zeph crates: Unicode-safe s
 |--------|-------------|
 | `text` | Unicode-safe string truncation — `truncate_chars`, `truncate_to_chars`, `truncate_to_bytes`, `truncate_to_bytes_ref` |
 | `net` | Network helpers — `is_private_ip()` for IPv4/IPv6 private range detection; used by the SSRF guard in `zeph-tools` and `zeph-acp` |
-| `http` | Capped HTTP response-body readers — `BodyLimit`, `read_capped`, `read_prefix`; shared by `zeph-a2a`, `zeph-tools`, `zeph-scheduler`, `zeph-plugins`, `zeph-mcp`, and `zeph-acp` to bound memory use on untrusted responses |
+| `http` | Capped HTTP response-body readers — `BodyLimit` (const-constructible via `BodyLimit::from_const`), `read_capped`, `read_prefix`; shared by `zeph-a2a`, `zeph-tools`, `zeph-scheduler`, `zeph-plugins`, `zeph-mcp`, and `zeph-acp` to bound memory use on untrusted responses |
 | `sanitize` | Low-level sanitization primitives (null byte stripping, control character removal) |
 | `fs_secure` | Secure file I/O helpers — `open_private_truncate`, `append_private`, `write_private`, `atomic_write_private`; all create files with mode `0o600` independent of process umask; `atomic_write_private` uses `O_EXCL` on the temp file and fsyncs before rename for crash safety |
 | `secrets` | Canonical secret-token, path-prefix, and secret-shape constants (`SECRET_PREFIXES`, `PATH_PREFIXES`, `BEARER_TOKEN_PATTERN`, `JWT_PATTERN`, `PEM_PRIVATE_KEY_PATTERN`, `AWS_SECRET_KEY_PATTERN`) shared by redaction layers across crates — the single source of truth so `zeph-core::redact` and `zeph-memory` compression guidelines can't drift apart |
 | `hash_chain` | Keyed-BLAKE3 hash-chain primitive for tamper-evident, append-only JSONL history — the shared core behind transcript (`zeph-subagent`) and session (`zeph-session`) integrity (issue #6360) |
 | `anchor` | Vault-anchor downgrade-resistance primitives — a per-file attestation record checked on read to detect a whole-file chain strip that `hash_chain` alone cannot catch (issue #6449). `anchor_key`/`parse_anchor_key` derive and round-trip the `ZEPH_HISTORY_ANCHOR_*` vault key for a `(subsystem, file_id)` pair |
-| `task_supervisor` | `TaskSupervisor` — the named, abortable, health-reportable home for every long-lived background task in the workspace. Supports `spawn`, `spawn_restartable` (with `RestartPolicy` and exponential backoff), semaphore-gated `spawn_blocking`, and two-phase `shutdown_all` |
+| `task_supervisor` | `TaskSupervisor` — the named, abortable, health-reportable home for every long-lived background task in the workspace. Supports `spawn`, `spawn_restartable` (with `RestartPolicy` and exponential backoff), semaphore-gated `spawn_blocking`, two-phase `shutdown_all`, `scoped(name)` for per-instance task names (per-session ACP and serve tasks), and the `AbortOnDrop<R>` guard for blocking handles |
 | `treesitter` | Tree-sitter query constants and parser helpers for Rust, Python, JavaScript, TypeScript, Go, Bash, TOML, JSON, Markdown (optional, requires `treesitter` feature) |
 
 ## Usage

@@ -11,9 +11,9 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/delete` request.
 pub(crate) async fn handle_delete_session(
-    req: acp::schema::v1::DeleteSessionRequest,
-    responder: acp::Responder<acp::schema::v1::DeleteSessionResponse>,
-    _cx: acp::ConnectionTo<acp::Client>,
+    req: acp::v1::schema::DeleteSessionRequest,
+    responder: acp::v1::Responder<acp::v1::schema::DeleteSessionResponse>,
+    _cx: acp::v1::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     let resp = state.do_delete_session(req).await?;

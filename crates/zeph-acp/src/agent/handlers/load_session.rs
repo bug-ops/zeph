@@ -11,9 +11,9 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/load` request.
 pub(crate) async fn handle_load_session(
-    req: acp::schema::v1::LoadSessionRequest,
-    responder: acp::Responder<acp::schema::v1::LoadSessionResponse>,
-    cx: acp::ConnectionTo<acp::Client>,
+    req: acp::v1::schema::LoadSessionRequest,
+    responder: acp::v1::Responder<acp::v1::schema::LoadSessionResponse>,
+    cx: acp::v1::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     let resp = state.do_load_session(req, &cx).await?;

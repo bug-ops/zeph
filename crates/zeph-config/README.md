@@ -40,9 +40,15 @@ embedding_model = "qwen3-embedding"
 | `ComplexityRoutingConfig` | `[llm.complexity_routing]` | Per-tier provider pools for complexity triage routing |
 | `SecurityConfig` | `[security]` | Content isolation, exfiltration guard, quarantine |
 | `IntegrityConfig` | `[integrity]` | Vault-anchor downgrade-resistance for transcript/session integrity — anchor mode, LRU cap on retained session anchors (issue #6449) |
+| `AskUserConfig` | `[tools.ask_user]` | Opt-in model-callable `ask_user` tool: `enabled`, `timeout_secs` (`AskUserTimeout`, 1..=3600), `max_questions_per_turn` |
+| `CacheKeepaliveConfig` | `[llm.cache_keepalive]` | Opt-in prompt-cache keepalive pings: `enabled`, `keepalive_provider`, `max_consecutive_pings` (`KeepalivePingCap`, 1..=50) |
+| `AcpIdeMcpConfig` | `[acp.ide_mcp]` | Per-session cap (`max_servers_per_session`, default 10) and operator grants (`AcpIdeMcpGrant`) for IDE-supplied MCP servers |
 | `DebugConfig` | `[debug]` | Debug dump path and format |
 | `LoggingConfig` | `[logging]` | Log file path, level, rotation, retention |
 | `VaultConfig` | `[vault]` | Vault backend selection (`env` or `age`; defaults to `age`) |
+
+> [!NOTE]
+> Range-checked newtypes (`KeepalivePingCap`, `AskUserTimeout`, `NonNegativeF64`) make out-of-range `max_consecutive_pings`, `timeout_secs`, and `llm.coe.intra_threshold` values fail config load. Shipped defaults select `claude-sonnet-5-5`; `--migrate-config` rewrites the retired `claude-sonnet-4-5-20250929` and adds the `[tools.ask_user]` and `[llm.cache_keepalive]` sections.
 
 ## Usage
 

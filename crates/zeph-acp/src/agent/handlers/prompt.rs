@@ -21,13 +21,13 @@ use crate::agent::ZephAcpAgentState;
 ///
 /// When the `unstable-cancel-request` feature is enabled, this bridges the real ACP
 /// `$/cancel_request` protocol notification (scoped to this specific JSON-RPC request via
-/// [`acp::Responder::cancellation`]) onto the session's existing `cancel_signal: Arc<Notify>` —
+/// [`acp::v1::Responder::cancellation`]) onto the session's existing `cancel_signal: Arc<Notify>` —
 /// the same signal `session/cancel` notifies. A short-lived watcher task races the cancellation
 /// marker against prompt completion so it never outlives this request.
 pub(crate) async fn handle_prompt(
-    req: acp::schema::v1::PromptRequest,
-    responder: acp::Responder<acp::schema::v1::PromptResponse>,
-    cx: acp::ConnectionTo<acp::Client>,
+    req: acp::v1::schema::PromptRequest,
+    responder: acp::v1::Responder<acp::v1::schema::PromptResponse>,
+    cx: acp::v1::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     #[cfg(feature = "unstable-cancel-request")]
@@ -66,9 +66,9 @@ pub(crate) async fn handle_prompt(
 /// watcher task never lives beyond this single request even when cancellation never fires.
 #[cfg(feature = "unstable-cancel-request")]
 fn spawn_cancel_request_bridge(
-    req: &acp::schema::v1::PromptRequest,
-    responder: &acp::Responder<acp::schema::v1::PromptResponse>,
-    cx: &acp::ConnectionTo<acp::Client>,
+    req: &acp::v1::schema::PromptRequest,
+    responder: &acp::v1::Responder<acp::v1::schema::PromptResponse>,
+    cx: &acp::v1::ConnectionTo<acp::Client>,
     state: &Arc<ZephAcpAgentState>,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();

@@ -56,6 +56,9 @@ Priority: `--config` > `ZEPH_CONFIG` > `config/default.toml`.
 | `acp.lsp.request_timeout_secs` | > 0 |
 | `gateway.rate_limit` | > 0 |
 | `gateway.max_body_size` | <= 10,485,760 (10 MiB) |
+| `llm.cache_keepalive.max_consecutive_pings` | in [1, 50] |
+| `tools.ask_user.timeout_secs` | in [1, 3600] |
+| `llm.coe.intra_threshold` | finite, >= 0.0 |
 
 ## Hot-Reload
 
@@ -702,7 +705,7 @@ guard_memory_writes = true    # Skip Qdrant embedding for injection-flagged cont
 [security.rate_limit]
 enabled = true              # Per-category sliding-window tool rate limiter (default: true)
 shell_calls_per_minute = 30
-web_calls_per_minute = 20
+web_calls_per_minute = 20   # Counts web_scrape, fetch and web_search calls
 memory_calls_per_minute = 60
 mcp_calls_per_minute = 40
 other_calls_per_minute = 60

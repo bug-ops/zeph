@@ -49,8 +49,8 @@ enum PermissionDecision {
 }
 
 struct PermissionRequest {
-    session_id: acp::schema::v1::SessionId,
-    tool_call: acp::schema::v1::ToolCallUpdate,
+    session_id: acp::v1::schema::SessionId,
+    tool_call: acp::v1::schema::ToolCallUpdate,
     reply: oneshot::Sender<Result<bool, AcpError>>,
 }
 
@@ -199,7 +199,7 @@ impl AcpPermissionGate {
     ///
     /// Spawn the returned future inside a `LocalSet` that owns `conn`.
     pub fn new(
-        conn: std::sync::Arc<acp::ConnectionTo<acp::Client>>,
+        conn: std::sync::Arc<acp::v1::ConnectionTo<acp::Client>>,
         permission_file: Option<PathBuf>,
     ) -> (Self, impl std::future::Future<Output = ()> + Send + 'static) {
         let file = permission_file.unwrap_or_else(default_permission_file);
@@ -284,8 +284,8 @@ impl AcpPermissionGate {
     #[tracing::instrument(skip_all, name = "acp.permission.check", fields(session_id = %session_id))]
     pub async fn check_permission(
         &self,
-        session_id: acp::schema::v1::SessionId,
-        tool_call: acp::schema::v1::ToolCallUpdate,
+        session_id: acp::v1::schema::SessionId,
+        tool_call: acp::v1::schema::ToolCallUpdate,
     ) -> Result<bool, AcpError> {
         // Key on session + tool title for AllowAlways/RejectAlways caching. When title is absent,
         // fall back to tool_call_id so distinct untitled tools never share the same cache entry.
@@ -350,32 +350,32 @@ impl AcpPermissionGate {
 }
 
 async fn run_permission_handler(
-    conn: std::sync::Arc<acp::ConnectionTo<acp::Client>>,
+    conn: std::sync::Arc<acp::v1::ConnectionTo<acp::Client>>,
     mut rx: mpsc::Receiver<PermissionRequest>,
     cache: Arc<RwLock<HashMap<String, PermissionDecision>>>,
     permission_file: PathBuf,
 ) {
     while let Some(req) = rx.recv().await {
         let options = vec![
-            acp::schema::v1::PermissionOption::new(
+            acp::v1::schema::PermissionOption::new(
                 "allow_once",
                 "Allow once",
-                acp::schema::v1::PermissionOptionKind::AllowOnce,
+                acp::v1::schema::PermissionOptionKind::AllowOnce,
             ),
-            acp::schema::v1::PermissionOption::new(
+            acp::v1::schema::PermissionOption::new(
                 "allow_always",
                 "Allow always",
-                acp::schema::v1::PermissionOptionKind::AllowAlways,
+                acp::v1::schema::PermissionOptionKind::AllowAlways,
             ),
-            acp::schema::v1::PermissionOption::new(
+            acp::v1::schema::PermissionOption::new(
                 "reject_once",
                 "Reject once",
-                acp::schema::v1::PermissionOptionKind::RejectOnce,
+                acp::v1::schema::PermissionOptionKind::RejectOnce,
             ),
-            acp::schema::v1::PermissionOption::new(
+            acp::v1::schema::PermissionOption::new(
                 "reject_always",
                 "Reject always",
-                acp::schema::v1::PermissionOptionKind::RejectAlways,
+                acp::v1::schema::PermissionOptionKind::RejectAlways,
             ),
         ];
 
@@ -400,17 +400,17 @@ async fn run_permission_handler(
         let session_id = &req.session_id;
         let session_cache_key = format!("{session_id}\0{tool_name}");
         let perm_req =
-            acp::schema::v1::RequestPermissionRequest::new(req.session_id, req.tool_call, options);
+            acp::v1::schema::RequestPermissionRequest::new(req.session_id, req.tool_call, options);
 
         let result = conn.send_request(perm_req).block_task().await;
 
         let reply = match result {
             Err(e) => Err(AcpError::ClientError(e.to_string())),
             Ok(resp) => match resp.outcome {
-                acp::schema::v1::RequestPermissionOutcome::Cancelled => Err(AcpError::ClientError(
+                acp::v1::schema::RequestPermissionOutcome::Cancelled => Err(AcpError::ClientError(
                     "permission request cancelled".to_owned(),
                 )),
-                acp::schema::v1::RequestPermissionOutcome::Selected(selected) => {
+                acp::v1::schema::RequestPermissionOutcome::Selected(selected) => {
                     let option_id = selected.option_id.0.as_ref();
                     let allowed = matches!(option_id, "allow_once" | "allow_always");
 
@@ -498,7 +498,8 @@ fn rebuild_persisted(guard: &HashMap<String, PermissionDecision>) -> PersistedPe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::{self as acp_proto, ByteStreams, Responder};
+    use agent_client_protocol::v1::Responder;
+    use agent_client_protocol::{self as acp_proto, ByteStreams};
     use std::assert_matches;
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -509,7 +510,7 @@ mod tests {
     /// Returns `ConnectionTo<acp::Client>` for use with `AcpPermissionGate::new`.
     async fn make_conn_async(
         option_id: &'static str,
-    ) -> std::sync::Arc<acp::ConnectionTo<acp::Client>> {
+    ) -> std::sync::Arc<acp::v1::ConnectionTo<acp::Client>> {
         let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
         let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
 
@@ -517,16 +518,16 @@ mod tests {
             ByteStreams::new(client_writer.compat_write(), client_reader.compat());
         tokio::task::spawn_local(async move {
             let _ = acp::Client
-                .builder()
+                .v1()
                 .on_receive_request(
-                    async move |_req: acp::schema::v1::RequestPermissionRequest,
+                    async move |_req: acp::v1::schema::RequestPermissionRequest,
                                 responder: Responder<
-                        acp::schema::v1::RequestPermissionResponse,
+                        acp::v1::schema::RequestPermissionResponse,
                     >,
                                 _cx| {
-                        responder.respond(acp::schema::v1::RequestPermissionResponse::new(
-                            acp::schema::v1::RequestPermissionOutcome::Selected(
-                                acp::schema::v1::SelectedPermissionOutcome::new(option_id),
+                        responder.respond(acp::v1::schema::RequestPermissionResponse::new(
+                            acp::v1::schema::RequestPermissionOutcome::Selected(
+                                acp::v1::schema::SelectedPermissionOutcome::new(option_id),
                             ),
                         ))
                     },
@@ -540,10 +541,10 @@ mod tests {
         let agent_transport = ByteStreams::new(agent_writer.compat_write(), agent_reader.compat());
         tokio::task::spawn_local(async move {
             let _ = acp::Agent
-                .builder()
+                .v1()
                 .connect_with(
                     agent_transport,
-                    async |cx: acp::ConnectionTo<acp::Client>| {
+                    async |cx: acp::v1::ConnectionTo<acp::Client>| {
                         let _ = conn_tx.send(std::sync::Arc::new(cx));
                         std::future::pending::<Result<(), acp_proto::Error>>().await
                     },
@@ -555,7 +556,7 @@ mod tests {
     }
 
     /// Async `make_conn` variant that responds with Cancelled outcome.
-    async fn make_conn_cancelled() -> std::sync::Arc<acp::ConnectionTo<acp::Client>> {
+    async fn make_conn_cancelled() -> std::sync::Arc<acp::v1::ConnectionTo<acp::Client>> {
         let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
         let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
 
@@ -563,13 +564,13 @@ mod tests {
             ByteStreams::new(client_writer.compat_write(), client_reader.compat());
         tokio::task::spawn_local(async move {
             let _ = acp::Client
-                .builder()
+                .v1()
                 .on_receive_request(
-                    async |_req: acp::schema::v1::RequestPermissionRequest,
-                           responder: Responder<acp::schema::v1::RequestPermissionResponse>,
+                    async |_req: acp::v1::schema::RequestPermissionRequest,
+                           responder: Responder<acp::v1::schema::RequestPermissionResponse>,
                            _cx| {
-                        responder.respond(acp::schema::v1::RequestPermissionResponse::new(
-                            acp::schema::v1::RequestPermissionOutcome::Cancelled,
+                        responder.respond(acp::v1::schema::RequestPermissionResponse::new(
+                            acp::v1::schema::RequestPermissionOutcome::Cancelled,
                         ))
                     },
                     acp_proto::on_receive_request!(),
@@ -582,10 +583,10 @@ mod tests {
         let agent_transport = ByteStreams::new(agent_writer.compat_write(), agent_reader.compat());
         tokio::task::spawn_local(async move {
             let _ = acp::Agent
-                .builder()
+                .v1()
                 .connect_with(
                     agent_transport,
-                    async |cx: acp::ConnectionTo<acp::Client>| {
+                    async |cx: acp::v1::ConnectionTo<acp::Client>| {
                         let _ = conn_tx.send(std::sync::Arc::new(cx));
                         std::future::pending::<Result<(), acp_proto::Error>>().await
                     },
@@ -596,10 +597,10 @@ mod tests {
         conn_rx.await.expect("agent connection not established")
     }
 
-    fn make_tool_call(id: &str) -> acp::schema::v1::ToolCallUpdate {
-        acp::schema::v1::ToolCallUpdate::new(
+    fn make_tool_call(id: &str) -> acp::v1::schema::ToolCallUpdate {
+        acp::v1::schema::ToolCallUpdate::new(
             id.to_owned(),
-            acp::schema::v1::ToolCallUpdateFields::default(),
+            acp::v1::schema::ToolCallUpdateFields::default(),
         )
     }
 
@@ -607,11 +608,11 @@ mod tests {
         id: &str,
         title: &str,
         command: &str,
-    ) -> acp::schema::v1::ToolCallUpdate {
-        let fields = acp::schema::v1::ToolCallUpdateFields::new()
+    ) -> acp::v1::schema::ToolCallUpdate {
+        let fields = acp::v1::schema::ToolCallUpdateFields::new()
             .title(title.to_owned())
             .raw_input(serde_json::json!({ "command": command }));
-        acp::schema::v1::ToolCallUpdate::new(id.to_owned(), fields)
+        acp::v1::schema::ToolCallUpdate::new(id.to_owned(), fields)
     }
 
     /// A fresh, isolated `acp-permissions.toml` path for one test.
@@ -639,7 +640,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc = make_tool_call("tc1");
                 let result = gate.check_permission(sid, tc).await.unwrap();
                 assert!(result);
@@ -657,7 +658,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc = make_tool_call("tc2");
                 let result = gate.check_permission(sid, tc).await.unwrap();
                 assert!(!result);
@@ -675,7 +676,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc = make_tool_call("tc-aa");
                 let first = gate
                     .check_permission(sid.clone(), tc.clone())
@@ -698,7 +699,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc = make_tool_call("tc-ra");
                 let first = gate
                     .check_permission(sid.clone(), tc.clone())
@@ -721,7 +722,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc = make_tool_call("tc-cancel");
                 let result = gate.check_permission(sid, tc).await;
                 assert!(result.is_err());
@@ -811,12 +812,12 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 // shell_execute should be allowed from persisted "allow".
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc = make_tool_call("shell_execute");
                 assert!(gate.check_permission(sid, tc).await.unwrap());
 
                 // bad_tool should NOT be in cache — falls through to reject_once client.
-                let sid2 = acp::schema::v1::SessionId::new("s1");
+                let sid2 = acp::v1::schema::SessionId::new("s1");
                 let tc2 = make_tool_call("bad_tool");
                 assert!(!gate.check_permission(sid2, tc2).await.unwrap());
             })
@@ -834,7 +835,7 @@ mod tests {
                 tokio::task::spawn_local(handler);
 
                 // First call with tool_name "b" under session "a" — gets AllowAlways cached.
-                let sid = acp::schema::v1::SessionId::new("a");
+                let sid = acp::v1::schema::SessionId::new("a");
                 let tc = make_tool_call("b");
                 assert!(gate.check_permission(sid, tc).await.unwrap());
 
@@ -845,7 +846,7 @@ mod tests {
                 let (gate2, handler2) = AcpPermissionGate::new(conn2, Some(perm_path2));
                 tokio::task::spawn_local(handler2);
 
-                let sid2 = acp::schema::v1::SessionId::new("s2");
+                let sid2 = acp::v1::schema::SessionId::new("s2");
                 let mut tc2 = make_tool_call("tc-null");
                 tc2.fields.title = Some("a\0b".to_owned());
                 // AllowAlways was cached for "b", not "ab", so gate2 (reject) should reject.
@@ -874,7 +875,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(file.clone()));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s-new");
+                let sid = acp::v1::schema::SessionId::new("s-new");
                 let tc = make_tool_call("tc-persisted");
                 let result = gate.check_permission(sid, tc).await.unwrap();
                 assert!(result);
@@ -935,7 +936,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(file));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc = make_tool_call_with_command("tc1", "git", "git status");
                 assert!(gate.check_permission(sid, tc).await.unwrap());
             })
@@ -967,7 +968,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(file));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc = make_tool_call_with_command("tc1", "rm", "rm -rf /tmp/test");
                 assert!(!gate.check_permission(sid, tc).await.unwrap());
             })
@@ -994,7 +995,7 @@ mod tests {
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc_git = make_tool_call_with_command("tc1", "git", "git status");
                 assert!(gate.check_permission(sid.clone(), tc_git).await.unwrap());
 
@@ -1004,7 +1005,7 @@ mod tests {
                 let (gate2, handler2) = AcpPermissionGate::new(conn2, Some(perm_path2));
                 tokio::task::spawn_local(handler2);
 
-                let sid2 = acp::schema::v1::SessionId::new("s2");
+                let sid2 = acp::v1::schema::SessionId::new("s2");
                 let tc_rm = make_tool_call_with_command("tc2", "rm", "rm /tmp/test");
                 assert!(!gate2.check_permission(sid2, tc_rm).await.unwrap());
             })
@@ -1045,7 +1046,7 @@ mod tests {
                 let (gate1, handler1) = AcpPermissionGate::new(conn1, Some(perm_file.clone()));
                 tokio::task::spawn_local(handler1);
 
-                let sid = acp::schema::v1::SessionId::new("s1");
+                let sid = acp::v1::schema::SessionId::new("s1");
                 let tc_git = make_tool_call_with_command("tc1", "git", "git status");
                 assert!(gate1.check_permission(sid.clone(), tc_git).await.unwrap());
 
@@ -1055,7 +1056,7 @@ mod tests {
                 let (gate2, handler2) = AcpPermissionGate::new(conn2, Some(perm_file));
                 tokio::task::spawn_local(handler2);
 
-                let sid2 = acp::schema::v1::SessionId::new("s2");
+                let sid2 = acp::v1::schema::SessionId::new("s2");
                 let tc_rm = make_tool_call_with_command("tc2", "rm", "rm /tmp/test");
                 assert!(!gate2.check_permission(sid2, tc_rm).await.unwrap());
             })

@@ -320,6 +320,8 @@ Embed errors on either side cause the quality check to be skipped (fail-open). T
 
 With `[llm.coe] enabled = true` the router requests `logprobs` and can escalate to the secondary provider only on `chat()` calls, such as skill matching and JSON retries. The main agent turn uses `chat_with_tools` and `chat_stream`, which are not covered, so the answer you read is never checked for intra-entropy or escalated. Check the wire log for `"logprobs": true` on auxiliary requests only.
 
+Intra-entropy escalation is fed by logprobs from OpenAI, OpenAI-compatible and Ollama providers. `llm.coe.intra_threshold` accepts any finite value of 0.0 or more; a negative or non-finite value fails config load. Shadow calls made for this check are reported as auxiliary usage.
+
 ## Known Limitations
 
 - Thompson success/failure is recorded at stream-open time, not on stream completion. A provider that opens a stream but fails mid-delivery still gets alpha += 1

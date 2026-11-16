@@ -283,7 +283,17 @@ Rules are appended to `PolicyEnforcer` after the `[tools.policy]` rules at start
 
 ## Caller identity
 
-`ToolCall::caller_id: Option<String>` carries the originating agent or sub-agent identifier. Set automatically by the orchestrator for sub-agent dispatches; `None` for the primary agent. Recorded in audit log entries.
+`ToolCall` embeds one `CallAttribution` (`attribution`) holding the optional `caller` (`CallerId`, the originating agent or sub-agent; `None` for the primary agent and system-initiated calls) and the `active_skills` injected into the turn. The same struct is embedded in `AuditEntry`, `EgressEvent`, `PreDispatchBlock`, and `ToolEvent::OutputChunk`; serialized records keep the `caller_id` and `skill_name` keys, each omitted when empty.
+
+```rust
+use zeph_tools::{CallAttribution, ToolCall};
+
+let call = ToolCall {
+    attribution: CallAttribution::for_caller("user-1"),
+    ..ToolCall::default()
+};
+assert!(call.attribution().caller.is_some());
+```
 
 ## ToolExecutor trait contract
 

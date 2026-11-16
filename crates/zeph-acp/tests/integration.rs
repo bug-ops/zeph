@@ -118,9 +118,9 @@ fn permission_gated_spawner(decision_tx: tokio::sync::mpsc::UnboundedSender<bool
                 .expect("AcpContext must be present")
                 .permission_gate
                 .expect("permission gate must be present");
-            let tool_call = acp::schema::v1::ToolCallUpdate::new(
+            let tool_call = acp::v1::schema::ToolCallUpdate::new(
                 "tc-perm-1".to_owned(),
-                acp::schema::v1::ToolCallUpdateFields::new().title("shell_execute".to_owned()),
+                acp::v1::schema::ToolCallUpdateFields::new().title("shell_execute".to_owned()),
             );
             let allowed = gate
                 .check_permission(session.session_id, tool_call)
@@ -209,9 +209,9 @@ fn temp_workdir() -> TempDir {
 
 /// Extracts the current selected value from a `model` / `temperature` (`Select`-kind)
 /// `SessionConfigOption`. Panics if the option is not a `Select`.
-fn select_current_value(option: &acp::schema::v1::SessionConfigOption) -> &str {
+fn select_current_value(option: &acp::v1::schema::SessionConfigOption) -> &str {
     match &option.kind {
-        acp::schema::v1::SessionConfigKind::Select(select) => select.current_value.0.as_ref(),
+        acp::v1::schema::SessionConfigKind::Select(select) => select.current_value.0.as_ref(),
         #[allow(unreachable_patterns)]
         other => panic!("expected a Select config option, got {other:?}"),
     }
@@ -230,19 +230,22 @@ async fn initialize_handshake() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                let resp = cx
-                    .send_request(acp::schema::v1::InitializeRequest::new(
-                        acp::schema::ProtocolVersion::LATEST,
-                    ))
-                    .block_task()
-                    .await?;
-                assert!(resp.agent_info.is_some(), "agent_info missing");
-                let info = resp.agent_info.unwrap();
-                assert_eq!(info.name, "test-agent");
-                assert_eq!(info.version, "0.0.1");
-                Ok(())
-            });
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        let resp = cx
+                            .send_request(acp::v1::schema::InitializeRequest::new(
+                                acp::schema::ProtocolVersion::LATEST,
+                            ))
+                            .block_task()
+                            .await?;
+                        assert!(resp.agent_info.is_some(), "agent_info missing");
+                        let info = resp.agent_info.unwrap();
+                        assert_eq!(info.name, "test-agent");
+                        assert_eq!(info.version, "0.0.1");
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -268,24 +271,27 @@ async fn new_session_returns_session_id() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let resp = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?;
+                        let resp = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?;
 
-                assert!(
-                    !resp.session_id.0.is_empty(),
-                    "session_id must not be empty"
-                );
-                Ok(())
-            });
+                        assert!(
+                            !resp.session_id.0.is_empty(),
+                            "session_id must not be empty"
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -311,23 +317,26 @@ async fn cancel_notification_does_not_panic() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_resp = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?;
+                        let session_resp = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?;
 
-                cx.send_notification(acp::schema::v1::CancelNotification::new(
-                    session_resp.session_id,
-                ))?;
-                Ok(())
-            });
+                        cx.send_notification(acp::v1::schema::CancelNotification::new(
+                            session_resp.session_id,
+                        ))?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -351,29 +360,33 @@ async fn unknown_ext_method_returns_null() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let raw_params =
-                    Arc::from(serde_json::value::RawValue::from_string("{}".to_owned()).unwrap());
-                let resp = cx
-                    .send_request(acp::schema::v1::ClientRequest::ExtMethodRequest(
-                        acp::schema::v1::ExtRequest::new("_unknown_method", raw_params),
-                    ))
-                    .block_task()
-                    .await?;
+                        let raw_params = Arc::from(
+                            serde_json::value::RawValue::from_string("{}".to_owned()).unwrap(),
+                        );
+                        let resp = cx
+                            .send_request(acp::v1::schema::ClientRequest::ExtMethodRequest(
+                                acp::v1::schema::ExtRequest::new("_unknown_method", raw_params),
+                            ))
+                            .block_task()
+                            .await?;
 
-                assert_eq!(
-                    resp.to_string(),
-                    "null",
-                    "unknown ext method must return null"
-                );
-                Ok(())
-            });
+                        assert_eq!(
+                            resp.to_string(),
+                            "null",
+                            "unknown ext method must return null"
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -399,29 +412,33 @@ async fn providers_list_reflects_configured_provider_names() {
             );
             let server_fut =
                 serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let raw_params =
-                    Arc::from(serde_json::value::RawValue::from_string("{}".to_owned()).unwrap());
-                let resp = cx
-                    .send_request(acp::schema::v1::ClientRequest::ExtMethodRequest(
-                        acp::schema::v1::ExtRequest::new("providers/list", raw_params),
-                    ))
-                    .block_task()
-                    .await?;
+                        let raw_params = Arc::from(
+                            serde_json::value::RawValue::from_string("{}".to_owned()).unwrap(),
+                        );
+                        let resp = cx
+                            .send_request(acp::v1::schema::ClientRequest::ExtMethodRequest(
+                                acp::v1::schema::ExtRequest::new("providers/list", raw_params),
+                            ))
+                            .block_task()
+                            .await?;
 
-                let body = resp.to_string();
-                assert!(
-                    body.contains("openai"),
-                    "providers/list must include the configured provider name, got: {body}"
-                );
-                Ok(())
-            });
+                        let body = resp.to_string();
+                        assert!(
+                            body.contains("openai"),
+                            "providers/list must include the configured provider name, got: {body}"
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -447,27 +464,30 @@ async fn load_session_unknown_id_returns_error() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let err = cx
-                    .send_request(acp::schema::v1::LoadSessionRequest::new(
-                        "non-existent-session-id",
-                        workdir.path(),
-                    ))
-                    .block_task()
-                    .await;
+                        let err = cx
+                            .send_request(acp::v1::schema::LoadSessionRequest::new(
+                                "non-existent-session-id",
+                                workdir.path(),
+                            ))
+                            .block_task()
+                            .await;
 
-                assert!(
-                    err.is_err(),
-                    "load_session of unknown id must return an error"
-                );
-                Ok(())
-            });
+                        assert!(
+                            err.is_err(),
+                            "load_session of unknown id must return an error"
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -493,36 +513,39 @@ async fn session_list_contains_created_sessions() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                // Create two sessions so the list is non-trivially non-empty.
-                let id_a = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
-                let id_b = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        // Create two sessions so the list is non-trivially non-empty.
+                        let id_a = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
+                        let id_b = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                let resp = cx
-                    .send_request(acp::schema::v1::ListSessionsRequest::new())
-                    .block_task()
-                    .await?;
+                        let resp = cx
+                            .send_request(acp::v1::schema::ListSessionsRequest::new())
+                            .block_task()
+                            .await?;
 
-                let ids: Vec<&acp::schema::v1::SessionId> =
-                    resp.sessions.iter().map(|s| &s.session_id).collect();
-                assert!(ids.contains(&&id_a), "session A not in list: {ids:?}");
-                assert!(ids.contains(&&id_b), "session B not in list: {ids:?}");
-                Ok(())
-            });
+                        let ids: Vec<&acp::v1::schema::SessionId> =
+                            resp.sessions.iter().map(|s| &s.session_id).collect();
+                        assert!(ids.contains(&&id_a), "session A not in list: {ids:?}");
+                        assert!(ids.contains(&&id_b), "session B not in list: {ids:?}");
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -549,35 +572,38 @@ async fn prompt_round_trip_returns_end_turn() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                let content = vec![acp::schema::v1::ContentBlock::Text(
-                    acp::schema::v1::TextContent::new("hello"),
-                )];
-                let resp = cx
-                    .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
-                    .block_task()
-                    .await?;
+                        let content = vec![acp::v1::schema::ContentBlock::Text(
+                            acp::v1::schema::TextContent::new("hello"),
+                        )];
+                        let resp = cx
+                            .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
+                            .block_task()
+                            .await?;
 
-                assert_eq!(
-                    resp.stop_reason,
-                    acp::schema::v1::StopReason::EndTurn,
-                    "expected EndTurn, got {:?}",
-                    resp.stop_reason,
-                );
-                Ok(())
-            });
+                        assert_eq!(
+                            resp.stop_reason,
+                            acp::v1::schema::StopReason::EndTurn,
+                            "expected EndTurn, got {:?}",
+                            resp.stop_reason,
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -604,33 +630,36 @@ async fn drain_until_stop_collects_text_chunks() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                let content = vec![acp::schema::v1::ContentBlock::Text(
-                    acp::schema::v1::TextContent::new("go"),
-                )];
-                let resp = cx
-                    .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
-                    .block_task()
-                    .await?;
+                        let content = vec![acp::v1::schema::ContentBlock::Text(
+                            acp::v1::schema::TextContent::new("go"),
+                        )];
+                        let resp = cx
+                            .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
+                            .block_task()
+                            .await?;
 
-                assert_eq!(resp.stop_reason, acp::schema::v1::StopReason::EndTurn);
-                // The PromptResponse carries the assembled text from all chunks.
-                // Verify the stop_reason and that the round-trip succeeded — the per-chunk
-                // assembly logic is exercised by driver::drain_until_stop in client tests.
-                Ok(())
-            });
+                        assert_eq!(resp.stop_reason, acp::v1::schema::StopReason::EndTurn);
+                        // The PromptResponse carries the assembled text from all chunks.
+                        // Verify the stop_reason and that the round-trip succeeded — the per-chunk
+                        // assembly logic is exercised by driver::drain_until_stop in client tests.
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -669,14 +698,14 @@ async fn review_command_output_is_delivered_to_client() {
             let collected = Arc::new(std::sync::Mutex::new(String::new()));
             let collected_for_handler = Arc::clone(&collected);
             let client_fut = acp::Client
-                .builder()
+                .v1()
                 .on_receive_notification(
-                    move |notification: acp::schema::v1::SessionNotification, _cx| {
+                    move |notification: acp::v1::schema::SessionNotification, _cx| {
                         let collected = Arc::clone(&collected_for_handler);
                         async move {
-                            if let acp::schema::v1::SessionUpdate::AgentMessageChunk(chunk) =
+                            if let acp::v1::schema::SessionUpdate::AgentMessageChunk(chunk) =
                                 notification.update
-                                && let acp::schema::v1::ContentBlock::Text(text) = chunk.content
+                                && let acp::v1::schema::ContentBlock::Text(text) = chunk.content
                             {
                                 collected.lock().unwrap().push_str(&text.text);
                             }
@@ -686,27 +715,27 @@ async fn review_command_output_is_delivered_to_client() {
                     acp::on_receive_notification!(),
                 )
                 .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                    cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    cx.send_request(acp::v1::schema::InitializeRequest::new(
                         acp::schema::ProtocolVersion::LATEST,
                     ))
                     .block_task()
                     .await?;
 
                     let session_id = cx
-                        .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                        .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
                         .block_task()
                         .await?
                         .session_id;
 
-                    let content = vec![acp::schema::v1::ContentBlock::Text(
-                        acp::schema::v1::TextContent::new("/review"),
+                    let content = vec![acp::v1::schema::ContentBlock::Text(
+                        acp::v1::schema::TextContent::new("/review"),
                     )];
                     let resp = cx
-                        .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
+                        .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
                         .block_task()
                         .await?;
 
-                    assert_eq!(resp.stop_reason, acp::schema::v1::StopReason::EndTurn);
+                    assert_eq!(resp.stop_reason, acp::v1::schema::StopReason::EndTurn);
                     Ok(())
                 });
             tokio::select! {
@@ -756,39 +785,44 @@ async fn cancel_before_prompt_is_a_no_op() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                // Cancel notification arrives with no prompt in flight on this session.
-                cx.send_notification(acp::schema::v1::CancelNotification::new(session_id.clone()))?;
+                        // Cancel notification arrives with no prompt in flight on this session.
+                        cx.send_notification(acp::v1::schema::CancelNotification::new(
+                            session_id.clone(),
+                        ))?;
 
-                let content = vec![acp::schema::v1::ContentBlock::Text(
-                    acp::schema::v1::TextContent::new("go"),
-                )];
-                let resp = cx
-                    .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
-                    .block_task()
-                    .await?;
+                        let content = vec![acp::v1::schema::ContentBlock::Text(
+                            acp::v1::schema::TextContent::new("go"),
+                        )];
+                        let resp = cx
+                            .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
+                            .block_task()
+                            .await?;
 
-                assert_eq!(
-                    resp.stop_reason,
-                    acp::schema::v1::StopReason::EndTurn,
-                    "a cancel notification sent before any prompt is in flight must not \
+                        assert_eq!(
+                            resp.stop_reason,
+                            acp::v1::schema::StopReason::EndTurn,
+                            "a cancel notification sent before any prompt is in flight must not \
                      retroactively cancel the next prompt, got {:?}",
-                    resp.stop_reason,
-                );
-                Ok(())
-            });
+                            resp.stop_reason,
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -823,59 +857,64 @@ async fn late_cancel_after_prompt_completion_does_not_affect_next_prompt() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
-
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+            let client_fut = acp::Client.v1().connect_with(
+                acp::ByteStreams::new(cw, cr),
+                async |cx| {
+                    cx.send_request(acp::v1::schema::InitializeRequest::new(
+                        acp::schema::ProtocolVersion::LATEST,
+                    ))
                     .block_task()
-                    .await?
-                    .session_id;
+                    .await?;
 
-                let first_content = vec![acp::schema::v1::ContentBlock::Text(
-                    acp::schema::v1::TextContent::new("first"),
-                )];
-                let first = cx
-                    .send_request(acp::schema::v1::PromptRequest::new(
+                    let session_id = cx
+                        .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                        .block_task()
+                        .await?
+                        .session_id;
+
+                    let first_content = vec![acp::v1::schema::ContentBlock::Text(
+                        acp::v1::schema::TextContent::new("first"),
+                    )];
+                    let first = cx
+                        .send_request(acp::v1::schema::PromptRequest::new(
+                            session_id.clone(),
+                            first_content,
+                        ))
+                        .block_task()
+                        .await?;
+                    assert_eq!(
+                        first.stop_reason,
+                        acp::v1::schema::StopReason::EndTurn,
+                        "first prompt must complete normally before the late cancel arrives"
+                    );
+
+                    // No prompt is in flight at this point — this notify leaves a permit on the
+                    // shared `cancel_signal` that must be drained before the next prompt's
+                    // `drain_agent_events` loop starts.
+                    cx.send_notification(acp::v1::schema::CancelNotification::new(
                         session_id.clone(),
-                        first_content,
-                    ))
-                    .block_task()
-                    .await?;
-                assert_eq!(
-                    first.stop_reason,
-                    acp::schema::v1::StopReason::EndTurn,
-                    "first prompt must complete normally before the late cancel arrives"
-                );
+                    ))?;
 
-                // No prompt is in flight at this point — this notify leaves a permit on the
-                // shared `cancel_signal` that must be drained before the next prompt's
-                // `drain_agent_events` loop starts.
-                cx.send_notification(acp::schema::v1::CancelNotification::new(session_id.clone()))?;
-
-                let second_content = vec![acp::schema::v1::ContentBlock::Text(
-                    acp::schema::v1::TextContent::new("second"),
-                )];
-                let second = cx
-                    .send_request(acp::schema::v1::PromptRequest::new(
-                        session_id,
-                        second_content,
-                    ))
-                    .block_task()
-                    .await?;
-                assert_eq!(
-                    second.stop_reason,
-                    acp::schema::v1::StopReason::EndTurn,
-                    "a cancel notification that arrives between two prompts must not cancel \
+                    let second_content = vec![acp::v1::schema::ContentBlock::Text(
+                        acp::v1::schema::TextContent::new("second"),
+                    )];
+                    let second = cx
+                        .send_request(acp::v1::schema::PromptRequest::new(
+                            session_id,
+                            second_content,
+                        ))
+                        .block_task()
+                        .await?;
+                    assert_eq!(
+                        second.stop_reason,
+                        acp::v1::schema::StopReason::EndTurn,
+                        "a cancel notification that arrives between two prompts must not cancel \
                      the next, unrelated prompt, got {:?}",
-                    second.stop_reason,
-                );
-                Ok(())
-            });
+                        second.stop_reason,
+                    );
+                    Ok(())
+                },
+            );
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -900,18 +939,21 @@ async fn authenticate_returns_default_response() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                cx.send_request(acp::schema::v1::AuthenticateRequest::new("agent"))
-                    .block_task()
-                    .await?;
-                Ok(())
-            });
+                        cx.send_request(acp::v1::schema::AuthenticateRequest::new("agent"))
+                            .block_task()
+                            .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -936,18 +978,21 @@ async fn logout_returns_default_response() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                cx.send_request(acp::schema::v1::LogoutRequest::new())
-                    .block_task()
-                    .await?;
-                Ok(())
-            });
+                        cx.send_request(acp::v1::schema::LogoutRequest::new())
+                            .block_task()
+                            .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -975,38 +1020,41 @@ async fn close_session_removes_session_from_memory() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                cx.send_request(acp::schema::v1::CloseSessionRequest::new(
-                    session_id.clone(),
-                ))
-                .block_task()
-                .await?;
+                        cx.send_request(acp::v1::schema::CloseSessionRequest::new(
+                            session_id.clone(),
+                        ))
+                        .block_task()
+                        .await?;
 
-                let load_err = cx
-                    .send_request(acp::schema::v1::LoadSessionRequest::new(
-                        session_id,
-                        workdir.path(),
-                    ))
-                    .block_task()
-                    .await;
-                assert!(
-                    load_err.is_err(),
-                    "loading a closed session must fail when no store is configured"
-                );
-                Ok(())
-            });
+                        let load_err = cx
+                            .send_request(acp::v1::schema::LoadSessionRequest::new(
+                                session_id,
+                                workdir.path(),
+                            ))
+                            .block_task()
+                            .await;
+                        assert!(
+                            load_err.is_err(),
+                            "loading a closed session must fail when no store is configured"
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1040,37 +1088,40 @@ async fn delete_session_removes_session_from_list() {
             };
             let server_fut =
                 serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                cx.send_request(acp::schema::v1::DeleteSessionRequest::new(
-                    session_id.clone(),
-                ))
-                .block_task()
-                .await?;
+                        cx.send_request(acp::v1::schema::DeleteSessionRequest::new(
+                            session_id.clone(),
+                        ))
+                        .block_task()
+                        .await?;
 
-                let resp = cx
-                    .send_request(acp::schema::v1::ListSessionsRequest::new())
-                    .block_task()
-                    .await?;
-                let ids: Vec<&acp::schema::v1::SessionId> =
-                    resp.sessions.iter().map(|s| &s.session_id).collect();
-                assert!(
-                    !ids.contains(&&session_id),
-                    "deleted session must not appear in session/list: {ids:?}"
-                );
-                Ok(session_id)
-            });
+                        let resp = cx
+                            .send_request(acp::v1::schema::ListSessionsRequest::new())
+                            .block_task()
+                            .await?;
+                        let ids: Vec<&acp::v1::schema::SessionId> =
+                            resp.sessions.iter().map(|s| &s.session_id).collect();
+                        assert!(
+                            !ids.contains(&&session_id),
+                            "deleted session must not appear in session/list: {ids:?}"
+                        );
+                        Ok(session_id)
+                    });
             let session_id = tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1117,29 +1168,32 @@ async fn close_session_aborts_agent_loop_task() {
                 "acp-local".to_owned(),
             );
             let started_for_client = Arc::clone(&started);
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                // Wait for the agent-loop task to actually start running before racing close
-                // against it — otherwise a close that lands before the task is even polled
-                // once would pass vacuously.
-                started_for_client.notified().await;
+                        // Wait for the agent-loop task to actually start running before racing close
+                        // against it — otherwise a close that lands before the task is even polled
+                        // once would pass vacuously.
+                        started_for_client.notified().await;
 
-                cx.send_request(acp::schema::v1::CloseSessionRequest::new(session_id))
-                    .block_task()
-                    .await?;
-                Ok(())
-            });
+                        cx.send_request(acp::v1::schema::CloseSessionRequest::new(session_id))
+                            .block_task()
+                            .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1173,26 +1227,29 @@ async fn delete_session_aborts_agent_loop_task() {
                 "acp-local".to_owned(),
             );
             let started_for_client = Arc::clone(&started);
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                started_for_client.notified().await;
+                        started_for_client.notified().await;
 
-                cx.send_request(acp::schema::v1::DeleteSessionRequest::new(session_id))
-                    .block_task()
-                    .await?;
-                Ok(())
-            });
+                        cx.send_request(acp::v1::schema::DeleteSessionRequest::new(session_id))
+                            .block_task()
+                            .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1224,34 +1281,37 @@ async fn fork_session_creates_distinct_session_id() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let source_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let source_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                let forked = cx
-                    .send_request(acp::schema::v1::ForkSessionRequest::new(
-                        source_id.clone(),
-                        workdir.path(),
-                    ))
-                    .block_task()
-                    .await?;
+                        let forked = cx
+                            .send_request(acp::v1::schema::ForkSessionRequest::new(
+                                source_id.clone(),
+                                workdir.path(),
+                            ))
+                            .block_task()
+                            .await?;
 
-                assert_ne!(
-                    forked.session_id, source_id,
-                    "forked session must have a distinct id from the source"
-                );
-                assert!(!forked.session_id.0.is_empty());
-                Ok(())
-            });
+                        assert_ne!(
+                            forked.session_id, source_id,
+                            "forked session must have a distinct id from the source"
+                        );
+                        assert!(!forked.session_id.0.is_empty());
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1294,15 +1354,16 @@ async fn fork_session_copies_event_log_when_persistence_enabled() {
             };
             let server_fut =
                 serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
+            let client = acp::Client.v1();
+            let client_fut = client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
 
                 let source_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?
                     .session_id;
@@ -1339,7 +1400,7 @@ async fn fork_session_copies_event_log_when_persistence_enabled() {
                 .expect("append UserMessage");
 
                 let forked = cx
-                    .send_request(acp::schema::v1::ForkSessionRequest::new(
+                    .send_request(acp::v1::schema::ForkSessionRequest::new(
                         source_id.clone(),
                         workdir.path(),
                     ))
@@ -1400,27 +1461,30 @@ async fn resume_session_reconnects_to_existing_session() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                cx.send_request(acp::schema::v1::ResumeSessionRequest::new(
-                    session_id,
-                    workdir.path(),
-                ))
-                .block_task()
-                .await?;
-                Ok(())
-            });
+                        cx.send_request(acp::v1::schema::ResumeSessionRequest::new(
+                            session_id,
+                            workdir.path(),
+                        ))
+                        .block_task()
+                        .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1467,20 +1531,24 @@ async fn resume_session_reconstructs_from_store_after_restart() {
                 let server_fut =
                     serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
                 let client_fut =
-                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::schema::v1::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
-
-                        let session_id = cx
-                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    acp::Client
+                        .v1()
+                        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                            cx.send_request(acp::v1::schema::InitializeRequest::new(
+                                acp::schema::ProtocolVersion::LATEST,
+                            ))
                             .block_task()
-                            .await?
-                            .session_id;
-                        Ok(session_id)
-                    });
+                            .await?;
+
+                            let session_id = cx
+                                .send_request(acp::v1::schema::NewSessionRequest::new(
+                                    workdir.path(),
+                                ))
+                                .block_task()
+                                .await?
+                                .session_id;
+                            Ok(session_id)
+                        });
                 tokio::select! {
                     res = server_fut => panic!("server exited before client: {res:?}"),
                     result = client_fut => result.expect("session/new failed"),
@@ -1496,37 +1564,40 @@ async fn resume_session_reconstructs_from_store_after_restart() {
             };
             let server_fut =
                 serve_connection(echo_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                cx.send_request(acp::schema::v1::ResumeSessionRequest::new(
-                    session_id.clone(),
-                    workdir.path(),
-                ))
-                .block_task()
-                .await?;
+                        cx.send_request(acp::v1::schema::ResumeSessionRequest::new(
+                            session_id.clone(),
+                            workdir.path(),
+                        ))
+                        .block_task()
+                        .await?;
 
-                // Prove the rebuilt session is actually functional: a real agent-loop task
-                // must have been spawned and wired to the reconstructed channel entry.
-                let content = vec![acp::schema::v1::ContentBlock::Text(
-                    acp::schema::v1::TextContent::new("hello again"),
-                )];
-                let resp = cx
-                    .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
-                    .block_task()
-                    .await?;
-                assert_eq!(
-                    resp.stop_reason,
-                    acp::schema::v1::StopReason::EndTurn,
-                    "expected EndTurn from the store-reconstructed session, got {:?}",
-                    resp.stop_reason,
-                );
-                Ok(())
-            });
+                        // Prove the rebuilt session is actually functional: a real agent-loop task
+                        // must have been spawned and wired to the reconstructed channel entry.
+                        let content = vec![acp::v1::schema::ContentBlock::Text(
+                            acp::v1::schema::TextContent::new("hello again"),
+                        )];
+                        let resp = cx
+                            .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
+                            .block_task()
+                            .await?;
+                        assert_eq!(
+                            resp.stop_reason,
+                            acp::v1::schema::StopReason::EndTurn,
+                            "expected EndTurn from the store-reconstructed session, got {:?}",
+                            resp.stop_reason,
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1571,20 +1642,24 @@ async fn load_session_succeeds_from_event_log_with_no_legacy_rows() {
                 let server_fut =
                     serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
                 let client_fut =
-                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::schema::v1::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
-
-                        let session_id = cx
-                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    acp::Client
+                        .v1()
+                        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                            cx.send_request(acp::v1::schema::InitializeRequest::new(
+                                acp::schema::ProtocolVersion::LATEST,
+                            ))
                             .block_task()
-                            .await?
-                            .session_id;
-                        Ok(session_id)
-                    });
+                            .await?;
+
+                            let session_id = cx
+                                .send_request(acp::v1::schema::NewSessionRequest::new(
+                                    workdir.path(),
+                                ))
+                                .block_task()
+                                .await?
+                                .session_id;
+                            Ok(session_id)
+                        });
                 tokio::select! {
                     res = server_fut => panic!("server exited before client: {res:?}"),
                     result = client_fut => result.expect("session/new failed"),
@@ -1618,21 +1693,24 @@ async fn load_session_succeeds_from_event_log_with_no_legacy_rows() {
             };
             let server_fut =
                 serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                cx.send_request(acp::schema::v1::LoadSessionRequest::new(
-                    session_id,
-                    workdir.path(),
-                ))
-                .block_task()
-                .await?;
-                Ok(())
-            });
+                        cx.send_request(acp::v1::schema::LoadSessionRequest::new(
+                            session_id,
+                            workdir.path(),
+                        ))
+                        .block_task()
+                        .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1664,72 +1742,77 @@ async fn fork_session_inherits_config_from_in_memory_source() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
-
-                let source_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
-
-                cx.send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
-                    source_id.clone(),
-                    "temperature",
-                    "creative",
-                ))
-                .block_task()
-                .await?;
-                cx.send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
-                    source_id.clone(),
-                    "thinking",
-                    "on",
-                ))
-                .block_task()
-                .await?;
-                cx.send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
-                    source_id.clone(),
-                    "auto_approve",
-                    "auto-edit",
-                ))
-                .block_task()
-                .await?;
-
-                let forked = cx
-                    .send_request(acp::schema::v1::ForkSessionRequest::new(
-                        source_id,
-                        workdir.path(),
+            let client_fut = acp::Client.v1().connect_with(
+                acp::ByteStreams::new(cw, cr),
+                async |cx| {
+                    cx.send_request(acp::v1::schema::InitializeRequest::new(
+                        acp::schema::ProtocolVersion::LATEST,
                     ))
                     .block_task()
                     .await?;
 
-                let options = forked.config_options.unwrap_or_default();
-                let get = |id: &str| {
-                    select_current_value(options.iter().find(|o| o.id.0.as_ref() == id).unwrap())
+                    let source_id = cx
+                        .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                        .block_task()
+                        .await?
+                        .session_id;
+
+                    cx.send_request(acp::v1::schema::SetSessionConfigOptionRequest::new(
+                        source_id.clone(),
+                        "temperature",
+                        "creative",
+                    ))
+                    .block_task()
+                    .await?;
+                    cx.send_request(acp::v1::schema::SetSessionConfigOptionRequest::new(
+                        source_id.clone(),
+                        "thinking",
+                        "on",
+                    ))
+                    .block_task()
+                    .await?;
+                    cx.send_request(acp::v1::schema::SetSessionConfigOptionRequest::new(
+                        source_id.clone(),
+                        "auto_approve",
+                        "auto-edit",
+                    ))
+                    .block_task()
+                    .await?;
+
+                    let forked = cx
+                        .send_request(acp::v1::schema::ForkSessionRequest::new(
+                            source_id,
+                            workdir.path(),
+                        ))
+                        .block_task()
+                        .await?;
+
+                    let options = forked.config_options.unwrap_or_default();
+                    let get = |id: &str| {
+                        select_current_value(
+                            options.iter().find(|o| o.id.0.as_ref() == id).unwrap(),
+                        )
                         .to_owned()
-                };
-                assert_eq!(
-                    get("temperature"),
-                    "creative",
-                    "forked session must inherit the source's temperature preset, not reset to \
+                    };
+                    assert_eq!(
+                        get("temperature"),
+                        "creative",
+                        "forked session must inherit the source's temperature preset, not reset to \
                      the configured default"
-                );
-                assert_eq!(
-                    get("thinking"),
-                    "on",
-                    "forked session must inherit the source's thinking toggle"
-                );
-                assert_eq!(
-                    get("auto_approve"),
-                    "auto-edit",
-                    "forked session must inherit the source's auto-approve level"
-                );
-                Ok(())
-            });
+                    );
+                    assert_eq!(
+                        get("thinking"),
+                        "on",
+                        "forked session must inherit the source's thinking toggle"
+                    );
+                    assert_eq!(
+                        get("auto_approve"),
+                        "auto-edit",
+                        "forked session must inherit the source's auto-approve level"
+                    );
+                    Ok(())
+                },
+            );
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1768,42 +1851,45 @@ async fn resume_session_inherits_temperature_preset_after_close() {
 
             let server_fut =
                 serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                // Switch away from the configured default ("balanced") before closing.
-                cx.send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
-                    session_id.clone(),
-                    "temperature",
-                    "creative",
-                ))
-                .block_task()
-                .await?;
+                        // Switch away from the configured default ("balanced") before closing.
+                        cx.send_request(acp::v1::schema::SetSessionConfigOptionRequest::new(
+                            session_id.clone(),
+                            "temperature",
+                            "creative",
+                        ))
+                        .block_task()
+                        .await?;
 
-                cx.send_request(acp::schema::v1::CloseSessionRequest::new(
-                    session_id.clone(),
-                ))
-                .block_task()
-                .await?;
+                        cx.send_request(acp::v1::schema::CloseSessionRequest::new(
+                            session_id.clone(),
+                        ))
+                        .block_task()
+                        .await?;
 
-                cx.send_request(acp::schema::v1::ResumeSessionRequest::new(
-                    session_id,
-                    workdir.path(),
-                ))
-                .block_task()
-                .await?;
-                Ok(())
-            });
+                        cx.send_request(acp::v1::schema::ResumeSessionRequest::new(
+                            session_id,
+                            workdir.path(),
+                        ))
+                        .block_task()
+                        .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1842,27 +1928,30 @@ async fn set_session_mode_switches_mode() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                cx.send_request(acp::schema::v1::SetSessionModeRequest::new(
-                    session_id,
-                    "architect",
-                ))
-                .block_task()
-                .await?;
-                Ok(())
-            });
+                        cx.send_request(acp::v1::schema::SetSessionModeRequest::new(
+                            session_id,
+                            "architect",
+                        ))
+                        .block_task()
+                        .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1890,40 +1979,43 @@ async fn set_session_config_option_model_switches_active_model() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                let resp = cx
-                    .send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
-                        session_id,
-                        "model",
-                        "ollama:llama3",
-                    ))
-                    .block_task()
-                    .await?;
+                        let resp = cx
+                            .send_request(acp::v1::schema::SetSessionConfigOptionRequest::new(
+                                session_id,
+                                "model",
+                                "ollama:llama3",
+                            ))
+                            .block_task()
+                            .await?;
 
-                let model_option = resp
-                    .config_options
-                    .iter()
-                    .find(|o| o.id.0.as_ref() == "model")
-                    .expect("model option must be present");
-                assert_eq!(
-                    select_current_value(model_option),
-                    "ollama:llama3",
-                    "model option must reflect the switched model"
-                );
-                Ok(())
-            });
+                        let model_option = resp
+                            .config_options
+                            .iter()
+                            .find(|o| o.id.0.as_ref() == "model")
+                            .expect("model option must be present");
+                        assert_eq!(
+                            select_current_value(model_option),
+                            "ollama:llama3",
+                            "model option must reflect the switched model"
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -1951,15 +2043,15 @@ async fn set_session_config_option_temperature_preset_changes() {
                 sr,
             "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
+            let client_fut = acp::Client.v1().connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
 
                 let session_resp = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?;
                 let session_id = session_resp.session_id;
@@ -1974,7 +2066,7 @@ async fn set_session_config_option_temperature_preset_changes() {
                 assert_eq!(select_current_value(&initial_temperature), "balanced");
 
                 let resp = cx
-                    .send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
+                    .send_request(acp::v1::schema::SetSessionConfigOptionRequest::new(
                         session_id,
                         "temperature",
                         "creative",
@@ -2040,20 +2132,23 @@ async fn default_temperature_preset_is_primed_at_session_creation() {
 
             let server_fut =
                 serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                // No session/set_config_option call is made — the default preset must already
-                // be effective from session creation alone.
-                cx.send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?;
-                Ok(())
-            });
+                        // No session/set_config_option call is made — the default preset must already
+                        // be effective from session creation alone.
+                        cx.send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -2093,30 +2188,33 @@ async fn set_session_config_option_unknown_config_id_errors() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                let err = cx
-                    .send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
-                        session_id,
-                        "nonexistent_option",
-                        "whatever",
-                    ))
-                    .block_task()
-                    .await;
-                assert!(err.is_err(), "unknown config_id must return an error");
-                Ok(())
-            });
+                        let err = cx
+                            .send_request(acp::v1::schema::SetSessionConfigOptionRequest::new(
+                                session_id,
+                                "nonexistent_option",
+                                "whatever",
+                            ))
+                            .block_task()
+                            .await;
+                        assert!(err.is_err(), "unknown config_id must return an error");
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -2146,52 +2244,55 @@ async fn cancel_request_during_prompt_cancels() {
                 sr,
                 "acp-local".to_owned(),
             );
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
 
-                let session_id = cx
-                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
 
-                let content = vec![acp::schema::v1::ContentBlock::Text(
-                    acp::schema::v1::TextContent::new("go"),
-                )];
-                let request =
-                    cx.send_request(acp::schema::v1::PromptRequest::new(session_id, content));
-                // Cancel the specific in-flight session/prompt JSON-RPC request via the real
-                // protocol-level $/cancel_request notification (distinct from session/cancel).
-                request.cancel()?;
+                        let content = vec![acp::v1::schema::ContentBlock::Text(
+                            acp::v1::schema::TextContent::new("go"),
+                        )];
+                        let request = cx
+                            .send_request(acp::v1::schema::PromptRequest::new(session_id, content));
+                        // Cancel the specific in-flight session/prompt JSON-RPC request via the real
+                        // protocol-level $/cancel_request notification (distinct from session/cancel).
+                        request.cancel()?;
 
-                let resp = request.block_task().await;
-                // Cooperative cancellation: the handler may still finish with EndTurn if the
-                // watcher loses the race, or return the standard cancellation error, or
-                // (when the cancel_signal wins inside drain_agent_events) complete with
-                // StopReason::Cancelled. All three are valid SDK-documented outcomes; the
-                // assertion only rules out a hang or panic.
-                match resp {
-                    Ok(r) => {
-                        assert_matches!(
-                            r.stop_reason,
-                            acp::schema::v1::StopReason::EndTurn
-                                | acp::schema::v1::StopReason::Cancelled
-                        );
-                    }
-                    Err(e) => {
-                        assert_eq!(
-                            i32::from(e.code),
-                            -32800,
-                            "expected request_cancelled error"
-                        );
-                    }
-                }
-                Ok(())
-            });
+                        let resp = request.block_task().await;
+                        // Cooperative cancellation: the handler may still finish with EndTurn if the
+                        // watcher loses the race, or return the standard cancellation error, or
+                        // (when the cancel_signal wins inside drain_agent_events) complete with
+                        // StopReason::Cancelled. All three are valid SDK-documented outcomes; the
+                        // assertion only rules out a hang or panic.
+                        match resp {
+                            Ok(r) => {
+                                assert_matches!(
+                                    r.stop_reason,
+                                    acp::v1::schema::StopReason::EndTurn
+                                        | acp::v1::schema::StopReason::Cancelled
+                                );
+                            }
+                            Err(e) => {
+                                assert_eq!(
+                                    i32::from(e.code),
+                                    -32800,
+                                    "expected request_cancelled error"
+                                );
+                            }
+                        }
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -2211,26 +2312,28 @@ async fn create_owned_session(
     sqlite_path: &str,
     owner: &str,
     workdir: &std::path::Path,
-) -> acp::schema::v1::SessionId {
+) -> acp::v1::schema::SessionId {
     let (sw, sr, cw, cr) = duplex_pair();
     let config = AcpServerConfig {
         sqlite_path: Some(sqlite_path.to_owned()),
         ..test_config("test-agent")
     };
     let server_fut = serve_connection(noop_spawner(), config, sw, sr, owner.to_owned());
-    let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-        cx.send_request(acp::schema::v1::InitializeRequest::new(
-            acp::schema::ProtocolVersion::LATEST,
-        ))
-        .block_task()
-        .await?;
-        let session_id = cx
-            .send_request(acp::schema::v1::NewSessionRequest::new(workdir))
+    let client_fut = acp::Client
+        .v1()
+        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+            cx.send_request(acp::v1::schema::InitializeRequest::new(
+                acp::schema::ProtocolVersion::LATEST,
+            ))
             .block_task()
-            .await?
-            .session_id;
-        Ok(session_id)
-    });
+            .await?;
+            let session_id = cx
+                .send_request(acp::v1::schema::NewSessionRequest::new(workdir))
+                .block_task()
+                .await?
+                .session_id;
+            Ok(session_id)
+        });
     tokio::select! {
         res = server_fut => panic!("server exited before client: {res:?}"),
         result = client_fut => result.expect("session/new failed"),
@@ -2265,28 +2368,31 @@ async fn list_sessions_isolated_by_owner_across_stdio_connections() {
                 ..test_config("test-agent")
             };
             let server_fut = serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
-                let resp = cx
-                    .send_request(acp::schema::v1::ListSessionsRequest::new())
-                    .block_task()
-                    .await?;
-                let ids: Vec<&acp::schema::v1::SessionId> =
-                    resp.sessions.iter().map(|s| &s.session_id).collect();
-                assert!(
-                    ids.contains(&&alice_session),
-                    "alice's own session missing from her list: {ids:?}"
-                );
-                assert!(
-                    !ids.contains(&&bob_session),
-                    "bob's session leaked into alice's list: {ids:?}"
-                );
-                Ok(())
-            });
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        let resp = cx
+                            .send_request(acp::v1::schema::ListSessionsRequest::new())
+                            .block_task()
+                            .await?;
+                        let ids: Vec<&acp::v1::schema::SessionId> =
+                            resp.sessions.iter().map(|s| &s.session_id).collect();
+                        assert!(
+                            ids.contains(&&alice_session),
+                            "alice's own session missing from her list: {ids:?}"
+                        );
+                        assert!(
+                            !ids.contains(&&bob_session),
+                            "bob's session leaked into alice's list: {ids:?}"
+                        );
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -2322,19 +2428,23 @@ async fn resume_session_cross_owner_fails() {
                 let server_fut =
                     serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
                 let client_fut =
-                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::schema::v1::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
-                        let session_id = cx
-                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    acp::Client
+                        .v1()
+                        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                            cx.send_request(acp::v1::schema::InitializeRequest::new(
+                                acp::schema::ProtocolVersion::LATEST,
+                            ))
                             .block_task()
-                            .await?
-                            .session_id;
-                        Ok(session_id)
-                    });
+                            .await?;
+                            let session_id = cx
+                                .send_request(acp::v1::schema::NewSessionRequest::new(
+                                    workdir.path(),
+                                ))
+                                .block_task()
+                                .await?
+                                .session_id;
+                            Ok(session_id)
+                        });
                 tokio::select! {
                     res = server_fut => panic!("server exited before client: {res:?}"),
                     result = client_fut => result.expect("session/new failed"),
@@ -2348,19 +2458,22 @@ async fn resume_session_cross_owner_fails() {
                 ..test_config("test-agent")
             };
             let server_fut = serve_connection(echo_spawner(), config, sw, sr, "bob".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
-                cx.send_request(acp::schema::v1::ResumeSessionRequest::new(
-                    session_id,
-                    workdir.path(),
-                ))
-                .block_task()
-                .await
-            });
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        cx.send_request(acp::v1::schema::ResumeSessionRequest::new(
+                            session_id,
+                            workdir.path(),
+                        ))
+                        .block_task()
+                        .await
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -2399,19 +2512,23 @@ async fn load_session_cross_owner_fails() {
                 let server_fut =
                     serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
                 let client_fut =
-                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::schema::v1::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
-                        let session_id = cx
-                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    acp::Client
+                        .v1()
+                        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                            cx.send_request(acp::v1::schema::InitializeRequest::new(
+                                acp::schema::ProtocolVersion::LATEST,
+                            ))
                             .block_task()
-                            .await?
-                            .session_id;
-                        Ok(session_id)
-                    });
+                            .await?;
+                            let session_id = cx
+                                .send_request(acp::v1::schema::NewSessionRequest::new(
+                                    workdir.path(),
+                                ))
+                                .block_task()
+                                .await?
+                                .session_id;
+                            Ok(session_id)
+                        });
                 tokio::select! {
                     res = server_fut => panic!("server exited before client: {res:?}"),
                     result = client_fut => result.expect("session/new failed"),
@@ -2424,19 +2541,22 @@ async fn load_session_cross_owner_fails() {
                 ..test_config("test-agent")
             };
             let server_fut = serve_connection(echo_spawner(), config, sw, sr, "bob".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
-                cx.send_request(acp::schema::v1::LoadSessionRequest::new(
-                    session_id,
-                    workdir.path(),
-                ))
-                .block_task()
-                .await
-            });
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        cx.send_request(acp::v1::schema::LoadSessionRequest::new(
+                            session_id,
+                            workdir.path(),
+                        ))
+                        .block_task()
+                        .await
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -2480,19 +2600,23 @@ async fn delete_session_cross_owner_fails() {
                 let server_fut =
                     serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
                 let client_fut =
-                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::schema::v1::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
-                        let session_id = cx
-                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    acp::Client
+                        .v1()
+                        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                            cx.send_request(acp::v1::schema::InitializeRequest::new(
+                                acp::schema::ProtocolVersion::LATEST,
+                            ))
                             .block_task()
-                            .await?
-                            .session_id;
-                        Ok(session_id)
-                    });
+                            .await?;
+                            let session_id = cx
+                                .send_request(acp::v1::schema::NewSessionRequest::new(
+                                    workdir.path(),
+                                ))
+                                .block_task()
+                                .await?
+                                .session_id;
+                            Ok(session_id)
+                        });
                 tokio::select! {
                     res = server_fut => panic!("server exited before client: {res:?}"),
                     result = client_fut => result.expect("session/new failed"),
@@ -2505,24 +2629,27 @@ async fn delete_session_cross_owner_fails() {
                 ..test_config("test-agent")
             };
             let server_fut = serve_connection(noop_spawner(), config, sw, sr, "bob".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
-                // Bob's request may return Ok (delete is a no-op for a foreign/nonexistent id,
-                // same uniform non-distinguishing shape as `claim_acp_session_for_owner`) or
-                // Err — either is acceptable here; what matters is verified below: alice's row
-                // must survive.
-                let _ = cx
-                    .send_request(acp::schema::v1::DeleteSessionRequest::new(
-                        session_id.clone(),
-                    ))
-                    .block_task()
-                    .await;
-                Ok(())
-            });
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        // Bob's request may return Ok (delete is a no-op for a foreign/nonexistent id,
+                        // same uniform non-distinguishing shape as `claim_acp_session_for_owner`) or
+                        // Err — either is acceptable here; what matters is verified below: alice's row
+                        // must survive.
+                        let _ = cx
+                            .send_request(acp::v1::schema::DeleteSessionRequest::new(
+                                session_id.clone(),
+                            ))
+                            .block_task()
+                            .await;
+                        Ok(())
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -2569,19 +2696,23 @@ async fn fork_session_cross_owner_fails() {
                 let server_fut =
                     serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
                 let client_fut =
-                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::schema::v1::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
-                        let session_id = cx
-                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    acp::Client
+                        .v1()
+                        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                            cx.send_request(acp::v1::schema::InitializeRequest::new(
+                                acp::schema::ProtocolVersion::LATEST,
+                            ))
                             .block_task()
-                            .await?
-                            .session_id;
-                        Ok(session_id)
-                    });
+                            .await?;
+                            let session_id = cx
+                                .send_request(acp::v1::schema::NewSessionRequest::new(
+                                    workdir.path(),
+                                ))
+                                .block_task()
+                                .await?
+                                .session_id;
+                            Ok(session_id)
+                        });
                 tokio::select! {
                     res = server_fut => panic!("server exited before client: {res:?}"),
                     result = client_fut => result.expect("session/new failed"),
@@ -2594,19 +2725,22 @@ async fn fork_session_cross_owner_fails() {
                 ..test_config("test-agent")
             };
             let server_fut = serve_connection(noop_spawner(), config, sw, sr, "bob".to_owned());
-            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::v1::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
-                ))
-                .block_task()
-                .await?;
-                cx.send_request(acp::schema::v1::ForkSessionRequest::new(
-                    session_id,
-                    workdir.path(),
-                ))
-                .block_task()
-                .await
-            });
+            let client_fut =
+                acp::Client
+                    .v1()
+                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::v1::schema::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        cx.send_request(acp::v1::schema::ForkSessionRequest::new(
+                            session_id,
+                            workdir.path(),
+                        ))
+                        .block_task()
+                        .await
+                    });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
@@ -2643,45 +2777,45 @@ async fn permission_gated_prompt_round_trip_does_not_deadlock() {
                 "acp-local".to_owned(),
             );
             let client_fut = acp::Client
-                .builder()
+                .v1()
                 .on_receive_request(
-                    async |_req: acp::schema::v1::RequestPermissionRequest,
-                           responder: acp::Responder<
-                        acp::schema::v1::RequestPermissionResponse,
+                    async |_req: acp::v1::schema::RequestPermissionRequest,
+                           responder: acp::v1::Responder<
+                        acp::v1::schema::RequestPermissionResponse,
                     >,
                            _cx| {
-                        responder.respond(acp::schema::v1::RequestPermissionResponse::new(
-                            acp::schema::v1::RequestPermissionOutcome::Selected(
-                                acp::schema::v1::SelectedPermissionOutcome::new("allow_once"),
+                        responder.respond(acp::v1::schema::RequestPermissionResponse::new(
+                            acp::v1::schema::RequestPermissionOutcome::Selected(
+                                acp::v1::schema::SelectedPermissionOutcome::new("allow_once"),
                             ),
                         ))
                     },
                     acp::on_receive_request!(),
                 )
                 .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                    cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    cx.send_request(acp::v1::schema::InitializeRequest::new(
                         acp::schema::ProtocolVersion::LATEST,
                     ))
                     .block_task()
                     .await?;
 
                     let session_id = cx
-                        .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                        .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
                         .block_task()
                         .await?
                         .session_id;
 
-                    let content = vec![acp::schema::v1::ContentBlock::Text(
-                        acp::schema::v1::TextContent::new("run a gated tool"),
+                    let content = vec![acp::v1::schema::ContentBlock::Text(
+                        acp::v1::schema::TextContent::new("run a gated tool"),
                     )];
                     let resp = cx
-                        .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
+                        .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
                         .block_task()
                         .await?;
 
                     assert_eq!(
                         resp.stop_reason,
-                        acp::schema::v1::StopReason::EndTurn,
+                        acp::v1::schema::StopReason::EndTurn,
                         "expected EndTurn, got {:?}",
                         resp.stop_reason,
                     );
@@ -2734,45 +2868,45 @@ async fn permission_gated_prompt_denial_does_not_deadlock() {
                 "acp-local".to_owned(),
             );
             let client_fut = acp::Client
-                .builder()
+                .v1()
                 .on_receive_request(
-                    async |_req: acp::schema::v1::RequestPermissionRequest,
-                           responder: acp::Responder<
-                        acp::schema::v1::RequestPermissionResponse,
+                    async |_req: acp::v1::schema::RequestPermissionRequest,
+                           responder: acp::v1::Responder<
+                        acp::v1::schema::RequestPermissionResponse,
                     >,
                            _cx| {
-                        responder.respond(acp::schema::v1::RequestPermissionResponse::new(
-                            acp::schema::v1::RequestPermissionOutcome::Selected(
-                                acp::schema::v1::SelectedPermissionOutcome::new("reject_once"),
+                        responder.respond(acp::v1::schema::RequestPermissionResponse::new(
+                            acp::v1::schema::RequestPermissionOutcome::Selected(
+                                acp::v1::schema::SelectedPermissionOutcome::new("reject_once"),
                             ),
                         ))
                     },
                     acp::on_receive_request!(),
                 )
                 .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                    cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    cx.send_request(acp::v1::schema::InitializeRequest::new(
                         acp::schema::ProtocolVersion::LATEST,
                     ))
                     .block_task()
                     .await?;
 
                     let session_id = cx
-                        .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                        .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
                         .block_task()
                         .await?
                         .session_id;
 
-                    let content = vec![acp::schema::v1::ContentBlock::Text(
-                        acp::schema::v1::TextContent::new("run a gated tool"),
+                    let content = vec![acp::v1::schema::ContentBlock::Text(
+                        acp::v1::schema::TextContent::new("run a gated tool"),
                     )];
                     let resp = cx
-                        .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
+                        .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
                         .block_task()
                         .await?;
 
                     assert_eq!(
                         resp.stop_reason,
-                        acp::schema::v1::StopReason::EndTurn,
+                        acp::v1::schema::StopReason::EndTurn,
                         "expected EndTurn, got {:?}",
                         resp.stop_reason,
                     );

@@ -49,8 +49,8 @@ impl ZephAcpAgentState {
     /// fall through to `ext_method_mcp`.
     pub(crate) fn ext_method_providers(
         &self,
-        args: &acp::schema::v1::ExtRequest,
-    ) -> acp::Result<Option<acp::schema::v1::ExtResponse>> {
+        args: &acp::v1::schema::ExtRequest,
+    ) -> acp::Result<Option<acp::v1::schema::ExtResponse>> {
         use agent_client_protocol_schema::v1 as schema;
         let method = args.method.as_ref();
         match method {
@@ -62,7 +62,7 @@ impl ZephAcpAgentState {
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
                 let raw = serde_json::value::RawValue::from_string(json)
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::v1::ExtResponse::new(raw.into())))
+                Ok(Some(acp::v1::schema::ExtResponse::new(raw.into())))
             }
             "providers/set" => {
                 let req: schema::SetProviderRequest = serde_json::from_str(args.params.get())
@@ -72,7 +72,7 @@ impl ZephAcpAgentState {
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
                 let raw = serde_json::value::RawValue::from_string(json)
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::v1::ExtResponse::new(raw.into())))
+                Ok(Some(acp::v1::schema::ExtResponse::new(raw.into())))
             }
             "providers/disable" => {
                 let req: schema::DisableProviderRequest =
@@ -83,7 +83,7 @@ impl ZephAcpAgentState {
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
                 let raw = serde_json::value::RawValue::from_string(json)
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::v1::ExtResponse::new(raw.into())))
+                Ok(Some(acp::v1::schema::ExtResponse::new(raw.into())))
             }
             _ => Ok(None),
         }

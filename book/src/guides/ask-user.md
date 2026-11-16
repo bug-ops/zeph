@@ -31,9 +31,13 @@ Reply `cancel` (or `/cancel`) to cancel. Sending a slash command such as `/statu
 ## What the model gets back
 
 - Your answer, with secrets redacted before it reaches history, memory, debug dumps, the audit log or the model.
-- `declined` when no user can answer: piped stdin, a scheduler or daemon session, Telegram guest context, or an IDE without elicitation. This returns immediately.
+- `declined` when no user can answer at the moment of the call (for example piped stdin or an IDE without elicitation). This returns immediately.
 - `cancelled` when you cancel, and `timed out` after `timeout_secs`.
 
-Sub-agents never see the tool. Option labels made only of digits are rejected, so a number is always a position.
+The model is offered the tool only on user turns of an interactive channel. It is hidden on scheduler, `/loop`, autonomous goal and webhook turns, where nobody could answer. Sub-agents never see it. `[tools.permissions]` deny rules for `ask_user` apply at listing and dispatch, as they do for `compress_context`.
+
+On Discord and Slack only replies from the channel of the prompt count as an answer or confirmation. On ACP the question form works in new, loaded, forked and resumed sessions.
+
+Option labels made only of digits are rejected, so a number is always a position.
 
 See the specification in `specs/090-ask-user-model-callable-tool/spec.md`.

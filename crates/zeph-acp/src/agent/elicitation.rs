@@ -59,7 +59,7 @@ pub(crate) fn elicitation_channel() -> (ElicitationSender, ElicitationReceiver) 
 /// - `elicitation_rx`: Receives elicitation requests from the agent loop.
 /// - `cancel_signal`: Session cancel notify — bridge exits on notification.
 pub(crate) fn spawn_elicitation_bridge(
-    cx: acp::ConnectionTo<acp::Client>,
+    cx: acp::v1::ConnectionTo<acp::Client>,
     mut elicitation_rx: ElicitationReceiver,
     cancel_signal: Arc<tokio::sync::Notify>,
 ) -> tokio::task::JoinHandle<()> {
@@ -96,7 +96,7 @@ pub(crate) fn spawn_elicitation_bridge(
 /// `CreateElicitationRequest` is not yet registered in the SDK's typed dispatch table, so the
 /// request is sent as an `UntypedMessage` and the response is deserialized from `serde_json::Value`.
 async fn send_elicitation(
-    cx: &acp::ConnectionTo<acp::Client>,
+    cx: &acp::v1::ConnectionTo<acp::Client>,
     req: schema::CreateElicitationRequest,
 ) -> Result<schema::CreateElicitationResponse, AcpError> {
     let params = serde_json::to_value(&req).map_err(|e| AcpError::ClientError(e.to_string()))?;

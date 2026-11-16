@@ -78,7 +78,8 @@ See [Instruction Files](../concepts/instruction-files.md) for provider-specific 
 | `/skills` | Show active skills and usage statistics |
 | `/goal check [condition]` | Ask the model to judge whether a condition is met, based on the conversation so far (advisory, see below) |
 | `/skill state [name]` | Show live [skill execution state](../guides/custom-skills.md#skill-execution-state) |
-| `/mcp` | List connected MCP tool servers |
+| `/mcp list` | List connected MCP tool servers, in configured order, plus tools hidden by an id collision |
+| `/keepalive [on\|off\|status]` | Show or switch the [prompt-cache keepalive](../guides/cache-keepalive.md) for this session (not persisted) |
 | `/new` | Start a fresh conversation without restarting |
 | `/image <path>` | Attach an image for visual analysis |
 | `/debug-dump` | Enable debug dump for the current session |

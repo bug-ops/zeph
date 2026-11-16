@@ -10,7 +10,7 @@
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://www.rust-lang.org)
-  [![Tests](https://img.shields.io/badge/tests-16776-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-17132-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](LICENSE)
 </div>
 
@@ -135,7 +135,7 @@ embed = true
 [[llm.providers]]
 name = "quality"         # reserved for planning, code, hard reasoning
 type = "claude"
-model = "claude-sonnet-5"
+model = "claude-sonnet-5-5"
 default = true
 
 [llm]
@@ -219,8 +219,8 @@ Zeph's [Telegram](https://bug-ops.github.io/zeph/guides/telegram.html) integrati
 | **Memory** | SQLite/PostgreSQL history, embedded SQLite vectors or [Qdrant](https://qdrant.tech), [graph memory](https://bug-ops.github.io/zeph/concepts/graph-memory.html), SYNAPSE, APEX-MEM, BeliefMem, MemCoT recall views, [SleepGate](https://bug-ops.github.io/zeph/advanced/sleep-gate.html), document RAG. |
 | **Context** | [Goal-aware compaction](https://bug-ops.github.io/zeph/advanced/context.html), typed-page assembler, output compression, tool-output archive, session recap, active-goal injection. |
 | **Skills** | `SKILL.md` registry, hot reload, BM25 + embedding matching, [trust levels](https://bug-ops.github.io/zeph/advanced/skill-trust.html), [self-learning](https://bug-ops.github.io/zeph/guides/self-learning.html). |
-| **Providers** | [Ollama](https://ollama.ai), Claude, OpenAI, Gemini, OpenAI-compatible, [Gonka](https://bug-ops.github.io/zeph/guides/gonka.html), [Cocoon TEE](https://bug-ops.github.io/zeph/guides/cocoon.html), [Candle](https://bug-ops.github.io/zeph/advanced/candle.html), [adaptive routing](https://bug-ops.github.io/zeph/advanced/adaptive-inference.html). |
-| **Tools** | Shell, file, web, [MCP](https://bug-ops.github.io/zeph/guides/mcp.html), quotas, approval gates, audit trail, [sandboxing](https://bug-ops.github.io/zeph/reference/security/file-sandbox.html), output compression, speculative dispatch, [ShadowSentinel](https://bug-ops.github.io/zeph/reference/security/shadow-sentinel.html). |
+| **Providers** | [Ollama](https://ollama.ai), Claude, OpenAI, Gemini, OpenAI-compatible, [Gonka](https://bug-ops.github.io/zeph/guides/gonka.html), [Cocoon TEE](https://bug-ops.github.io/zeph/guides/cocoon.html), [Candle](https://bug-ops.github.io/zeph/advanced/candle.html), [adaptive routing](https://bug-ops.github.io/zeph/advanced/adaptive-inference.html), opt-in prompt-cache keepalive for Claude. |
+| **Tools** | Shell, file, web, opt-in model-callable `ask_user`, [MCP](https://bug-ops.github.io/zeph/guides/mcp.html), quotas, approval gates, audit trail, [sandboxing](https://bug-ops.github.io/zeph/reference/security/file-sandbox.html), output compression, speculative dispatch, [ShadowSentinel](https://bug-ops.github.io/zeph/reference/security/shadow-sentinel.html). |
 | **Interfaces** | CLI, [TUI](https://bug-ops.github.io/zeph/advanced/tui.html), [Telegram](https://bug-ops.github.io/zeph/guides/telegram.html), Discord, Slack, [ACP](https://bug-ops.github.io/zeph/advanced/acp.html), [A2A](https://bug-ops.github.io/zeph/advanced/a2a.html), HTTP gateway, [scheduler](https://bug-ops.github.io/zeph/concepts/scheduler.html). |
 | **Code intelligence** | [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) indexing (Rust, Python, TS/JS, Go, and more), semantic repo map, [LSP](https://bug-ops.github.io/zeph/guides/lsp.html) diagnostics and hover via MCP. |
 | **Observability** | [Debug dumps](https://bug-ops.github.io/zeph/advanced/debug-dump.html), JSONL mode, opt-in live sub-agent transcript forwarding to TUI/`--bare`, [Prometheus](https://bug-ops.github.io/zeph/guides/prometheus.html), [OpenTelemetry](https://opentelemetry.io) traces, per-model cost tracking with daily budgets. |

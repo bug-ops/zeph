@@ -18,7 +18,7 @@ startup.
 - `context` — [`CommandContext`] non-generic dispatch context with trait-object fields
 - `traits` — 15 per-domain subsystem-access sub-traits (`MemoryAccess`, `GraphAccess`, `ModelAccess`, `SkillAccess`, `PolicyAccess`, `SchedulerAccess`, `LspAccess`, `SessionControlAccess`, `McpAccess`, `OrchestrationAccess`, `SubagentAccess`, `IntegrationAccess`, `TrackingAccess`, `WorktreeAccess`, `MiscAccess`); `AgentAccess` is an empty marker supertrait over all 15 (blanket-impl'd) so `dyn AgentAccess` call sites are unchanged
 - `handlers` — concrete handler implementations (session, debug, skill, mcp, plan, …)
-- `commands` — static `COMMANDS` metadata table used by `/help`
+- `commands` — static `COMMANDS` metadata table used by `/help`; includes `/keepalive on|off|status`, which switches the prompt-cache keepalive for the current session (not persisted)
 - `transcript` — [`TranscriptFormatter`] / [`TranscriptEntry`] / [`TranscriptRole`], the single
   source of truth for rendering bounded conversation history into role-prefixed, tool-collapsed
   text. Both the flat-text channels (CLI, Telegram, Discord, Slack) and the TUI backfill path

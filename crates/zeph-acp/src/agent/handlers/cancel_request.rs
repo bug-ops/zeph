@@ -18,8 +18,8 @@ use crate::agent::ZephAcpAgentState;
 
 /// Observe an incoming `$/cancel_request` notification for tracing purposes.
 pub(crate) async fn handle_cancel_request(
-    notif: acp::schema::v1::CancelRequestNotification,
-    _cx: acp::ConnectionTo<acp::Client>,
+    notif: acp::v1::schema::CancelRequestNotification,
+    _cx: acp::v1::ConnectionTo<acp::Client>,
     _state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     tracing::debug!(request_id = ?notif.request_id, "received $/cancel_request");

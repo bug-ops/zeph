@@ -11,9 +11,9 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/fork` request.
 pub(crate) async fn handle_fork_session(
-    req: acp::schema::v1::ForkSessionRequest,
-    responder: acp::Responder<acp::schema::v1::ForkSessionResponse>,
-    cx: acp::ConnectionTo<acp::Client>,
+    req: acp::v1::schema::ForkSessionRequest,
+    responder: acp::v1::Responder<acp::v1::schema::ForkSessionResponse>,
+    cx: acp::v1::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     let resp = state.do_fork_session(req, &cx).await?;
