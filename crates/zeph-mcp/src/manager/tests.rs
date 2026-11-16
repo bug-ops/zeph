@@ -2563,3 +2563,24 @@ async fn late_subscriber_reads_a_published_refresh_from_the_snapshot_and_sees_la
         .expect("watch sender alive");
     assert!(late.borrow().iter().any(|t| t.name == "second"));
 }
+
+#[tokio::test]
+async fn tool_snapshot_lists_a_duplicated_configured_server_once_at_its_first_position() {
+    let mgr = McpManager::new(
+        vec![
+            snapshot_entry("zz"),
+            snapshot_entry("aa"),
+            snapshot_entry("zz"),
+        ],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    );
+    {
+        let mut tools = mgr.server_tools.write().await;
+        for id in ["aa", "zz"] {
+            tools.insert(id.into(), vec![make_tool(id, "t")]);
+        }
+    }
+
+    assert_eq!(names_of(&mgr.tool_snapshot().await), ["zz:t", "aa:t"]);
+}

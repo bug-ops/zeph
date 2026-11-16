@@ -76,7 +76,9 @@ impl McpManager {
     /// Register `tools` for `server_id` as if the server had connected, without a transport.
     ///
     /// Test support for crates that cannot reach the manager's internals; it bypasses the whole
-    /// connection and ingest pipeline, so never call it outside tests.
+    /// connection, ingest, trust and allowlist pipeline, so it only exists with the `mock`
+    /// feature (enabled as a dev-dependency feature) and in this crate's own tests.
+    #[cfg(any(test, feature = "mock"))]
     #[doc(hidden)]
     pub async fn inject_tools_for_testing(&self, server_id: &str, tools: Vec<McpTool>) {
         self.server_tools

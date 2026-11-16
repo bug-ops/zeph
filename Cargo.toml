@@ -430,6 +430,7 @@ tracing-test.workspace = true
 wiremock.workspace = true
 zeph-core.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
+zeph-mcp = { workspace = true, features = ["mock"] }
 zeph-memory.workspace = true
 zeph-plugins = { workspace = true, features = ["mock"] }
 zeph-skills.workspace = true

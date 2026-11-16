@@ -89,7 +89,13 @@ impl McpManager {
             .iter()
             .map(|c| (c.id.clone(), c.elicitation_timeout_secs))
             .collect();
-        let configured_order: Arc<[McpServerId]> = configs.iter().map(|c| c.id.clone()).collect();
+        // A duplicated `[[mcp.servers]]` id keeps its first position, so its tools are listed once.
+        let mut seen = HashSet::new();
+        let configured_order: Arc<[McpServerId]> = configs
+            .iter()
+            .filter(|c| seen.insert(c.id.clone()))
+            .map(|c| c.id.clone())
+            .collect();
         Self {
             configs,
             configured_order,
