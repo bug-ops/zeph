@@ -9,7 +9,7 @@ The tool is off by default.
 ```toml
 [tools.ask_user]
 enabled = true
-timeout_secs = 300           # how long to wait for an answer
+timeout_secs = 300           # how long to wait for an answer, 1-3600
 max_questions_per_turn = 3   # extra questions in one turn are refused
 ```
 

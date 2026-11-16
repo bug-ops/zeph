@@ -14,6 +14,19 @@ pub use ask_user::{
     DeclineReason, OtherAnswer, ReplyKind, ReplyParseError, classify_reply,
 };
 
+/// Whether a channel can put an `ask_user` question in front of a person right now.
+///
+/// The agent offers the `ask_user` tool to the model only when this is
+/// [`AskUserSupport::Interactive`], so a channel that can never answer does not cost the model a
+/// wasted round-trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskUserSupport {
+    /// A person can read the question and reply on this channel.
+    Interactive,
+    /// No one can answer: headless, scheduled, webhook-driven or a channel without a reply path.
+    Unavailable,
+}
+
 /// A single field in an elicitation form request.
 ///
 /// Created by the MCP layer when a server sends an elicitation request; passed to
@@ -651,6 +664,15 @@ pub trait Channel: Send {
         async { Ok(AskUserOutcome::Declined(DeclineReason::NonInteractive)) }
     }
 
+    /// Whether [`Channel::ask_user`] can reach a person right now.
+    ///
+    /// Implementations return [`AskUserSupport::Interactive`] only when a question would be shown
+    /// and answered; the agent hides the `ask_user` tool otherwise. May change between turns (for
+    /// example a gateway after a webhook message). Default: [`AskUserSupport::Unavailable`].
+    fn ask_user_support(&self) -> AskUserSupport {
+        AskUserSupport::Unavailable
+    }
+
     /// Signal the non-default stop reason to the consumer before flushing.
     ///
     /// Called by the agent loop immediately before `flush_chunks()` when a
@@ -818,13 +840,9 @@ pub enum LoopbackEvent {
     /// This variant is only produced by `Agent::emit_usage_event` in `metrics_compact.rs`
     /// after a verified LLM response — it is never constructed from external input.
     Usage {
-        input_tokens: u64,
-        output_tokens: u64,
+        /// Token counters for this LLM call.
+        usage: TokenUsage,
         context_window: u64,
-        /// Cache read tokens for this LLM call.
-        cache_read_tokens: u64,
-        /// Cache write tokens for this LLM call.
-        cache_write_tokens: u64,
         /// Cumulative session cost in USD cents (overwrite, do not sum).
         cost_cents: f64,
     },
@@ -1040,6 +1058,14 @@ impl Channel for LoopbackChannel {
         std::future::ready(Ok(true))
     }
 
+    fn ask_user_support(&self) -> AskUserSupport {
+        if self.ask_user_responder.is_some() {
+            AskUserSupport::Interactive
+        } else {
+            AskUserSupport::Unavailable
+        }
+    }
+
     async fn ask_user(&mut self, request: AskUserRequest) -> Result<AskUserOutcome, ChannelError> {
         match &self.ask_user_responder {
             Some(responder) => responder.ask(request).await,
@@ -1062,11 +1088,8 @@ impl Channel for LoopbackChannel {
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::Usage {
-                input_tokens: usage.input,
-                output_tokens: usage.output,
+                usage,
                 context_window,
-                cache_read_tokens: usage.cache_read,
-                cache_write_tokens: usage.cache_write,
                 cost_cents,
             })
             .await
@@ -1658,18 +1681,15 @@ mod tests {
         let event = handle.output_rx.recv().await.unwrap();
         match event {
             LoopbackEvent::Usage {
-                input_tokens,
-                output_tokens,
+                usage,
                 context_window,
-                cache_read_tokens,
-                cache_write_tokens,
                 cost_cents,
             } => {
-                assert_eq!(input_tokens, 100);
-                assert_eq!(output_tokens, 50);
+                assert_eq!(usage.input, 100);
+                assert_eq!(usage.output, 50);
                 assert_eq!(context_window, 200_000);
-                assert_eq!(cache_read_tokens, 10);
-                assert_eq!(cache_write_tokens, 5);
+                assert_eq!(usage.cache_read, 10);
+                assert_eq!(usage.cache_write, 5);
                 assert!((cost_cents - 1.5).abs() < f64::EPSILON);
             }
             _ => panic!("expected Usage event"),

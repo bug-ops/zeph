@@ -983,9 +983,10 @@ mod tests {
     async fn assemble_serve_deps_wires_interaction_config_from_config() {
         let mut config = zeph_core::config::Config::default();
         config.tools.ask_user.enabled = true;
-        config.tools.ask_user.timeout_secs = std::num::NonZeroU64::new(17).unwrap();
+        config.tools.ask_user.timeout_secs = zeph_config::AskUserTimeout::new(17).unwrap();
         config.llm.cache_keepalive.enabled = true;
-        config.llm.cache_keepalive.max_consecutive_pings = std::num::NonZeroU32::new(2).unwrap();
+        config.llm.cache_keepalive.max_consecutive_pings =
+            zeph_config::KeepalivePingCap::new(2).unwrap();
         let expected = zeph_core::InteractionConfig::from_config(&config);
         let app = crate::bootstrap::AppBuilder::for_test(config);
         let memory = make_memory().await;
@@ -1047,10 +1048,9 @@ mod tests {
             .execute_tool_call_erased(&zeph_tools::ToolCall {
                 tool_id: "bash".into(),
                 params: serde_json::Map::new(),
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             })
             .await;
         assert!(

@@ -36,7 +36,7 @@ fn executor(reader: McpToolListReader) -> McpToolExecutor {
 #[test]
 fn snapshot_after_publish_full_exposes_every_tool_and_its_ids() {
     let (writer, reader) = McpToolList::new(Vec::new());
-    writer.publish_full(&[tool("a", "x"), tool("b", "y")]);
+    writer.publish_full(&[tool("a", "x"), tool("b", "y")], &NativeToolIds::default());
     let snap = reader.snapshot();
     assert_eq!(snap.tools.len(), 2);
     assert!(snap.ids.contains("a_x") && snap.ids.contains("b_y"));
@@ -45,7 +45,7 @@ fn snapshot_after_publish_full_exposes_every_tool_and_its_ids() {
 #[test]
 fn publish_pruned_keeps_the_ids_arc_and_shrinks_the_exposed_tools() {
     let (writer, reader) = McpToolList::new(Vec::new());
-    writer.publish_full(&[tool("a", "x"), tool("b", "y")]);
+    writer.publish_full(&[tool("a", "x"), tool("b", "y")], &NativeToolIds::default());
     let before = reader.snapshot();
 
     writer.publish_pruned(vec![tool("a", "x")]);
@@ -65,7 +65,7 @@ fn publish_pruned_keeps_the_ids_arc_and_shrinks_the_exposed_tools() {
 #[test]
 fn expose_full_restores_the_full_list_without_rebuilding_ids() {
     let (writer, reader) = McpToolList::new(Vec::new());
-    writer.publish_full(&[tool("a", "x"), tool("b", "y")]);
+    writer.publish_full(&[tool("a", "x"), tool("b", "y")], &NativeToolIds::default());
     writer.publish_pruned(vec![tool("a", "x")]);
     let pruned = reader.snapshot();
 
@@ -83,7 +83,7 @@ fn expose_full_restores_the_full_list_without_rebuilding_ids() {
 fn publish_full_replaces_the_ids_arc() {
     let (writer, reader) = McpToolList::new(vec![tool("a", "x")]);
     let before = reader.snapshot();
-    writer.publish_full(&[tool("b", "y")]);
+    writer.publish_full(&[tool("b", "y")], &NativeToolIds::default());
     let after = reader.snapshot();
     assert!(!Arc::ptr_eq(&before.ids, &after.ids));
     assert!(!after.ids.contains("a_x"));
@@ -97,7 +97,7 @@ fn mcp_executor_dispatch_ids_is_the_cached_arc_of_the_snapshot() {
         &exec.mcp_dispatch_ids(),
         &reader.snapshot().ids
     ));
-    writer.publish_full(&[tool("b", "y")]);
+    writer.publish_full(&[tool("b", "y")], &NativeToolIds::default());
     assert!(Arc::ptr_eq(
         &exec.mcp_dispatch_ids(),
         &reader.snapshot().ids
@@ -127,10 +127,9 @@ async fn mcp_executor_dispatch_by_cached_id_finds_the_tool_and_unknown_id_does_n
     let call = |id: &str| ToolCall {
         tool_id: id.into(),
         params: serde_json::Map::new(),
-        caller_id: None,
+        attribution: zeph_tools::CallAttribution::default(),
         context: None,
         tool_call_id: None,
-        skill_name: None,
     };
     // The server is not connected, so a found tool fails at the manager call; an unknown id is
     // not handled at all.

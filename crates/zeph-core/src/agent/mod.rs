@@ -1068,7 +1068,7 @@ impl<C: Channel> Agent<C> {
         self.runtime.lifecycle.turn_llm_requests = 0;
         // Reset per-turn tool-call dispatch counter (feeds TurnSummary::tool_calls).
         self.runtime.lifecycle.turn_tool_calls = 0;
-        self.ask_user_on_turn_start();
+        self.ask_user_on_turn_start(input.origin);
         self.keepalive_on_turn_start();
 
         // Spec 050 §2: drain pending risk signals from executor layers before advancing.
@@ -1137,8 +1137,7 @@ impl<C: Channel> Agent<C> {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id: None,
-                skill_name: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
@@ -1227,6 +1226,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[cfg(test)]
     async fn process_user_message(
         &mut self,
         text: String,
@@ -1488,17 +1488,16 @@ impl<C: Channel> Agent<C> {
         let token = turn_token.clone();
         // Keep lifecycle.cancel_token in sync so existing code that reads it still works.
         self.runtime.lifecycle.cancel_token = turn_token.clone();
-        if let Some(prev) = self.runtime.lifecycle.cancel_bridge_handle.take() {
-            prev.abort();
-        }
-        self.runtime.lifecycle.cancel_bridge_handle =
-            Some(self.runtime.lifecycle.task_supervisor.spawn_oneshot(
+        self.runtime.lifecycle.cancel_bridge_handle = None;
+        self.runtime.lifecycle.cancel_bridge_handle = Some(zeph_common::AbortOnDrop::new(
+            self.runtime.lifecycle.task_supervisor.spawn_oneshot(
                 std::sync::Arc::from("agent.lifecycle.cancel_bridge"),
                 move || async move {
                     signal.notified().await;
                     token.cancel();
                 },
-            ));
+            ),
+        ));
     }
 
     /// Reap completed background tasks, apply summarization signal, and update supervisor metrics.

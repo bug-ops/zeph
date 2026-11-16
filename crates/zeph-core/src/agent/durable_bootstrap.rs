@@ -169,6 +169,7 @@ pub(crate) async fn open_durable_backend(
 
     let retention_backend = Arc::clone(&backend);
     let retention_policy = cfg.retention.clone();
+    // Shared service: intentionally unscoped, one retention task per durable DB across sessions.
     task_supervisor.spawn(zeph_common::TaskDescriptor {
         name: RETENTION_TASK_NAME,
         restart: zeph_common::RestartPolicy::Restart {

@@ -25,6 +25,44 @@ use zeph_tools::{McpToolIds, McpToolIdsHandle, McpToolIdsWriter};
 
 use crate::tool::McpTool;
 
+/// Sanitized dispatch ids served by native (non-MCP) tools.
+///
+/// A native id always wins over an MCP tool with the same sanitized id: [`McpToolListWriter::publish_full`]
+/// pre-claims these ids, so a colliding MCP tool is never exposed nor registered as MCP.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::ToolName;
+/// use zeph_mcp::tool_list::NativeToolIds;
+///
+/// let ids: NativeToolIds = [ToolName::new("memory_search")].into_iter().collect();
+/// assert!(ids.contains("memory_search"));
+/// assert!(!NativeToolIds::default().contains("memory_search"));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeToolIds(HashSet<ToolName>);
+
+impl NativeToolIds {
+    /// Whether `id` is served by a native tool.
+    #[must_use]
+    pub fn contains(&self, id: &str) -> bool {
+        self.0.contains(id)
+    }
+
+    /// Whether no native id is recorded.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl FromIterator<ToolName> for NativeToolIds {
+    fn from_iter<I: IntoIterator<Item = ToolName>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
 /// Constructor namespace for the writer/reader pair of one MCP tool list.
 #[derive(Debug)]
 pub struct McpToolList;
@@ -57,7 +95,7 @@ impl McpToolList {
     )]
     pub fn new(tools: Vec<McpTool>) -> (McpToolListWriter, McpToolListReader) {
         let (ids_writer, ids_handle) = McpToolIdsHandle::with_writer();
-        let full = FullList::build(tools);
+        let full = FullList::build(tools, &NativeToolIds::default());
         ids_writer.publish_shared(Arc::clone(&full.exposed.ids));
         let exposed = Arc::new(RwLock::new(Arc::clone(&full.exposed)));
         (
@@ -148,14 +186,15 @@ impl FullList {
     ///
     /// A tool whose sanitized id was already claimed by an earlier tool is shadowed: it stays in
     /// `shadowed` but is never exposed, so dispatch, the id registry and every audit record agree
-    /// on the one server that serves an id (first registered wins).
-    fn build(tools: Vec<McpTool>) -> Self {
+    /// on the one server that serves an id (first registered wins). Ids in `native` are claimed
+    /// before any MCP tool, so a colliding MCP tool is shadowed too.
+    fn build(tools: Vec<McpTool>, native: &NativeToolIds) -> Self {
         let mut claimed: HashMap<String, McpServerId> = HashMap::new();
         let mut published: Vec<Arc<PublishedMcpTool>> = Vec::with_capacity(tools.len());
         let mut shadowed: HashSet<(McpServerId, String)> = HashSet::new();
         for tool in tools {
             let id = tool.sanitized_id();
-            if claimed.contains_key(&id) {
+            if native.contains(&id) || claimed.contains_key(&id) {
                 shadowed.insert((tool.server_id.clone(), tool.name.clone()));
                 continue;
             }
@@ -196,10 +235,13 @@ impl McpToolListWriter {
     /// Replace the exposed list with `tools` and rebuild the id registry and the cached
     /// definitions from the same list.
     ///
+    /// MCP tools whose sanitized id is in `native` are shadowed: they are neither exposed nor
+    /// registered as MCP ids.
+    ///
     /// The registry is published while the exposed slot is write-locked, so a reader that sees a
     /// new tool in the exposed list is guaranteed to find its id in the registry.
-    pub fn publish_full(&self, tools: &[McpTool]) {
-        let full = FullList::build(tools.to_vec());
+    pub fn publish_full(&self, tools: &[McpTool], native: &NativeToolIds) {
+        let full = FullList::build(tools.to_vec(), native);
         let mut exposed = self.exposed.write();
         self.ids_writer
             .publish_shared(Arc::clone(&full.exposed.ids));
@@ -311,10 +353,10 @@ mod tests {
     fn publish_full_updates_exposed_list_and_registry_together() {
         let (writer, reader) = McpToolList::new(vec![tool("a", "x")]);
         let ids = writer.ids_handle();
-        writer.publish_full(&[tool("a", "x"), tool("b", "y")]);
+        writer.publish_full(&[tool("a", "x"), tool("b", "y")], &NativeToolIds::default());
         assert_eq!(reader.snapshot().tools.len(), 2);
         assert!(ids.contains("b_y"));
-        writer.publish_full(&[tool("b", "y")]);
+        writer.publish_full(&[tool("b", "y")], &NativeToolIds::default());
         assert_eq!(reader.snapshot().tools.len(), 1);
         assert!(!ids.contains("a_x"));
     }
@@ -323,7 +365,7 @@ mod tests {
     fn publish_pruned_keeps_ids_of_the_full_list() {
         let (writer, reader) = McpToolList::new(Vec::new());
         let ids = writer.ids_handle();
-        writer.publish_full(&[tool("a", "x"), tool("b", "y")]);
+        writer.publish_full(&[tool("a", "x"), tool("b", "y")], &NativeToolIds::default());
         writer.publish_pruned(vec![tool("a", "x")]);
         assert_eq!(reader.snapshot().tools.len(), 1);
         assert!(ids.contains("a_x"));
@@ -336,7 +378,7 @@ mod tests {
         let second = tool("a_b", "c");
         assert_eq!(first.sanitized_id(), second.sanitized_id());
         let (writer, reader) = McpToolList::new(Vec::new());
-        writer.publish_full(&[first.clone(), second.clone()]);
+        writer.publish_full(&[first.clone(), second.clone()], &NativeToolIds::default());
 
         let snapshot = reader.snapshot();
         assert_eq!(snapshot.tools, vec![first]);
@@ -357,7 +399,7 @@ mod tests {
     fn cloned_readers_share_the_single_writers_list() {
         let (writer, reader) = McpToolList::new(Vec::new());
         let other = reader.clone();
-        writer.publish_full(&[tool("a", "x")]);
+        writer.publish_full(&[tool("a", "x")], &NativeToolIds::default());
         assert_eq!(other.snapshot().tools.len(), 1);
     }
 

@@ -30,6 +30,10 @@ struct OneShot {
 }
 
 impl Channel for OneShot {
+    fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+        zeph_core::channel::AskUserSupport::Interactive
+    }
+
     #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         if self.sent {
@@ -108,7 +112,7 @@ async fn long_in_turn_wait_after_a_tool_use_response_is_kept_warm() {
         mock.with_keepalive(vec![hit()]);
     let mut cfg = zeph_core::config::Config::default();
     cfg.tools.ask_user.enabled = true;
-    cfg.tools.ask_user.timeout_secs = std::num::NonZeroU64::new(900).unwrap();
+    cfg.tools.ask_user.timeout_secs = zeph_config::AskUserTimeout::new(900).unwrap();
     cfg.llm.cache_keepalive.enabled = true;
     let mut agent = Agent::new(
         AnyProvider::Mock(mock),

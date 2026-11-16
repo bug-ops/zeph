@@ -57,4 +57,6 @@ regexes = [
   '''xapp-1-A0123456789-1234567890123-abcdef''',
   '''rk_(live|test)_51H8abcDEFghiJKLmnoPQRstu''',
   '''sk-proj-abc123def456''',
+  # #7139: dummy HS256 JWT in the Ollama auxiliary error-mapping acceptance test.
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.abcdefghijklmnop''',
 ]

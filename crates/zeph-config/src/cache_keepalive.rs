@@ -3,13 +3,76 @@
 
 //! Configuration for the prompt-cache keepalive service (`[llm.cache_keepalive]`).
 
-use std::num::NonZeroU32;
-
 use serde::{Deserialize, Serialize};
 use zeph_common::ProviderName;
 
-fn default_max_consecutive_pings() -> NonZeroU32 {
-    NonZeroU32::new(6).expect("6 is non-zero")
+/// Error returned when a keepalive ping cap is outside `1..=50`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("keepalive ping cap {0} is outside 1..=50")]
+pub struct KeepalivePingCapError(u32);
+
+/// Number of consecutive idle pings the keepalive service may send, in `1..=50`.
+///
+/// Zero would disable the service silently and an unbounded value removes the only spend limit
+/// when nothing can be priced, so both are rejected at construction and at deserialization.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::KeepalivePingCap;
+///
+/// assert_eq!(KeepalivePingCap::new(6).unwrap().get(), 6);
+/// assert!(KeepalivePingCap::new(0).is_err());
+/// assert!(KeepalivePingCap::new(51).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct KeepalivePingCap(u32);
+
+impl KeepalivePingCap {
+    /// Smallest accepted cap.
+    pub const MIN: u32 = 1;
+    /// Largest accepted cap.
+    pub const MAX: u32 = 50;
+
+    /// Build a cap from a ping count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeepalivePingCapError`] when `pings` is outside `1..=50`.
+    pub const fn new(pings: u32) -> Result<Self, KeepalivePingCapError> {
+        if pings < Self::MIN || pings > Self::MAX {
+            Err(KeepalivePingCapError(pings))
+        } else {
+            Ok(Self(pings))
+        }
+    }
+
+    /// The cap as a ping count.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<u32> for KeepalivePingCap {
+    type Error = KeepalivePingCapError;
+
+    fn try_from(pings: u32) -> Result<Self, Self::Error> {
+        Self::new(pings)
+    }
+}
+
+impl From<KeepalivePingCap> for u32 {
+    fn from(cap: KeepalivePingCap) -> Self {
+        cap.0
+    }
+}
+
+impl Default for KeepalivePingCap {
+    fn default() -> Self {
+        Self(6)
+    }
 }
 
 /// `[llm.cache_keepalive]`: periodically re-reads the cached prompt prefix while the session is
@@ -27,23 +90,13 @@ fn default_max_consecutive_pings() -> NonZeroU32 {
 /// assert!(!cfg.enabled);
 /// assert_eq!(cfg.max_consecutive_pings.get(), 6);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CacheKeepaliveConfig {
     /// Run the keepalive service. Default: `false`.
     pub enabled: bool,
     /// Provider to ping, by `[[llm.providers]]` name. Empty selects the main provider.
     pub keepalive_provider: ProviderName,
-    /// Pings sent in a row without real activity before the service stops. Default: `6`.
-    pub max_consecutive_pings: NonZeroU32,
-}
-
-impl Default for CacheKeepaliveConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            keepalive_provider: ProviderName::default(),
-            max_consecutive_pings: default_max_consecutive_pings(),
-        }
-    }
+    /// Pings sent in a row without real activity before the service stops, `1..=50`. Default: `6`.
+    pub max_consecutive_pings: KeepalivePingCap,
 }

@@ -424,10 +424,9 @@ mod tests {
         ToolCall {
             tool_id: ToolName::new(tool_id),
             params: params.as_object().cloned().unwrap_or_default(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

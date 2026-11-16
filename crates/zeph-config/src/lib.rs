@@ -124,8 +124,8 @@ pub use agent::{
     ParentContextPolicy, PeerMessagingConfig, SubAgentConfig, SubAgentLifecycleHooks,
     TaskSupervisorConfig, ToolFilterConfig,
 };
-pub use ask_user::AskUserConfig;
-pub use cache_keepalive::CacheKeepaliveConfig;
+pub use ask_user::{AskUserConfig, AskUserTimeout, AskUserTimeoutError};
+pub use cache_keepalive::{CacheKeepaliveConfig, KeepalivePingCap, KeepalivePingCapError};
 pub use calibration::{
     CalibrationError, ConfidenceCalibration, ConfidenceThreshold, DEFAULT_CORRECTION_CONFIDENCE,
 };

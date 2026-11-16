@@ -68,8 +68,8 @@ pub use sanitize::{IdentitySanitizer, OutputSanitizer};
 pub use security_event::SecurityEventCategory;
 pub use spawner::BlockingSpawner;
 pub use task_supervisor::{
-    BlockingError, BlockingHandle, MAX_RESTART_DELAY, RestartPolicy, TaskDescriptor, TaskHandle,
-    TaskSnapshot, TaskStatus, TaskSupervisor,
+    AbortOnDrop, BlockingError, BlockingHandle, MAX_RESTART_DELAY, RestartPolicy, TaskDescriptor,
+    TaskHandle, TaskSnapshot, TaskStatus, TaskSupervisor,
 };
 pub use text::format_tokens;
 pub use trust_level::{

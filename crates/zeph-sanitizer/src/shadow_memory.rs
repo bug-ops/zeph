@@ -250,8 +250,8 @@ impl ShadowMemory {
         let pairs = window.len() - 1;
         #[allow(clippy::cast_precision_loss)]
         let semantic_drift: f32 = window
-            .windows(2)
-            .map(|w| jaccard_distance(&w[0].goal_summary, &w[1].goal_summary))
+            .array_windows()
+            .map(|[a, b]| jaccard_distance(&a.goal_summary, &b.goal_summary))
             .sum::<f32>()
             / pairs as f32;
 

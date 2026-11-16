@@ -179,8 +179,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
-            caller_id: call.caller_id.clone(),
-            skill_name: call.skill_name.clone(),
+            attribution: call.attribution.clone(),
             policy_match: None,
             correlation_id: None,
             vigil_risk: None,
@@ -237,8 +236,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         adversarial_policy_decision: None,
                         exit_code: None,
                         truncated: false,
-                        caller_id: call.caller_id.clone(),
-                        skill_name: call.skill_name.clone(),
+                        attribution: call.attribution.clone(),
                         policy_match: Some(trace.clone()),
                         correlation_id: None,
                         vigil_risk: None,
@@ -277,8 +275,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         adversarial_policy_decision: None,
                         exit_code: None,
                         truncated: false,
-                        caller_id: call.caller_id.clone(),
-                        skill_name: call.skill_name.clone(),
+                        attribution: call.attribution.clone(),
                         policy_match: Some(trace.clone()),
                         correlation_id: None,
                         vigil_risk: None,
@@ -360,8 +357,7 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id: call.caller_id.clone(),
-                skill_name: call.skill_name.clone(),
+                attribution: call.attribution.clone(),
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
@@ -496,11 +492,10 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -510,11 +505,10 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

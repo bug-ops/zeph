@@ -3479,10 +3479,11 @@ mod image_persistence_strip {
             source: zeph_memory::UsageSource::Conversation,
             provider_name: "test".to_owned(),
             model_name: "test-model".to_owned(),
-            input_tokens: 10,
-            output_tokens: 20,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
+            usage: zeph_llm::provider::TokenUsage {
+                input: 10,
+                output: 20,
+                ..Default::default()
+            },
             reasoning_tokens: None,
             cost_cents,
             latency_ms: 100,

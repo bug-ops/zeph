@@ -563,11 +563,10 @@ impl OpenAiProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = crate::http::read_body(resp).await.unwrap_or_default();
-            tracing::debug!(status = %status, body = %body, "OpenAI list_models_remote error body");
-            return Err(LlmError::api_error("openai", status.as_u16(), &body));
+            return Err(crate::http::api_failure("openai", status, &body));
         }
 
-        let page: serde_json::Value = resp.json().await?;
+        let page: serde_json::Value = crate::http::read_json(resp).await?;
         let models: Vec<crate::model_cache::RemoteModelInfo> = page
             .get("data")
             .and_then(|v| v.as_array())

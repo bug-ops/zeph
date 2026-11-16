@@ -316,6 +316,10 @@ quality_gate = 0.75    # Cosine threshold for response quality (0.0 = disabled, 
 
 Embed errors on either side cause the quality check to be skipped (fail-open). The check does not apply when only one provider is configured.
 
+## Chain-of-Entropy Scope
+
+With `[llm.coe] enabled = true` the router requests `logprobs` and can escalate to the secondary provider only on `chat()` calls, such as skill matching and JSON retries. The main agent turn uses `chat_with_tools` and `chat_stream`, which are not covered, so the answer you read is never checked for intra-entropy or escalated. Check the wire log for `"logprobs": true` on auxiliary requests only.
+
 ## Known Limitations
 
 - Thompson success/failure is recorded at stream-open time, not on stream completion. A provider that opens a stream but fails mid-delivery still gets alpha += 1

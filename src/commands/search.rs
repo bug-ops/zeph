@@ -52,10 +52,9 @@ pub(crate) async fn handle_search(
     let call = zeph_tools::ToolCall {
         tool_id: "web_search".into(),
         params,
-        caller_id: None,
+        attribution: zeph_tools::CallAttribution::default(),
         context: None,
         tool_call_id: None,
-        skill_name: None,
     };
 
     let output = zeph_tools::ToolExecutor::execute_tool_call(&executor, &call)

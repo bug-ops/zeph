@@ -148,7 +148,10 @@ impl<C: Channel> Agent<C> {
             Duration::from_secs(self.runtime.config.goals.autonomous_turn_timeout_secs);
         match tokio::time::timeout(
             turn_timeout,
-            self.process_user_message(synthetic, Vec::new()),
+            self.process_turn(
+                super::turn::TurnInput::new(synthetic, Vec::new())
+                    .with_origin(super::turn::TurnOrigin::Injected),
+            ),
         )
         .await
         {

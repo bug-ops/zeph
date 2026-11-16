@@ -290,20 +290,36 @@ pub struct ServerConnectOutcome {
     pub output_schemas_dropped: usize,
 }
 
-/// Flatten per-server tool lists deterministically: configured servers first (in config order),
-/// then every other server id (dynamic or IDE-attached) ascending.
+/// Order the server ids in `present` deterministically: configured servers first (in config
+/// order), then every other id (dynamic or IDE-attached) ascending.
 ///
 /// `HashMap` iteration order is unspecified, and the first server to register a sanitized tool id
-/// wins dispatch, so every flattening of `server_tools` goes through this function.
+/// wins dispatch, so every flattening or listing of per-server state goes through this function.
+fn server_ids_in_order<'a>(
+    present: impl IntoIterator<Item = &'a McpServerId>,
+    configured: &[McpServerId],
+) -> Vec<&'a McpServerId> {
+    let present: HashSet<&McpServerId> = present.into_iter().collect();
+    let mut rest: Vec<&McpServerId> = present
+        .iter()
+        .copied()
+        .filter(|id| !configured.contains(id))
+        .collect();
+    rest.sort();
+    configured
+        .iter()
+        .filter_map(|id| present.get(id).copied())
+        .chain(rest)
+        .collect()
+}
+
+/// Flatten per-server tool lists in [`server_ids_in_order`] order.
 fn tools_in_server_order(
     tools: &HashMap<McpServerId, Vec<McpTool>>,
     configured: &[McpServerId],
 ) -> Vec<McpTool> {
-    let mut rest: Vec<&McpServerId> = tools.keys().filter(|id| !configured.contains(id)).collect();
-    rest.sort();
-    configured
-        .iter()
-        .chain(rest)
+    server_ids_in_order(tools.keys(), configured)
+        .into_iter()
         .filter_map(|id| tools.get(id))
         .flatten()
         .cloned()

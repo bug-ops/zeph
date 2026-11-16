@@ -1119,7 +1119,7 @@ impl<C: Channel> Agent<C> {
     /// pruning) reaches the executor and the MCP provenance registry together.
     #[must_use]
     pub fn with_mcp_tool_list(mut self, writer: zeph_mcp::McpToolListWriter) -> Self {
-        self.services.mcp.tool_list = Some(writer);
+        self.services.mcp.attach_tool_list(writer);
         self
     }
 
@@ -1765,6 +1765,7 @@ impl<C: Channel> Agent<C> {
         let existing = Arc::clone(&self.tool_executor);
         let combined = zeph_tools::CompositeExecutor::new(zeph_tools::DynExecutor(existing), extra);
         self.tool_executor = Arc::new(combined);
+        self.refresh_native_tool_shadows();
         self
     }
 

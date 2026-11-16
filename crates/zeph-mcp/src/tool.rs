@@ -219,9 +219,9 @@ pub struct NativeToolShadow {
 /// # Examples
 ///
 /// ```
-/// use std::collections::HashSet;
 /// use zeph_common::ToolName;
 /// use zeph_mcp::tool::{McpTool, ToolSecurityMeta, detect_native_shadows};
+/// use zeph_mcp::tool_list::NativeToolIds;
 ///
 /// let tool = McpTool {
 ///     server_id: "memory".into(),
@@ -231,14 +231,14 @@ pub struct NativeToolShadow {
 ///     output_schema: None,
 ///     security_meta: ToolSecurityMeta::default(),
 /// };
-/// let native: HashSet<ToolName> = [ToolName::new("memory_search")].into();
+/// let native: NativeToolIds = [ToolName::new("memory_search")].into_iter().collect();
 /// let shadows = detect_native_shadows(&[tool], &native);
 /// assert_eq!(shadows[0].qualified, "memory:search");
 /// ```
 #[must_use]
-pub fn detect_native_shadows<S: std::hash::BuildHasher>(
+pub fn detect_native_shadows(
     tools: &[McpTool],
-    native_ids: &std::collections::HashSet<zeph_common::ToolName, S>,
+    native_ids: &crate::tool_list::NativeToolIds,
 ) -> Vec<NativeToolShadow> {
     tools
         .iter()

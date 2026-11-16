@@ -580,11 +580,10 @@ fn clear_utility_state_resets_per_turn_redundancy_tracking() {
     let call = ToolCall {
         tool_id: zeph_common::ToolName::new("bash"),
         params: serde_json::Map::new(),
-        caller_id: None,
+        attribution: zeph_tools::CallAttribution::default(),
         context: None,
 
         tool_call_id: None,
-        skill_name: None,
     };
     let ctx = UtilityContext {
         tool_calls_this_turn: 0,
@@ -984,11 +983,10 @@ fn test_tool_call(tool_id: &str) -> ToolCall {
     ToolCall {
         tool_id: ToolName::new(tool_id),
         params: serde_json::Map::new(),
-        caller_id: None,
+        attribution: zeph_tools::CallAttribution::default(),
         context: None,
 
         tool_call_id: None,
-        skill_name: None,
     }
 }
 

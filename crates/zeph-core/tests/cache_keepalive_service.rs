@@ -21,6 +21,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use zeph_core::cache_keepalive::{KeepaliveState, StopReason};
 use zeph_core::channel::{Channel, ChannelError, ChannelMessage};
+use zeph_core::cost::{CostTracker, ModelPricing};
 use zeph_core::metrics::MetricsSnapshot;
 use zeph_core::{Agent, InteractionConfig};
 use zeph_llm::any::AnyProvider;
@@ -29,6 +30,7 @@ use zeph_llm::provider::{CacheUsage, KeepaliveRequest, PrefixCache, ResponseUsag
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
+const PRICED_MODEL: &str = "priced-model";
 const TTL: Duration = Duration::from_secs(300);
 const LONG_IDLE: Duration = Duration::from_secs(2_000);
 
@@ -133,7 +135,8 @@ fn rewrite(creation: u64) -> ResponseUsage {
 fn keepalive_cfg(max_pings: u32) -> InteractionConfig {
     let mut c = zeph_core::config::Config::default();
     c.llm.cache_keepalive.enabled = true;
-    c.llm.cache_keepalive.max_consecutive_pings = std::num::NonZeroU32::new(max_pings).unwrap();
+    c.llm.cache_keepalive.max_consecutive_pings =
+        zeph_config::KeepalivePingCap::new(max_pings).unwrap();
     InteractionConfig::from_config(&c)
 }
 
@@ -158,6 +161,7 @@ fn build(
     let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
     let (mock, pings) = MockProvider::default()
         .with_name("main")
+        .with_model_identifier(PRICED_MODEL)
         .with_prefix_cache(PrefixCache::Prefix { ttl: Some(TTL) })
         .with_keepalive(usages);
     let (tx, rx) = watch::channel(MetricsSnapshot::default());
@@ -446,7 +450,17 @@ async fn keepalive_provider_naming_another_backend_stops_with_provider_mismatch(
 
 #[tokio::test(start_paused = true)]
 async fn keepalive_think_tokens_then_request_then_idle_pings_with_new_budget_and_no_rewrite() {
-    let h = run(
+    // A thinking ping can only be priced with a tracker; without one the gate fails closed.
+    let tracker = CostTracker::new(true, 0.0).with_pricing(
+        PRICED_MODEL,
+        ModelPricing {
+            prompt_cents_per_1k: 1.0,
+            completion_cents_per_1k: 0.0,
+            cache_read_cents_per_1k: 0.001,
+            cache_write_cents_per_1k: 1.25,
+        },
+    );
+    let (agent, pings, rx, _dir) = build(
         keepalive_cfg(1),
         vec![hit()],
         &[
@@ -455,8 +469,13 @@ async fn keepalive_think_tokens_then_request_then_idle_pings_with_new_budget_and
             (Duration::ZERO, "second"),
             (LONG_IDLE, "end"),
         ],
-    )
-    .await;
+    );
+    let mut agent = agent.with_cost_tracker(tracker);
+    agent.run().await.expect("agent run");
+    let h = Harness {
+        state: rx.borrow().cache_keepalive.clone(),
+        pings,
+    };
     let pings = h.pings.lock().unwrap();
     assert_eq!(pings.len(), 1);
     assert_eq!(pings[0].provider.current_thinking_budget(), Some(2048));

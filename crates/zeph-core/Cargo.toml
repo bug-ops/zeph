@@ -105,6 +105,7 @@ tokio = { workspace = true, features = ["test-util"] }
 tracing-test.workspace = true
 tracing-subscriber = { workspace = true, features = ["parking_lot", "registry"] }
 zeph-llm = { workspace = true, features = ["testing"] }
+zeph-mcp = { workspace = true, features = ["mock"] }
 zeph-memory = { workspace = true, features = ["testing"] }
 zeph-vault = { workspace = true, features = ["mock"] }
 

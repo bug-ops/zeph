@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-config`, `zeph-core`: `KeepalivePingCap` (1..=50) and `AskUserTimeout` (1..=3600) newtypes (breaking: out-of-range `max_consecutive_pings` and `timeout_secs` fail config load), and `StopReason::Unpriced` stops keepalive when a ping cannot be priced (#PR)
+- `zeph-core`, `zeph-channels`, `zeph-tui`: `Channel::ask_user_support` (breaking: new trait method, default `Unavailable`); `ask_user` is offered only on user turns of interactive channels, never on scheduler, `/loop`, autonomous goal or webhook turns (#PR)
+- `zeph-common`: `AbortOnDrop<R>` guard for supervised one-shot tasks (#PR)
+- `zeph-mcp`: `NativeToolIds` (breaking: `McpToolListWriter::publish_full` takes `&NativeToolIds`, `detect_native_shadows` takes `&NativeToolIds`), and `McpManager::register_connected_for_testing` under the `mock` feature (#PR)
 - `zeph-core`, `zeph-channels`, `zeph-tui`, `zeph-acp`, `zeph-tools`, `zeph-config`: opt-in model-callable `ask_user` tool (`[tools.ask_user]`, `--ask-user`) with a fixed warning header, secret scrubbing, per-turn cap and timeout on CLI, TUI, Telegram, Discord, Slack and ACP (breaking: new `Channel::ask_user` method, `Agent::with_interaction_config` and `InteractionConfig` without `Default`, `ConfirmLoop::run_reply`, `ClaimSource::UserAnswer`) (#7130)
 - `zeph-llm`, `zeph-core`, `zeph-commands`, `zeph-tui`, `zeph-config`: opt-in prompt-cache keepalive pings (`[llm.cache_keepalive]`, `--cache-keepalive`, `/keepalive on|off|status`) through `LlmProvider::keepalive_ping` with a worst-case cost gate and ping count and cost in `/cost` and the status bar (#7130)
 - `zeph-config`: `--migrate-config` step 118 and `--init` wizard step for `[tools.ask_user]` and `[llm.cache_keepalive]` (#7130)
@@ -23,6 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-tools`, `zeph-core`, `zeph-subagent`, `zeph-mcp`, `zeph-index`, `zeph-acp`, `zeph-bench`: one typed `CallAttribution` (`CallerId`, `SkillName` list) replaces the `caller_id` and `skill_name` field pairs (breaking: struct fields and constructors; audit and egress JSONL write `caller_id` and `skill_name` after the other keys) (#PR)
+- `zeph-core`, `zeph-acp`, `zeph-memory`: `LoopbackEvent::Usage` and `UsageRecord` carry `TokenUsage` instead of positional counters (breaking) (#PR)
+- `zeph-core`: keepalive history capture shares chunked storage and copies only the new tail instead of the whole history (#PR)
+- `zeph-common`, `zeph-core`, `zeph`: ACP and serve session task scope gets a per-instance suffix, and the cancel bridge and speculative sweeper are aborted on agent drop (#PR)
+- `zeph-llm`, `zeph-channels`, `zeph-skills`: Discord `send_message` returns `DiscordRestError` (breaking), and Ollama transport failures stay `LlmError::Http` (#PR)
 - `zeph-llm`, `zeph-core`: Claude API error detail reaches the user and is logged once (breaking: `LlmError::ApiError` carries `detail`); raw API bodies are logged at debug after scrubbing (#7078)
 - `zeph-core`: background and ensemble usage is billed at the serving provider's speed, cache counters and model price (#7078)
 - `zeph-core`, `zeph-plugins`, `zeph`, `zeph-channels`: goal list surfaces store errors, one shared plugin overlay renderer, serve factory applies `[memory.store_routing]`, Telegram guest proxy body capped at 20 MiB (#7078)
@@ -42,6 +51,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-llm`: Ollama show, embed, batch embed, model list and warmup errors are scrubbed, control-stripped and capped like chat errors; whisper, cocoon STT, Discord, miner and model-list bodies are size-capped and no longer panic on a multibyte truncation (#PR)
+- `zeph-core`, `zeph-mcp`: an MCP tool shadowed by a native tool id is dropped from the exposed list and `McpToolIds`, and a native executor added after `with_mcp` reports the collision at startup; `/mcp list` follows configured server order (#PR)
+- `zeph-core`: `[tools.permissions]` deny rules now apply to built-in agent-loop tools (`ask_user`, `compress_context`) at listing and dispatch (#PR)
 - `zeph-channels`: Telegram confirmations ignore bot senders; Discord and Slack confirmations accept replies only from the channel of the prompt (#7130)
 - `zeph-acp`: the `ask_user` elicitation bridge starts for loaded, forked and resumed sessions, not only new ones (MCP elicitation uses its own bridge) (#7130)
 - `zeph-channels`: Telegram guest proxy forwards file downloads to `/file/bot<T>/<path>` instead of a doubled upstream path and returns 404 for malformed paths (#7079)

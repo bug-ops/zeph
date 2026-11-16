@@ -179,7 +179,7 @@ impl<T: ToolExecutor> ShadowProbeExecutor<T> {
         if self.effective_trust() == SkillTrustLevel::Quarantined
             && is_quarantine_denied(call.tool_id.as_str())
         {
-            let active_skills = call.skill_name.as_deref().unwrap_or(&[]);
+            let active_skills = &call.attribution.active_skills;
             return Some(quarantine_denial_message(
                 call.tool_id.as_str(),
                 active_skills,
@@ -583,10 +583,9 @@ mod tests {
         ToolCall {
             tool_id: ToolName::new(tool),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -594,10 +593,9 @@ mod tests {
         ToolCall {
             tool_id: ToolName::new(tool),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::new(None, skills.iter()),
             context: None,
             tool_call_id: None,
-            skill_name: Some(skills.iter().map(ToString::to_string).collect()),
         }
     }
 

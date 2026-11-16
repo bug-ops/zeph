@@ -82,6 +82,13 @@ impl Channel for AppChannel {
         }
     }
 
+    fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+        match self {
+            Self::Standard(c) => c.ask_user_support(),
+            Self::Tui(c) => c.ask_user_support(),
+        }
+    }
+
     fn supports_exit(&self) -> bool {
         match self {
             Self::Standard(c) => c.supports_exit(),

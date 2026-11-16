@@ -140,13 +140,10 @@ impl SpeechToText for CocoonSttProvider {
                     .await?;
 
                 if !resp.status().is_success() {
-                    let status = resp.status();
-                    let mut body = resp.text().await.unwrap_or_default();
-                    body.truncate(500);
-                    return Err(LlmError::TranscriptionFailed(format!("{status}: {body}")));
+                    return Err(crate::http::transcription_failure(resp).await);
                 }
 
-                let parsed: WhisperResponse = resp.json().await.map_err(LlmError::Http)?;
+                let parsed: WhisperResponse = crate::http::read_json(resp).await?;
                 Ok(Transcription {
                     text: parsed.text,
                     language: None,

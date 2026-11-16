@@ -175,11 +175,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("read"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = filter.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -191,11 +190,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("edit"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = filter.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -293,10 +291,9 @@ mod tests {
         ToolCall {
             tool_id: ToolName::new(tool_id),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

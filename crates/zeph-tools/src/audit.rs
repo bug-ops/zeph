@@ -72,16 +72,9 @@ pub struct EgressEvent {
     /// Block reason: `"allowlist"` | `"blocklist"` | `"ssrf"` | `"scheme"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_reason: Option<&'static str>,
-    /// Caller identity propagated from `ToolCall::caller_id`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub caller_id: Option<String>,
-    /// Skills active in the turn that triggered this egress call (turn-level attribution).
-    ///
-    /// Propagated from `ToolCall::skill_name`. `None` for system-initiated calls.
-    /// This is turn-scoped: it lists all skills injected into the system prompt for
-    /// the current turn, not necessarily the specific skill that caused this request.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skill_name: Option<Vec<String>>,
+    /// Caller and turn-level active skills, propagated from `ToolCall::attribution`.
+    #[serde(flatten)]
+    pub attribution: crate::executor::CallAttribution,
     /// Redirect hop index (0 for the initial request). Distinguishes per-hop events
     /// sharing the same `correlation_id`.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
@@ -179,9 +172,6 @@ pub struct AuditEntry {
     /// Whether tool output was truncated before storage. Default false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// Caller identity that initiated this tool call. `None` for system calls.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub caller_id: Option<String>,
     /// Policy rule trace that matched this tool call. Populated from `PolicyDecision::trace`.
     /// `None` when policy is disabled or this entry is not from a policy check.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -211,13 +201,9 @@ pub struct AuditEntry {
     /// `None` when `ScopedToolExecutor` is not in the chain.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_at_dispatch: Option<String>,
-    /// Skills active in the turn that triggered this tool call (turn-level attribution).
-    ///
-    /// Propagated from `ToolCall::skill_name`. `None` for
-    /// system-initiated or internal tool calls. This is turn-scoped: it lists all skills
-    /// injected into the system prompt for the current turn, not per-call causation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skill_name: Option<Vec<String>>,
+    /// Caller and turn-level active skills, propagated from `ToolCall::attribution`.
+    #[serde(flatten)]
+    pub attribution: crate::executor::CallAttribution,
     /// Content-origin tag for memory-write audit records (issue #6490, `MemGhost`).
     ///
     /// The `as_str()` output of `zeph_sanitizer::ContentSourceKind` (e.g. `"web_scrape"`,
@@ -244,7 +230,7 @@ impl AuditEntry {
     /// # Examples
     ///
     /// ```
-    /// use zeph_tools::AuditEntry;
+    /// use zeph_tools::{AuditEntry, CallerId};
     ///
     /// let entry = AuditEntry::memory_write(
     ///     "tool_output",
@@ -252,12 +238,12 @@ impl AuditEntry {
     ///     Some("web_scrape"),
     ///     Some("external_untrusted"),
     /// );
-    /// assert_eq!(entry.caller_id.as_deref(), Some("tool_output"));
+    /// assert_eq!(entry.attribution.caller.as_ref().map(CallerId::as_str), Some("tool_output"));
     /// assert_eq!(entry.trust_level.as_deref(), Some("external_untrusted"));
     /// ```
     #[must_use]
     pub fn memory_write(
-        caller_id: impl Into<String>,
+        caller_id: impl AsRef<str>,
         preview: impl Into<String>,
         source_kind: Option<&str>,
         trust_level: Option<&str>,
@@ -279,7 +265,6 @@ impl AuditEntry {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
-            caller_id: Some(caller_id.into()),
             policy_match: None,
             correlation_id: None,
             vigil_risk: None,
@@ -287,7 +272,7 @@ impl AuditEntry {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
+            attribution: crate::executor::CallAttribution::for_caller(caller_id),
             source_kind: source_kind.map(str::to_owned),
             trust_level: trust_level.map(str::to_owned),
         }
@@ -308,8 +293,7 @@ impl AuditEntry {
     ///     verifier: "destructive",
     ///     reason: "rm -rf /".to_owned(),
     ///     args_json: "{}".to_owned(),
-    ///     caller_id: None,
-    ///     skill_name: None,
+    ///     attribution: zeph_tools::CallAttribution::default(),
     /// };
     /// let entry = AuditEntry::pre_execution_block(&block);
     /// assert!(matches!(entry.result, AuditResult::Blocked { .. }));
@@ -339,7 +323,6 @@ impl AuditEntry {
             adversarial_policy_decision: None,
             exit_code: None,
             truncated: false,
-            caller_id: block.caller_id.clone(),
             policy_match: None,
             correlation_id: None,
             vigil_risk: None,
@@ -347,7 +330,7 @@ impl AuditEntry {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: block.skill_name.clone(),
+            attribution: block.attribution.clone(),
             source_kind: None,
             trust_level: None,
         }
@@ -588,13 +571,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -627,13 +609,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -665,13 +646,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -700,13 +680,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -741,13 +720,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         logger.log(&entry).await;
     }
@@ -783,13 +761,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         logger.log(&entry).await;
 
@@ -854,13 +831,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -893,13 +869,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -941,13 +916,12 @@ mod tests {
                 truncated: false,
                 policy_match: None,
                 correlation_id: None,
-                caller_id: None,
+                attribution: crate::CallAttribution::default(),
                 vigil_risk: None,
                 execution_env: None,
                 resolved_cwd: None,
                 scope_at_definition: None,
                 scope_at_dispatch: None,
-                skill_name: None,
             };
             logger.log(&entry).await;
         }
@@ -979,13 +953,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -1017,13 +990,12 @@ mod tests {
             truncated: false,
             policy_match: None,
             correlation_id: None,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             vigil_risk: None,
             execution_env: None,
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
-            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(

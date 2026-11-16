@@ -2301,8 +2301,7 @@ mod tests {
             verifier: "firewall",
             reason: "blocked path".to_owned(),
             args_json: "{}".to_owned(),
-            caller_id: None,
-            skill_name: None,
+            attribution: zeph_tools::CallAttribution::default(),
         })
         .await;
 
@@ -2341,8 +2340,7 @@ mod tests {
                 verifier: "firewall",
                 reason: "blocked path".to_owned(),
                 args_json: r#"{"file_path":"/etc/passwd"}"#.to_owned(),
-                caller_id: None,
-                skill_name: None,
+                attribution: zeph_tools::CallAttribution::default(),
             })
             .await;
 

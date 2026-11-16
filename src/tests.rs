@@ -626,11 +626,12 @@ async fn a2a_response_shift_drain_until_flush_prevents_leak() {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let _ = tx2
             .send(LoopbackEvent::Usage {
-                input_tokens: 10,
-                output_tokens: 5,
+                usage: zeph_core::channel::TokenUsage {
+                    input: 10,
+                    output: 5,
+                    ..Default::default()
+                },
                 context_window: 8192,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
                 cost_cents: 0.0,
             })
             .await;
@@ -687,11 +688,12 @@ async fn a2a_drain_completes_on_flush_within_timeout() {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let _ = tx2
             .send(LoopbackEvent::Usage {
-                input_tokens: 10,
-                output_tokens: 5,
+                usage: zeph_core::channel::TokenUsage {
+                    input: 10,
+                    output: 5,
+                    ..Default::default()
+                },
                 context_window: 8192,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
                 cost_cents: 0.0,
             })
             .await;

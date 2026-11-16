@@ -10,7 +10,7 @@ It is off by default and costs tokens: enable it only when you often pause betwe
 [llm.cache_keepalive]
 enabled = true
 keepalive_provider = ""      # [[llm.providers]] name; empty = the provider serving your requests
-max_consecutive_pings = 6    # pings in a row without real activity
+max_consecutive_pings = 6    # 1-50, pings in a row without real activity
 ```
 
 Or for one session: `zeph --cache-keepalive`. Toggle at runtime with `/keepalive on`, `/keepalive off` and `/keepalive status`. The settings are read at startup.
@@ -31,9 +31,10 @@ Or for one session: `zeph --cache-keepalive`. Toggle at runtime with `/keepalive
 | budget exhausted | the cost gate refused a ping | your next message |
 | no cache hit | a ping read no cache, so it is not helping | `/keepalive on` or a provider switch |
 | prefix rewritten | a ping wrote more than 512 cache tokens, so the request differed | `/keepalive on` or a provider switch |
+| unpriced | a ping with a thinking budget cannot be priced (no cost tracking or no model pricing) | `/keepalive on` or a provider switch |
 | provider mismatch | `keepalive_provider` names another backend | `/keepalive on` or a provider switch |
 | off | you ran `/keepalive off` | `/keepalive on` |
 
-**Thinking budget:** with extended thinking enabled the worst-case ping includes the whole thinking budget as output, which usually costs more than the cache write it avoids. The gate then refuses the first ping of each idle period and `/keepalive status` shows `paused`. Keepalive is rarely useful with a thinking budget; use it without one or with a small one.
+**Thinking budget:** with extended thinking enabled the worst-case ping includes the whole thinking budget as output, which usually costs more than the cache write it avoids. The gate then refuses the first ping of each idle period and `/keepalive status` shows `paused`. Keepalive is rarely useful with a thinking budget; use it without one or with a small one. If the ping cannot be priced at all (cost tracking off or a model without pricing) and a thinking budget is set, keepalive stops as `unpriced` instead of pinging.
 
 Only providers with a time-limited prompt cache (Claude) ping; others report that keepalive is unsupported. See `specs/091-prompt-cache-keepalive-pings/spec.md`.

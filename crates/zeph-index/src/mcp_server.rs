@@ -701,11 +701,10 @@ impl Foo {
                 serde_json::Value::Object(m) => m,
                 _ => serde_json::Map::new(),
             },
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

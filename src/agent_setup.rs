@@ -3492,10 +3492,9 @@ mod tests {
         zeph_tools::ToolCall {
             tool_id: "bash".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -3703,10 +3702,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "diagnostics".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
         assert_matches!(
@@ -3763,10 +3761,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "get_current_time".into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
         let output = result
@@ -3847,10 +3844,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = gate.execute_tool_call(&call).await;
         assert_matches!(
@@ -3920,10 +3916,9 @@ mod tests {
         let call = zeph_tools::ToolCall {
             tool_id: "shell".into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let result = gate.execute_tool_call(&call).await;
         assert_matches!(
@@ -4403,10 +4398,9 @@ mod tests {
         zeph_tools::ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

@@ -591,9 +591,9 @@ mod tests {
     fn capture_keepalive_snapshot(agent: &Agent<MockChannel>) {
         let shared = agent.runtime.cache_keepalive.shared();
         shared.capture(
-            zeph_llm::provider::KeepaliveRequest {
+            crate::cache_keepalive::CaptureInput {
                 provider: agent.provider.clone(),
-                messages: std::sync::Arc::from(vec![msg(Role::User, "old history")]),
+                messages: &[msg(Role::User, "old history")],
                 tools: std::sync::Arc::from(Vec::new()),
                 target: None,
             },

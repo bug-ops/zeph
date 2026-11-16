@@ -18,9 +18,10 @@ use zeph_llm::provider::{ToolDefinition, ToolUseRequest};
 
 use super::Agent;
 use super::tool_execution::focus::BuiltinReply;
+use super::turn::TurnOrigin;
 use crate::channel::{
-    AskUserAnswer, AskUserInputError, AskUserKind, AskUserOutcome, AskUserRequest, Channel,
-    ChannelError, ChoiceOptions, DeclineReason, OtherAnswer,
+    AskUserAnswer, AskUserInputError, AskUserKind, AskUserOutcome, AskUserRequest, AskUserSupport,
+    Channel, ChannelError, ChoiceOptions, DeclineReason, OtherAnswer,
 };
 
 /// Name of the tool as the model sees it.
@@ -28,6 +29,10 @@ pub(crate) const ASK_USER_TOOL: &str = "ask_user";
 
 /// Status line shown while a question is open.
 const STATUS_WAITING: &str = "Waiting for your answer\u{2026}";
+
+/// Reply for a question that no one can answer on this channel or in this turn.
+const NOTICE_NON_INTERACTIVE: &str = "No user is available to answer on this channel. Continue \
+                                      with your best judgment or explain what you need.";
 
 /// Longest answer, in characters, handed to the model.
 const MAX_ANSWER_CHARS: usize = 4_000;
@@ -40,6 +45,7 @@ const MAX_ANSWER_CHARS: usize = 4_000;
 pub(crate) struct AskUserState {
     pub(crate) config: AskUserConfig,
     questions_this_turn: u8,
+    origin: TurnOrigin,
 }
 
 impl AskUserState {
@@ -47,11 +53,13 @@ impl AskUserState {
         Self {
             config,
             questions_this_turn: 0,
+            origin: TurnOrigin::default(),
         }
     }
 
-    pub(crate) fn begin_turn(&mut self) {
+    pub(crate) fn begin_turn(&mut self, origin: TurnOrigin) {
         self.questions_this_turn = 0;
+        self.origin = origin;
     }
 
     /// Count one question; `false` once the per-turn cap is reached.
@@ -179,10 +187,9 @@ fn render_outcome_with(
             let chosen = chosen.filter(|c| !c.is_empty())?;
             BuiltinReply::completed(format!("User selected: {}", chosen.join(", ")))
         }
-        AskUserOutcome::Declined(DeclineReason::NonInteractive) => BuiltinReply::completed(
-            "No user is available to answer on this channel. Continue with your best judgment \
-             or explain what you need.",
-        ),
+        AskUserOutcome::Declined(DeclineReason::NonInteractive) => {
+            BuiltinReply::completed(NOTICE_NON_INTERACTIVE)
+        }
         AskUserOutcome::Declined(_) => BuiltinReply::completed(
             "This channel cannot show that kind of question. Continue with your best judgment \
              or ask in plain text.",
@@ -199,8 +206,17 @@ fn render_outcome_with(
 
 impl<C: Channel> Agent<C> {
     /// Hook called at the start of every turn, before any tool dispatch.
-    pub(super) fn ask_user_on_turn_start(&mut self) {
-        self.runtime.ask_user.begin_turn();
+    pub(super) fn ask_user_on_turn_start(&mut self, origin: TurnOrigin) {
+        self.runtime.ask_user.begin_turn(origin);
+    }
+
+    /// Whether the model may use `ask_user` now: enabled, the turn was started by a person, and
+    /// the channel can show the question. Gates both the tool listing and the dispatch.
+    pub(in crate::agent) fn ask_user_offered(&self) -> bool {
+        let state = &self.runtime.ask_user;
+        state.config.enabled
+            && state.origin == TurnOrigin::User
+            && self.channel.ask_user_support() == AskUserSupport::Interactive
     }
 
     /// Run one `ask_user` call to its tool reply. Never fails: every problem becomes a failed
@@ -219,6 +235,9 @@ impl<C: Channel> Agent<C> {
     ) -> BuiltinReply {
         if blocked {
             return BuiltinReply::failed("Error: this ask_user call was blocked");
+        }
+        if !self.ask_user_offered() {
+            return BuiltinReply::completed(NOTICE_NON_INTERACTIVE);
         }
         let request = match serde_json::from_value::<AskUserInput>(call.input.clone())
             .map_err(|e| e.to_string())
@@ -411,7 +430,7 @@ mod tests {
             assert!(state.try_take_slot());
         }
         assert!(!state.try_take_slot());
-        state.begin_turn();
+        state.begin_turn(TurnOrigin::User);
         assert!(state.try_take_slot());
     }
 
@@ -451,6 +470,10 @@ mod tests {
 
         fn requires_input_sanitization(&self) -> bool {
             self.sanitize
+        }
+
+        fn ask_user_support(&self) -> AskUserSupport {
+            AskUserSupport::Interactive
         }
 
         fn ask_user(

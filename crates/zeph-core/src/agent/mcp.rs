@@ -97,7 +97,7 @@ fn format_mcp_list(
 impl<C: Channel> Agent<C> {
     /// Recompute the MCP tools hidden behind a native tool id and WARN once per newly hidden tool.
     pub(super) fn refresh_native_tool_shadows(&mut self) {
-        let native: std::collections::HashSet<zeph_common::ToolName> = self
+        let native: zeph_mcp::tool_list::NativeToolIds = self
             .tool_executor
             .tool_definitions_erased()
             .into_iter()
@@ -105,6 +105,7 @@ impl<C: Channel> Agent<C> {
             .map(|d| zeph_common::ToolName::new(d.id.as_ref()))
             .collect();
         let shadows = zeph_mcp::tool::detect_native_shadows(self.services.mcp.tools(), &native);
+        self.services.mcp.set_native_ids(native);
         for s in shadows
             .iter()
             .filter(|s| !self.services.mcp.native_shadows.contains(s))

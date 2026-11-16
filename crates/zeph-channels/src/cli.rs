@@ -24,9 +24,10 @@ use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
 use zeph_common::path_guard::{PathRejection, classify_relative_path};
 use zeph_core::channel::{
-    ASK_USER_COMMAND_NOTICE, ASK_USER_RETRY_HINT, AskUserOutcome, AskUserRequest, Attachment,
-    AttachmentKind, Channel, ChannelError, ChannelMessage, DeclineReason, ElicitationField,
-    ElicitationFieldType, ElicitationRequest, ElicitationResponse, ReplyKind, classify_reply,
+    ASK_USER_COMMAND_NOTICE, ASK_USER_RETRY_HINT, AskUserOutcome, AskUserRequest, AskUserSupport,
+    Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, DeclineReason,
+    ElicitationField, ElicitationFieldType, ElicitationRequest, ElicitationResponse, ReplyKind,
+    classify_reply,
 };
 
 use crate::line_editor::{self, ReadLineResult};
@@ -616,6 +617,14 @@ impl Default for CliChannel {
 }
 
 impl Channel for CliChannel {
+    fn ask_user_support(&self) -> AskUserSupport {
+        if std::io::stdin().is_terminal() {
+            AskUserSupport::Interactive
+        } else {
+            AskUserSupport::Unavailable
+        }
+    }
+
     /// Receive the next user message.
     ///
     /// This method is cancel-safe: dropping the future does not discard any
@@ -730,7 +739,7 @@ impl Channel for CliChannel {
     /// error.
     #[tracing::instrument(name = "channels.cli.ask_user", skip_all)]
     async fn ask_user(&mut self, request: AskUserRequest) -> Result<AskUserOutcome, ChannelError> {
-        if !std::io::stdin().is_terminal() {
+        if self.ask_user_support() == AskUserSupport::Unavailable {
             tracing::debug!("non-interactive stdin, declining ask_user");
             return Ok(AskUserOutcome::Declined(DeclineReason::NonInteractive));
         }

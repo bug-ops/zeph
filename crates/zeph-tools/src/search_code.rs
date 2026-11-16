@@ -929,11 +929,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "search_code".into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
         assert_matches!(err, ToolError::InvalidParams { .. });
@@ -951,11 +950,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(out.summary.contains("retry_backoff_ms"));
@@ -975,11 +973,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(out.summary.contains("grep fallback"));
@@ -1015,11 +1012,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = tokio::time::timeout(
             Duration::from_secs(MAX_WALK_DURATION.as_secs() + 10),
@@ -1057,11 +1053,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
             .await
@@ -1124,11 +1119,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
             .await
@@ -1161,11 +1155,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
             .await
@@ -1198,11 +1191,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
             .await
@@ -1235,11 +1227,10 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
             .await

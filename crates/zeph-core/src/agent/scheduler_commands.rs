@@ -25,10 +25,9 @@ impl<C: Channel> Agent<C> {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("list_tasks"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         match self.tool_executor.execute_tool_call_erased(&call).await {
             Ok(Some(output)) => Ok(output.summary),

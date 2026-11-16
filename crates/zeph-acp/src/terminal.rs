@@ -1091,10 +1091,9 @@ mod tests {
         ToolCall {
             tool_id: zeph_tools::ToolName::new("bash"),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -1111,10 +1110,9 @@ mod tests {
         ToolCall {
             tool_id: zeph_tools::ToolName::new("bash_stdin"),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

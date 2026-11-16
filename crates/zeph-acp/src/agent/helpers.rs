@@ -506,13 +506,11 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<SessionUpda
         LoopbackEvent::Flush => vec![],
         #[cfg(feature = "unstable-session-usage")]
         LoopbackEvent::Usage {
-            input_tokens,
-            output_tokens,
+            usage,
             context_window,
             cost_cents,
-            ..
         } => {
-            let used = input_tokens.saturating_add(output_tokens);
+            let used = usage.input.saturating_add(usage.output);
             let mut update = UsageUpdate::new(used, context_window);
             if cost_cents > 0.0 {
                 update = update.cost(Cost::new(cost_cents / 100.0, "USD"));

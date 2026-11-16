@@ -3,7 +3,7 @@
 
 //! Trust-level enforcement layer for tool execution.
 
-use zeph_common::TurnTrustFloor;
+use zeph_common::{SkillName, TurnTrustFloor};
 
 use crate::SkillTrustLevel;
 
@@ -21,7 +21,7 @@ pub(crate) use zeph_common::quarantine::is_quarantine_denied;
 
 /// Builds the denial message for a Quarantined-trust block.
 ///
-/// `active_skills` is the turn's full active-skill list (`ToolCall::skill_name`), not just
+/// `active_skills` is the turn's full active-skill list (`ToolCall::attribution`), not just
 /// the specific skill(s) whose trust caused the fold — `TrustGateExecutor` only tracks the
 /// already-folded `effective_trust`, not per-skill levels, so it cannot name exactly which
 /// skill(s) are Quarantined, nor whether `tool_id`'s own target skill (e.g. `invoke_skill`'s
@@ -30,10 +30,11 @@ pub(crate) use zeph_common::quarantine::is_quarantine_denied;
 /// gate cannot verify: this denial means the turn's *combined* trust floor is quarantined
 /// (weakest-link policy, see `assembly.rs` and this module's doc comment) — it may or may not
 /// be about the specific tool/skill targeted by this call.
-pub(crate) fn quarantine_denial_message(tool_id: &str, active_skills: &[String]) -> String {
+pub(crate) fn quarantine_denial_message(tool_id: &str, active_skills: &[SkillName]) -> String {
     if active_skills.is_empty() {
         format!("{tool_id} denied (trust=quarantined)")
     } else {
+        let active_skills: Vec<&str> = active_skills.iter().map(SkillName::as_str).collect();
         format!(
             "{tool_id} denied: this turn's active skill set {active_skills:?} has a combined \
              trust floor of quarantined (weakest-link policy over all co-active skills this \
@@ -142,7 +143,7 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         &self,
         tool_id: &str,
         input: &str,
-        active_skills: &[String],
+        active_skills: &[SkillName],
     ) -> Result<(), ToolError> {
         match self.effective_trust() {
             SkillTrustLevel::Blocked => {
@@ -245,7 +246,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         self.check_trust(
             call.tool_id.as_str(),
             input,
-            call.skill_name.as_deref().unwrap_or(&[]),
+            &call.attribution.active_skills,
         )?;
         self.inner.execute_tool_call(call).await
     }
@@ -270,7 +271,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                 return Err(ToolError::Blocked {
                     command: quarantine_denial_message(
                         call.tool_id.as_str(),
-                        call.skill_name.as_deref().unwrap_or(&[]),
+                        &call.attribution.active_skills,
                     ),
                 });
             }
@@ -326,7 +327,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
             self.check_trust(
                 call.tool_id.as_str(),
                 input,
-                call.skill_name.as_deref().unwrap_or(&[]),
+                &call.attribution.active_skills,
             ),
             Err(ToolError::ConfirmationRequired { .. })
         )
@@ -375,11 +376,10 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -389,11 +389,10 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 
@@ -401,11 +400,10 @@ mod tests {
         ToolCall {
             tool_id: tool_id.into(),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::new(None, skills.iter()),
             context: None,
 
             tool_call_id: None,
-            skill_name: Some(skills.iter().map(ToString::to_string).collect()),
         }
     }
 
@@ -648,9 +646,9 @@ mod tests {
     }
 
     /// Regression test for #5729: when no active skills are recorded on the call
-    /// (`skill_name: None`), the denial message must remain exactly the pre-fix format —
+    /// (no active skills), the denial message must remain exactly the pre-fix format —
     /// this guards backward compatibility for all pre-existing tests in this module, which
-    /// all use `make_call`/`make_call_with_cmd` (both hardcode `skill_name: None`).
+    /// all use `make_call`/`make_call_with_cmd` (both use an empty skill list).
     #[tokio::test]
     async fn quarantined_denial_message_unchanged_when_no_active_skills() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
@@ -875,11 +873,10 @@ mod tests {
         let call = ToolCall {
             tool_id: "mcp_filesystem__read_file".into(),
             params,
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = gate.execute_tool_call(&call).await;
         assert!(

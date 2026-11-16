@@ -40,7 +40,7 @@ embedding_model = "qwen3-embedding"
 # [llm.cache_keepalive]
 # enabled = false
 # keepalive_provider = ""        # [[llm.providers]] name; empty = main provider
-# max_consecutive_pings = 6
+# max_consecutive_pings = 6      # 1-50
 
 [llm.cloud]
 # Claude API model (used when provider = "claude")

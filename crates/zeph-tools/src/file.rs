@@ -1129,11 +1129,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("read"),
             params: make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.tool_name, "read");

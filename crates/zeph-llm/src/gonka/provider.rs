@@ -294,10 +294,17 @@ impl GonkaProvider {
                     return Ok(resp);
                 }
                 Ok(Ok(resp)) => {
-                    let status = resp.status().as_u16();
-                    tracing::warn!(status, endpoint = %endpoint.base_url, "gonka endpoint error");
+                    let status = resp.status();
+                    tracing::warn!(status = status.as_u16(), endpoint = %endpoint.base_url, "gonka endpoint error");
                     self.pool.mark_failed(idx, Duration::from_secs(30));
-                    last_err = Some(LlmError::api_error("gonka", status, ""));
+                    // A slow or oversized error body must not stall failover: the status alone
+                    // still yields a typed `ApiError`.
+                    let body = tokio::time::timeout(self.timeout, crate::http::read_body(resp))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
+                    last_err = Some(crate::http::api_failure("gonka", status, &body));
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(error = %e, endpoint = %endpoint.base_url, "gonka HTTP error");
@@ -558,9 +565,7 @@ impl LlmProvider for GonkaProvider {
         }
 
         if !status.is_success() {
-            let truncated: String = text.chars().take(256).collect();
-            crate::http::log_api_error_body("gonka", status, &truncated);
-            return Err(LlmError::api_error("gonka", status.as_u16(), &truncated));
+            return Err(crate::http::api_failure("gonka", status, &text));
         }
 
         let result = self.inner.decode_tool_chat_response(&text, "gonka")?;
@@ -595,9 +600,7 @@ impl LlmProvider for GonkaProvider {
         }
 
         if !status.is_success() {
-            let truncated: String = text.chars().take(256).collect();
-            crate::http::log_api_error_body("gonka", status, &truncated);
-            return Err(LlmError::api_error("gonka", status.as_u16(), &truncated));
+            return Err(crate::http::api_failure("gonka", status, &text));
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;

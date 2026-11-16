@@ -903,7 +903,8 @@ Rules appended after `[tools.policy]` rules. `[tools.policy]` has precedence (fi
 
 ## `ask_user` Built-in Tool (#6912, spec 090)
 
-- `ask_user` is an agent built-in like `compress_context`: answered in the agent loop, never reaching hooks, gates or executors, and listed only while `[tools.ask_user] enabled = true` (default off). `[tools.permissions]` does not apply to built-ins; `enabled` is the switch.
+- `ask_user` is an agent built-in like `compress_context`: answered in the agent loop, never reaching hooks, gates or executors, and listed only while `[tools.ask_user] enabled = true` (default off) and the turn can reach a person (spec 090 FR-011).
+- `[tools.permissions]` applies to every agent built-in (`start_focus`, `complete_focus`, `compress_context`, `request_compaction`, `skill_state_patch`, `ask_user`; #7123). A built-in whose rules are all `Deny` (`is_fully_denied`) is absent from the tool list. At dispatch `Agent::builtin_denied` blocks a call before its handler when the tool has rules and `check` returns `Deny`, mirroring `TrustGateExecutor::check_trust` (a tool without rules is unaffected, `Full` autonomy ignores the rules); a rule resolving to `Ask` runs the built-in without a confirmation prompt, and under `ReadOnly` autonomy `builtin_denied` follows `PermissionPolicy::check` (a tool with rules is denied unless it is in the read-only set); the reply is the failed `Error: <tool> is denied by [tools.permissions]`, an `ask_user` call never reaches the channel or uses a question slot.
 - Calls the pre-exec, quota or repeat gates refused get a failed reply and never reach the user. The result carries `ClaimSource::UserAnswer` (native provenance, `LocalUntrusted`) and bypasses the tool-output sanitizer: the answer already took the incoming-channel-message path at its choke point.
 - Subagents run `zeph-subagent::run_agent_loop` with executor tools only, so they never see the tool.
-- NEVER offer `ask_user` while disabled; NEVER route its answer through the tool-output PII scrub.
+- NEVER offer `ask_user` while disabled or when `ask_user_offered()` is false; NEVER route its answer through the tool-output PII scrub.

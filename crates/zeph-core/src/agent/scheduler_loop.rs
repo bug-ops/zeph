@@ -1409,16 +1409,14 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     .unwrap_or_default();
                                                 let speed = member_usage
                                                     .map_or_else(Default::default, |u| u.speed);
-                                                let cost_cents = tracker.price_of(
-                                                    model,
-                                                    zeph_llm::provider::TokenUsage {
-                                                        input: usage.input_tokens,
-                                                        output: usage.output_tokens,
-                                                        cache_read,
-                                                        cache_write,
-                                                    },
-                                                    speed,
-                                                );
+                                                let call_usage = zeph_llm::provider::TokenUsage {
+                                                    input: usage.input_tokens,
+                                                    output: usage.output_tokens,
+                                                    cache_read,
+                                                    cache_write,
+                                                };
+                                                let cost_cents =
+                                                    tracker.price_of(model, call_usage, speed);
                                                 let (ttft_ms, reasoning_tokens) = member_provider
                                                     .map_or((None, None), |(_, p)| {
                                                         (
@@ -1438,10 +1436,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                         zeph_memory::UsageSource::EnsembleMember,
                                                     provider_name: usage.member.clone(),
                                                     model_name: model.to_owned(),
-                                                    input_tokens: usage.input_tokens,
-                                                    output_tokens: usage.output_tokens,
-                                                    cache_read_tokens: cache_read,
-                                                    cache_write_tokens: cache_write,
+                                                    usage: call_usage,
                                                     reasoning_tokens,
                                                     cost_cents,
                                                     latency_ms: verify_latency_ms,
@@ -1801,10 +1796,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                                 serde_json::Value::Object(map) => map.clone(),
                                 _ => serde_json::Map::new(),
                             },
-                            caller_id: None,
+                            attribution: zeph_tools::CallAttribution::default(),
                             context: None,
                             tool_call_id: None,
-                            skill_name: None,
                         })
                         .collect();
                     let refusals = {

@@ -59,6 +59,10 @@ impl AskChannel {
 }
 
 impl Channel for AskChannel {
+    fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+        zeph_core::channel::AskUserSupport::Interactive
+    }
+
     #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inbox.pop_front().map(|text| ChannelMessage {
@@ -325,7 +329,9 @@ async fn ask_user_pending_question_times_out_and_drops_channel_future() {
     let run = tokio::time::timeout(
         Duration::from_secs(600),
         run_agent(
-            enabled(|c| c.tools.ask_user.timeout_secs = std::num::NonZeroU64::new(2).unwrap()),
+            enabled(|c| {
+                c.tools.ask_user.timeout_secs = zeph_config::AskUserTimeout::new(2).unwrap();
+            }),
             vec![ask_call("call1"), ChatResponse::text("ok".to_owned())],
             vec![Reply::Pending(Arc::clone(&dropped))],
         ),

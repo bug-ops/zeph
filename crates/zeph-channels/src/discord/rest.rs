@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use zeph_common::http::{BodyLimit, BodyReadError, read_capped};
 
 use crate::common::http_retry::send_with_retry;
 
@@ -13,6 +14,29 @@ use crate::common::http_retry::send_with_retry;
 const BASE_URL: &str = "https://discord.com/api/v10";
 /// Per-request HTTP timeout applied to every Discord REST call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum accepted size of one Discord REST response body.
+const REST_BODY_LIMIT: BodyLimit = BodyLimit::from_const(1024 * 1024);
+
+/// Failure of a Discord REST call that returns a JSON body.
+#[derive(Debug, thiserror::Error)]
+pub enum DiscordRestError {
+    /// Sending the request failed, or retries on rate limiting were exhausted.
+    #[error("discord request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    /// Reading the response body failed or exceeded the size limit.
+    #[error("discord response body: {0}")]
+    Body(#[from] BodyReadError),
+    /// The response body was not the expected JSON.
+    #[error("discord response is not valid JSON: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// Read a response body through the capped reader and decode it as JSON.
+async fn read_json<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T, DiscordRestError> {
+    let bytes = read_capped(resp, REST_BODY_LIMIT).await?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
 
 #[derive(Deserialize)]
 struct CurrentApplication {
@@ -115,7 +139,8 @@ impl RestClient {
 
     /// # Errors
     ///
-    /// Returns an error if the HTTP request fails or rate-limit retries are exhausted.
+    /// Returns an error if the HTTP request fails, rate-limit retries are exhausted, or the
+    /// response body is oversized or not valid JSON.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "channels.discord.rest.send_message", skip_all)
@@ -124,7 +149,7 @@ impl RestClient {
         &self,
         channel_id: &str,
         content: &str,
-    ) -> Result<DiscordMessage, reqwest::Error> {
+    ) -> Result<DiscordMessage, DiscordRestError> {
         let url = format!("{}/channels/{channel_id}/messages", self.base_url);
         let auth = self.auth_header();
         let resp = send_with_retry("discord", || {
@@ -138,7 +163,7 @@ impl RestClient {
                 })
         })
         .await?;
-        resp.json().await
+        read_json(resp).await
     }
 
     /// # Errors
@@ -191,7 +216,7 @@ impl RestClient {
             .await
             .and_then(reqwest::Response::error_for_status)
         {
-            Ok(resp) => match resp.json::<CurrentApplication>().await {
+            Ok(resp) => match read_json::<CurrentApplication>(resp).await {
                 Ok(app) => app.id,
                 Err(e) => {
                     tracing::warn!("discord: failed to parse application info: {e}");
@@ -368,5 +393,46 @@ mod tests {
             .edit_message("123", "456", "@everyone")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_message_oversized_body_is_body_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/channels/123/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_bytes(vec![b' '; REST_BODY_LIMIT.get() + 1]),
+            )
+            .mount(&server)
+            .await;
+
+        let client = RestClient::with_base_url(server.uri(), "test-token".into());
+        let err = client
+            .send_message("123", "hello")
+            .await
+            .map(|m| m.id)
+            .unwrap_err();
+        assert!(
+            matches!(err, DiscordRestError::Body(BodyReadError::TooLarge { .. })),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_invalid_json_is_json_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/channels/123/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let client = RestClient::with_base_url(server.uri(), "test-token".into());
+        let err = client
+            .send_message("123", "hello")
+            .await
+            .map(|m| m.id)
+            .unwrap_err();
+        assert!(matches!(err, DiscordRestError::Json(_)), "got {err:?}");
     }
 }

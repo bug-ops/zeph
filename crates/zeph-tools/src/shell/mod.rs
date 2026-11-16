@@ -1887,8 +1887,7 @@ impl ShellExecutor {
             adversarial_policy_decision: None,
             exit_code,
             truncated,
-            caller_id: None,
-            skill_name: None,
+            attribution: crate::CallAttribution::default(),
             policy_match: None,
             correlation_id: None,
             vigil_risk: None,
@@ -3153,7 +3152,7 @@ async fn run_bash_stream(
                                 command: code.to_owned(),
                                 chunk: interleaved.clone(),
                                 tool_call_id: tool_call_id.cloned(),
-                                skill_name: None,
+                                attribution: crate::CallAttribution::default(),
                             });
                         }
                         combined.push_str(&interleaved);

@@ -311,11 +311,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("spy"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = executor.execute_tool_call(&call).await.unwrap().unwrap();
 
@@ -335,11 +334,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("spy"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = executor.execute_tool_call(&call).await.unwrap().unwrap();
         // StubCompressor would return "COMPRESSED" — but threshold not met, so raw passes through.
@@ -372,11 +370,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("spy"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let out = executor.execute_tool_call(&call).await.unwrap().unwrap();
         // Error compressor → raw output preserved (T4 safety invariant).
@@ -455,11 +452,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("spy"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         assert!(executor.requires_confirmation(&call));
 

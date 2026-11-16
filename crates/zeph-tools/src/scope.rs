@@ -552,8 +552,7 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
                     adversarial_policy_decision: None,
                     exit_code: None,
                     truncated: false,
-                    caller_id: call.caller_id.clone(),
-                    skill_name: call.skill_name.clone(),
+                    attribution: call.attribution.clone(),
                     policy_match: None,
                     correlation_id: None,
                     vigil_risk: None,
@@ -614,8 +613,7 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
                     adversarial_policy_decision: None,
                     exit_code: None,
                     truncated: false,
-                    caller_id: call.caller_id.clone(),
-                    skill_name: call.skill_name.clone(),
+                    attribution: call.attribution.clone(),
                     policy_match: None,
                     correlation_id: None,
                     vigil_risk: None,
@@ -847,11 +845,10 @@ mod tests {
         ToolCall {
             tool_id: ToolName::new(tool_id),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

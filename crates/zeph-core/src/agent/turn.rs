@@ -37,7 +37,8 @@ pub(crate) enum TurnOrigin {
     /// A message received from the channel.
     #[default]
     User,
-    /// A prompt injected by the scheduler or `/loop`, or a message sent by another bot.
+    /// A prompt injected by the scheduler or `/loop`, a message sent by another bot, or an
+    /// autonomous goal turn.
     Injected,
 }
 

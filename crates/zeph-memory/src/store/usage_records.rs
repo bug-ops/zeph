@@ -5,6 +5,7 @@
 
 use zeph_db::ActiveDialect;
 use zeph_db::sql;
+use zeph_llm::provider::TokenUsage;
 
 use super::SqliteStore;
 use crate::error::MemoryError;
@@ -63,10 +64,12 @@ fn row_to_usage_record(row: UsageRow) -> UsageRecord {
         source,
         provider_name,
         model_name,
-        input_tokens: to_u64(input_tokens),
-        output_tokens: to_u64(output_tokens),
-        cache_read_tokens: to_u64(cache_read_tokens),
-        cache_write_tokens: to_u64(cache_write_tokens),
+        usage: TokenUsage {
+            input: to_u64(input_tokens),
+            output: to_u64(output_tokens),
+            cache_read: to_u64(cache_read_tokens),
+            cache_write: to_u64(cache_write_tokens),
+        },
         reasoning_tokens: reasoning_tokens.map(to_u64),
         cost_cents,
         latency_ms: to_u64(latency_ms),
@@ -99,10 +102,10 @@ impl SqliteStore {
         .bind(record.source.as_str())
         .bind(&record.provider_name)
         .bind(&record.model_name)
-        .bind(to_i64(record.input_tokens))
-        .bind(to_i64(record.output_tokens))
-        .bind(to_i64(record.cache_read_tokens))
-        .bind(to_i64(record.cache_write_tokens))
+        .bind(to_i64(record.usage.input))
+        .bind(to_i64(record.usage.output))
+        .bind(to_i64(record.usage.cache_read))
+        .bind(to_i64(record.usage.cache_write))
         .bind(record.reasoning_tokens.map(to_i64))
         .bind(record.cost_cents)
         .bind(to_i64(record.latency_ms))
@@ -195,10 +198,12 @@ mod tests {
             source,
             provider_name: "quality".to_string(),
             model_name: "claude-sonnet-5".to_string(),
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_read_tokens: 10,
-            cache_write_tokens: 5,
+            usage: TokenUsage {
+                input: 100,
+                output: 50,
+                cache_read: 10,
+                cache_write: 5,
+            },
             reasoning_tokens: Some(20),
             cost_cents: 0.42,
             latency_ms: 800,
@@ -227,10 +232,10 @@ mod tests {
             .expect("query")
             .expect("row exists");
         assert_eq!(fetched.source, UsageSource::Conversation);
-        assert_eq!(fetched.input_tokens, 100);
-        assert_eq!(fetched.output_tokens, 50);
-        assert_eq!(fetched.cache_read_tokens, 10);
-        assert_eq!(fetched.cache_write_tokens, 5);
+        assert_eq!(fetched.usage.input, 100);
+        assert_eq!(fetched.usage.output, 50);
+        assert_eq!(fetched.usage.cache_read, 10);
+        assert_eq!(fetched.usage.cache_write, 5);
         assert_eq!(fetched.reasoning_tokens, Some(20));
         assert!((fetched.cost_cents - 0.42).abs() < 1e-9);
         assert_eq!(fetched.ttft_ms, Some(120));

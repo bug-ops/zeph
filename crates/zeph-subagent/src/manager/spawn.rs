@@ -1727,10 +1727,9 @@ mod build_filtered_executor_tests {
         ToolCall {
             tool_id: "bash".into(),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

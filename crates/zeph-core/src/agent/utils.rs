@@ -514,16 +514,13 @@ impl<C: Channel> Agent<C> {
                 CostTarget::serving(provider.name(), provider)
             }
         };
-        let cost_cents = tracker.price_of(
-            model,
-            TokenUsage {
-                input: input_tokens,
-                output: output_tokens,
-                cache_read,
-                cache_write,
-            } + auxiliary,
-            speed,
-        );
+        let total_usage = TokenUsage {
+            input: input_tokens,
+            output: output_tokens,
+            cache_read,
+            cache_write,
+        } + auxiliary;
+        let cost_cents = tracker.price_of(model, total_usage, speed);
         // Generation-window throughput: only derivable once TTFT/TTFB is known and the
         // remaining window (latency - ttft) is positive.
         let tokens_per_sec = ttft_ms.and_then(|ttft| {
@@ -541,10 +538,7 @@ impl<C: Channel> Agent<C> {
             source,
             provider_name: provider_name.to_owned(),
             model_name: model.to_owned(),
-            input_tokens: input_tokens.saturating_add(auxiliary.input),
-            output_tokens: output_tokens.saturating_add(auxiliary.output),
-            cache_read_tokens: cache_read.saturating_add(auxiliary.cache_read),
-            cache_write_tokens: cache_write.saturating_add(auxiliary.cache_write),
+            usage: total_usage,
             reasoning_tokens,
             cost_cents,
             latency_ms,
@@ -1418,7 +1412,7 @@ mod tests {
         let (base, with_aux) = (record(&plain), record(&billed));
 
         assert!(with_aux.cost_cents > base.cost_cents);
-        assert_eq!(with_aux.input_tokens, base.input_tokens + 4000);
-        assert_eq!(with_aux.output_tokens, base.output_tokens + 600);
+        assert_eq!(with_aux.usage.input, base.usage.input + 4000);
+        assert_eq!(with_aux.usage.output, base.usage.output + 600);
     }
 }

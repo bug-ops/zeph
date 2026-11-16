@@ -258,6 +258,10 @@ impl crate::confirm::ConfirmLoop for SlackChannel {
 }
 
 impl Channel for SlackChannel {
+    fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+        zeph_core::channel::AskUserSupport::Interactive
+    }
+
     fn supports_exit(&self) -> bool {
         false
     }
@@ -517,6 +521,30 @@ mod tests {
     fn ask_user_prompt_escapes_slack_control_characters() {
         let out = ask_user_sanitizer("<!channel> <https://evil|click>");
         assert!(!out.contains('<') && !out.contains('>'));
+    }
+
+    #[tokio::test]
+    async fn ask_user_prompt_is_escaped_exactly_once_on_the_wire() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat.postMessage"))
+            .and(body_partial_json(
+                serde_json::json!({"text": "&lt;!channel&gt; &amp; x"}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "1.2"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = api::SlackApi::with_base_url(server.uri(), "xoxb-test".into());
+        api.post_message("C1", &ask_user_sanitizer("<!channel> & x"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

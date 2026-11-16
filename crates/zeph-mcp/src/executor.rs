@@ -223,7 +223,7 @@ impl McpToolExecutor {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
@@ -231,7 +231,6 @@ impl McpToolExecutor {
                 resolved_cwd: None,
                 scope_at_definition: None,
                 scope_at_dispatch: None,
-                skill_name: None,
             })
             .await;
     }
@@ -278,7 +277,7 @@ impl McpToolExecutor {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
@@ -286,7 +285,6 @@ impl McpToolExecutor {
                 resolved_cwd: None,
                 scope_at_definition: None,
                 scope_at_dispatch: None,
-                skill_name: None,
             })
             .await;
     }
@@ -377,10 +375,9 @@ impl ToolExecutor for McpToolExecutor {
                     serde_json::Value::Object(map) => map,
                     _ => serde_json::Map::new(),
                 },
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             };
             if let Some(output) = self.execute_tool_call(&call).await? {
                 outputs.push(output.summary);
@@ -552,7 +549,10 @@ mod tests {
         let (executor, writer) = make_executor_with_writer();
         let first = colliding_tool("a", "b_c");
         let second = colliding_tool("a_b", "c");
-        writer.publish_full(&[first.clone(), second.clone()]);
+        writer.publish_full(
+            &[first.clone(), second.clone()],
+            &crate::tool_list::NativeToolIds::default(),
+        );
         let call = ToolCall {
             tool_id: zeph_tools::ToolName::new("a_b_c"),
             ..ToolCall::default()
@@ -634,7 +634,7 @@ mod tests {
                 std::slice::from_ref(&png_image_block()),
             )
             .await;
-        assert!(media.is_empty());
+        assert_eq!(media, [] as [zeph_llm::ImageData; 0]);
     }
 
     #[tokio::test]
@@ -797,7 +797,7 @@ mod tests {
         let media = executor
             .collect_media(&"srv".into(), "tool", std::slice::from_ref(&text_block))
             .await;
-        assert!(media.is_empty());
+        assert_eq!(media, [] as [zeph_llm::ImageData; 0]);
         let update = tokio::time::timeout(std::time::Duration::from_millis(50), rx.next()).await;
         assert!(
             update.is_err(),
@@ -951,14 +951,17 @@ mod tests {
     fn published_tools_update_definitions() {
         let (executor, writer) = make_executor_with_writer();
         assert!(executor.tool_definitions().is_empty());
-        writer.publish_full(&[McpTool {
-            server_id: "fs".into(),
-            name: "list_dir".into(),
-            description: "List directory".into(),
-            input_schema: serde_json::json!({}),
-            output_schema: None,
-            security_meta: crate::tool::ToolSecurityMeta::default(),
-        }]);
+        writer.publish_full(
+            &[McpTool {
+                server_id: "fs".into(),
+                name: "list_dir".into(),
+                description: "List directory".into(),
+                input_schema: serde_json::json!({}),
+                output_schema: None,
+                security_meta: crate::tool::ToolSecurityMeta::default(),
+            }],
+            &crate::tool_list::NativeToolIds::default(),
+        );
         let defs = executor.tool_definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id.as_ref(), "fs_list_dir");
@@ -1000,14 +1003,17 @@ mod tests {
         // hits before any server dispatch.
         let (executor, writer) = make_executor_with_writer();
         // Register a real tool so the lookup can succeed but server call fails.
-        writer.publish_full(&[McpTool {
-            server_id: "srv".into(),
-            name: "tool".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-            output_schema: None,
-            security_meta: crate::tool::ToolSecurityMeta::default(),
-        }]);
+        writer.publish_full(
+            &[McpTool {
+                server_id: "srv".into(),
+                name: "tool".into(),
+                description: "d".into(),
+                input_schema: serde_json::json!({}),
+                output_schema: None,
+                security_meta: crate::tool::ToolSecurityMeta::default(),
+            }],
+            &crate::tool_list::NativeToolIds::default(),
+        );
         let text = "```mcp\n{\"server\":\"srv\",\"tool\":\"tool\"}\n```";
         // Server not actually connected, so execute_tool_call returns Err.
         let result = executor.execute(text).await;
@@ -1020,11 +1026,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("no_colon_here"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1036,11 +1041,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("unknown_server:tool"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1067,11 +1071,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("gh_list_issues"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1096,11 +1099,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("missing_server_some_tool"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err(), "expected Err when server is not connected");

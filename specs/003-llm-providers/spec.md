@@ -199,8 +199,40 @@ boundaries and decodes only once a complete line is assembled, rather than decod
 independently — decoding per-chunk can silently drop a chunk that splits a multi-byte UTF-8
 character.
 
+Auxiliary endpoints (`/api/show`, `/api/embed` for single and batch embeddings, `/api/tags` for
+`list_models_remote`) no longer go through `ollama-rs` (#7139): private `post_json`/`get_json`
+send via `send_with_transport_retry` (never `send_with_retry`, which would reset the chat usage
+snapshot), read the body through
+`crate::http::read_body` and map every non-2xx through `log_api_error_body` +
+`map_error_response`, so `LlmError::ApiError` carries the scrubbed, control-free, 500-char-capped
+detail and a context-length 400 becomes `ContextLengthExceeded`. No `ollama-rs` error text reaches
+`LlmError::Other`. `warmup` is a chat request: it goes through `send_chat_request` (and so
+`send_with_retry`) with the same mapping. `wrap_transport_error` keeps the typed `LlmError::Http` (with `is_timeout()` /
+`is_connect()` and the source chain) and only logs the Ollama context (#7131).
+
+### Response Body Caps and Error Bodies (#7131)
+
+Every provider response read goes through `crate::http::read_body` (32 MiB,
+`LlmError::ResponseTooLarge`) or `crate::http::read_json`, including whisper/cocoon STT, the
+Claude/OpenAI/Gemini model-list reads and Gonka failover bodies; outside `zeph-llm`,
+`zeph_common::http::read_capped`/`read_prefix` with a `BodyLimit` (Discord REST 1 MiB through
+`DiscordRestError`, the skill miner's GitHub search 4 MiB). Non-2xx STT bodies go through
+`sanitize_provider_text(.., 500)` (no byte `truncate`, which panicked inside a multi-byte
+character). `map_error_response` always receives the full capped body (`crate::http::api_failure`),
+never a pre-cut one: the cocoon/gonka 256-char cut let a secret straddling the cut escape the
+redaction pattern and hid context-length bodies from `body_is_context_length_error`.
+
+### Chain-of-Entropy Scope (#7096)
+
+CoE (`[llm.coe]`) covers `RouterProvider::chat()` only: logprobs are requested and intra-entropy
+escalation fires for auxiliary `chat()` calls (skill matching, JSON retry, …), not for the main
+agent turn, which goes through `chat_with_tools` / `chat_stream`. This is the documented scope,
+not a defect; wrapping the tool-use and streaming paths is a separate enhancement.
+
 ### Key Invariants
 
+- Ollama auxiliary endpoints (show, embed, tags) MUST map non-2xx through `map_error_response` on
+  the capped body and MUST NOT call `send_with_retry`; `warmup` uses the chat path
 - Ollama chat/streaming requests MUST retry on real HTTP 429/503 via `send_with_retry` — same
   retry semantics as Claude/OpenAI/Gemini
 - Transport-level failures (timeout, mid-request connection reset) MUST be retried by

@@ -254,10 +254,9 @@ async fn mcp_result_over_threshold_replays_as_mcp_through_read_overflow() {
             .as_object()
             .unwrap()
             .clone(),
-        caller_id: None,
+        attribution: zeph_tools::CallAttribution::default(),
         context: None,
         tool_call_id: None,
-        skill_name: None,
     };
     let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert_eq!(output.replayed_from, Some(resolved.source().clone()));

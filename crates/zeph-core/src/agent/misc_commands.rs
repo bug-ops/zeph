@@ -127,10 +127,9 @@ impl<C: Channel + Send + 'static> MiscAccess for Agent<C> {
             let call = zeph_tools::ToolCall {
                 tool_id: "web_search".into(),
                 params,
-                caller_id: None,
+                attribution: zeph_tools::CallAttribution::default(),
                 context: None,
                 tool_call_id: None,
-                skill_name: None,
             };
             match executor.execute_tool_call_erased(&call).await {
                 Ok(Some(output)) => Ok(output.summary),

@@ -4578,10 +4578,9 @@ fn make_write_call(path: &str, content: &str) -> ToolCall {
     ToolCall {
         tool_id: ToolName::new("write"),
         params,
-        caller_id: None,
+        attribution: zeph_tools::CallAttribution::default(),
         context: None,
         tool_call_id: None,
-        skill_name: None,
     }
 }
 

@@ -491,6 +491,7 @@ impl std::str::FromStr for UsageSource {
 /// # Examples
 ///
 /// ```
+/// use zeph_llm::provider::TokenUsage;
 /// use zeph_memory::{UsageRecord, UsageSource};
 ///
 /// let record = UsageRecord {
@@ -499,10 +500,7 @@ impl std::str::FromStr for UsageSource {
 ///     source: UsageSource::Planner,
 ///     provider_name: "quality".to_string(),
 ///     model_name: "claude-sonnet-5".to_string(),
-///     input_tokens: 100,
-///     output_tokens: 50,
-///     cache_read_tokens: 0,
-///     cache_write_tokens: 0,
+///     usage: TokenUsage { input: 100, output: 50, ..TokenUsage::default() },
 ///     reasoning_tokens: None,
 ///     cost_cents: 0.05,
 ///     latency_ms: 800,
@@ -524,11 +522,9 @@ pub struct UsageRecord {
     pub provider_name: String,
     /// The model identifier used for the call.
     pub model_name: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_write_tokens: u64,
-    /// Subset of `output_tokens` (`OpenAI` o-series only). `None` when the provider does
+    /// Token counters for the call (auxiliary usage already folded in).
+    pub usage: zeph_llm::provider::TokenUsage,
+    /// Subset of `usage.output` (`OpenAI` o-series only). `None` when the provider does
     /// not report reasoning tokens separately.
     pub reasoning_tokens: Option<u64>,
     /// Cost in cents, computed by `CostTracker::price_of` — the same pricing source of
@@ -540,7 +536,7 @@ pub struct UsageRecord {
     /// path only), or a time-to-first-byte proxy otherwise. `None` only for the in-process
     /// Candle backend.
     pub ttft_ms: Option<u64>,
-    /// Derived throughput: `output_tokens / ((latency_ms - ttft_ms) / 1000)`. `None`
+    /// Derived throughput: `usage.output / ((latency_ms - ttft_ms) / 1000)`. `None`
     /// unless both `ttft_ms` and a positive generation window are available.
     pub tokens_per_sec: Option<f64>,
 }

@@ -123,7 +123,7 @@ pub use error_taxonomy::{
 };
 pub use execution_context::ExecutionContext;
 pub use executor::{
-    CallAttribution, CheckpointActionResult, CheckpointEntryView, CheckpointListResult,
+    CallAttribution, CallerId, CheckpointActionResult, CheckpointEntryView, CheckpointListResult,
     ClaimSource, DiffData, DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats,
     MAX_TOOL_OUTPUT_CHARS, SyntheticKind, TOOL_EVENT_CHANNEL_CAP, ToolCall, ToolError, ToolEvent,
     ToolEventRx, ToolEventTx, ToolExecutor, ToolOutput, ToolStatus, truncate_tool_output,

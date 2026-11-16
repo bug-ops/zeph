@@ -273,6 +273,70 @@ impl<R> BlockingHandle<R> {
     }
 }
 
+/// Owning guard that aborts its supervised task when dropped.
+///
+/// A plain [`BlockingHandle`] keeps running when dropped. Wrap it in `AbortOnDrop` when the
+/// task must not outlive its owner (for example a per-session task on a shared supervisor):
+/// dropping the guard aborts the task and the supervisor reaps its registry entry.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::sync::Arc;
+/// use tokio_util::sync::CancellationToken;
+/// use zeph_common::task_supervisor::{AbortOnDrop, TaskSupervisor};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let sup = TaskSupervisor::new(CancellationToken::new());
+/// let guard = AbortOnDrop::new(sup.spawn_oneshot(Arc::from("parked"), || {
+///     std::future::pending::<()>()
+/// }));
+/// drop(guard); // aborts the parked task
+/// # }
+/// ```
+pub struct AbortOnDrop<R>(BlockingHandle<R>);
+
+impl<R> AbortOnDrop<R> {
+    /// Wrap `handle` so the task is aborted when the guard is dropped.
+    #[must_use]
+    pub const fn new(handle: BlockingHandle<R>) -> Self {
+        Self(handle)
+    }
+}
+
+impl<R> Drop for AbortOnDrop<R> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl<R> std::fmt::Debug for AbortOnDrop<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AbortOnDrop")
+    }
+}
+
+/// Build a supervisor scope `{session_id}.{instance}` unique within this process.
+///
+/// A restarted serve session or an ACP `session/load` of a live id would otherwise share the
+/// scoped task names of the still-draining previous actor and replace its tasks.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_common::task_supervisor::unique_session_scope;
+///
+/// assert_ne!(unique_session_scope("s1"), unique_session_scope("s1"));
+/// assert!(unique_session_scope("s1").starts_with("s1."));
+/// ```
+#[must_use]
+pub fn unique_session_scope(session_id: &str) -> String {
+    static INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let instance = INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{session_id}.{instance}")
+}
+
 /// Point-in-time state of a supervised task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]

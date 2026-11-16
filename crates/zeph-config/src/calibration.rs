@@ -105,11 +105,11 @@ impl ConfidenceCalibration {
         if points[points.len() - 1][0] != 1.0 {
             return Err(CalibrationError::MissingEnd);
         }
-        for (i, w) in points.windows(2).enumerate() {
-            if w[1][0] <= w[0][0] {
+        for (i, &[prev, next]) in points.array_windows().enumerate() {
+            if next[0] <= prev[0] {
                 return Err(CalibrationError::RawNotIncreasing(i + 1));
             }
-            if w[1][1] < w[0][1] {
+            if next[1] < prev[1] {
                 return Err(CalibrationError::CalibratedDecreasing(i + 1));
             }
         }

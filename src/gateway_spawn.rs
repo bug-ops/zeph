@@ -189,6 +189,14 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
         self.inner.elicit(request).await
     }
 
+    fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+        if self.last_recv_was_webhook {
+            zeph_core::channel::AskUserSupport::Unavailable
+        } else {
+            self.inner.ask_user_support()
+        }
+    }
+
     async fn ask_user(
         &mut self,
         request: zeph_core::channel::AskUserRequest,
@@ -595,6 +603,10 @@ mod tests {
     }
 
     impl zeph_core::channel::Channel for TrustedMockChannel {
+        fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
+            zeph_core::channel::AskUserSupport::Interactive
+        }
+
         async fn recv(
             &mut self,
         ) -> Result<Option<ChannelMessage>, zeph_core::channel::ChannelError> {
@@ -670,6 +682,34 @@ mod tests {
             !ch.supports_exit(),
             "webhook-sourced message must force supports_exit() == false"
         );
+    }
+
+    /// #7122: `ask_user` is offered only while the last message came from the inner channel; a
+    /// webhook turn has no person to answer, and the next inner message restores the support.
+    #[tokio::test]
+    async fn ask_user_support_is_unavailable_only_after_webhook_message() {
+        use zeph_core::channel::{AskUserSupport, Channel};
+        let (inner_tx, inner_rx) = tokio::sync::mpsc::channel::<String>(4);
+        let (webhook_tx, webhook_rx) = tokio::sync::mpsc::channel::<ChannelMessage>(1);
+        let mut ch = GatewayChannel::new(TrustedMockChannel { rx: inner_rx }, webhook_rx);
+        assert_eq!(ch.ask_user_support(), AskUserSupport::Interactive);
+
+        webhook_tx
+            .send(ChannelMessage {
+                text: "hook".into(),
+                attachments: vec![],
+                is_guest_context: false,
+                is_from_bot: false,
+                owner_key: None,
+            })
+            .await
+            .unwrap();
+        ch.recv().await.unwrap().expect("webhook message");
+        assert_eq!(ch.ask_user_support(), AskUserSupport::Unavailable);
+
+        inner_tx.send("local".into()).await.unwrap();
+        ch.recv().await.unwrap().expect("inner message");
+        assert_eq!(ch.ask_user_support(), AskUserSupport::Interactive);
     }
 
     /// After a webhook turn, a subsequent message from the trusted inner channel must restore

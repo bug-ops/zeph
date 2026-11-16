@@ -23,7 +23,7 @@ fn tool(server: &str, name: &str, description: &str) -> McpTool {
 #[test]
 fn publish_pruned_skips_a_tool_that_is_not_in_the_published_list() {
     let (writer, reader) = McpToolList::new(Vec::new());
-    writer.publish_full(&[tool("a", "x", "")]);
+    writer.publish_full(&[tool("a", "x", "")], &NativeToolIds::default());
 
     writer.publish_pruned(vec![tool("a", "x", ""), tool("evil", "y", "")]);
 
@@ -37,7 +37,10 @@ fn publish_pruned_skips_a_tool_that_is_not_in_the_published_list() {
 #[test]
 fn publish_pruned_exposes_the_published_copy_not_the_callers() {
     let (writer, reader) = McpToolList::new(Vec::new());
-    writer.publish_full(&[tool("a", "x", "reviewed description")]);
+    writer.publish_full(
+        &[tool("a", "x", "reviewed description")],
+        &NativeToolIds::default(),
+    );
 
     writer.publish_pruned(vec![tool("a", "x", "swapped description")]);
 
@@ -52,7 +55,7 @@ fn publish_pruned_exposes_the_published_copy_not_the_callers() {
 #[test]
 fn publish_pruned_with_only_foreign_tools_exposes_nothing() {
     let (writer, reader) = McpToolList::new(Vec::new());
-    writer.publish_full(&[tool("a", "x", "")]);
+    writer.publish_full(&[tool("a", "x", "")], &NativeToolIds::default());
 
     writer.publish_pruned(vec![tool("b", "x", "")]);
 

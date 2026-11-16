@@ -29,6 +29,32 @@ pub(crate) async fn read_body(response: reqwest::Response) -> Result<String, Llm
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
 
+/// Read a response body through [`read_body`] and decode it as JSON.
+///
+/// Replaces `reqwest::Response::json`, which buffers the whole body without a size cap.
+pub(crate) async fn read_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, LlmError> {
+    let text = read_body(response).await?;
+    serde_json::from_str(&text).map_err(LlmError::Json)
+}
+
+/// Map a non-2xx speech-to-text response to [`LlmError::TranscriptionFailed`].
+///
+/// The body is read through the capped reader, scrubbed of secret shapes, stripped of control
+/// characters and cut on a character boundary at 500 characters. A body over the cap yields
+/// [`LlmError::ResponseTooLarge`] instead.
+pub(crate) async fn transcription_failure(response: reqwest::Response) -> LlmError {
+    let status = response.status();
+    match read_body(response).await {
+        Ok(body) => LlmError::TranscriptionFailed(format!(
+            "{status}: {}",
+            crate::error::sanitize_provider_text(&body, 500)
+        )),
+        Err(e) => e,
+    }
+}
+
 /// Create an HTTP client for LLM inference providers.
 ///
 /// Connect timeout is fixed at 30s. `request_timeout_secs` is a hard backstop
@@ -88,6 +114,16 @@ pub(crate) async fn check_response(
 pub(crate) fn log_api_error_body(provider: &str, status: reqwest::StatusCode, body: &str) {
     let scrubbed = zeph_common::secret_redact::scrub_secret_shapes(body);
     tracing::debug!(%provider, %status, body = %scrubbed, "API error response");
+}
+
+/// Log the scrubbed `body` at debug level and map the non-2xx `status` through
+/// [`map_error_response`].
+///
+/// The full capped body is classified and sanitized by [`LlmError::api_error`]; callers must not
+/// pre-truncate it, or a secret straddling the cut escapes the redaction pattern.
+pub(crate) fn api_failure(provider: &str, status: reqwest::StatusCode, body: &str) -> LlmError {
+    log_api_error_body(provider, status, body);
+    map_error_response(status, body, provider)
 }
 
 /// Extract the HTTP status code and response body text together.

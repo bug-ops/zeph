@@ -1172,10 +1172,9 @@ async fn handle_tool_step(
                 let call = ToolCall {
                     tool_id: tc.name.clone(),
                     params,
-                    caller_id: None,
+                    attribution: zeph_tools::CallAttribution::default(),
                     context: exec_ctx,
                     tool_call_id: None,
-                    skill_name: None,
                 };
                 let tool_start = Instant::now();
                 let mut exec_result = executor.execute_tool_call_erased(&call).await;

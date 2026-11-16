@@ -571,11 +571,10 @@ mod tests {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("unknown_tool"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -593,11 +592,10 @@ mod tests {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("memory_search"),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -624,11 +622,10 @@ mod tests {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("memory_save"),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -646,11 +643,10 @@ mod tests {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("memory_save"),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -668,11 +664,10 @@ mod tests {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("memory_save"),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -693,10 +688,9 @@ mod tests {
         let call = ToolCall {
             tool_id: zeph_common::ToolName::new("memory_save"),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(
@@ -717,10 +711,9 @@ mod tests {
         ToolCall {
             tool_id: zeph_common::ToolName::new("memory_save"),
             params,
-            caller_id: None,
+            attribution: zeph_tools::CallAttribution::default(),
             context: None,
             tool_call_id: None,
-            skill_name: None,
         }
     }
 

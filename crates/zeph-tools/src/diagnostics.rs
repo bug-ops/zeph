@@ -415,11 +415,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("diagnostics"),
             params: make_params(&[("path", serde_json::json!(dir.path().to_str().unwrap()))]),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await;
         assert_matches!(result, Err(ToolError::Timeout { .. }));
@@ -435,11 +434,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("diagnostics"),
             params: make_params(&[("path", serde_json::json!("/etc"))]),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -451,11 +449,10 @@ mod tests {
         let call = ToolCall {
             tool_id: ToolName::new("other"),
             params: serde_json::Map::new(),
-            caller_id: None,
+            attribution: crate::CallAttribution::default(),
             context: None,
 
             tool_call_id: None,
-            skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
