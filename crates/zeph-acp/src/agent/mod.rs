@@ -115,9 +115,10 @@ pub struct AcpContext {
     /// Tools of the MCP servers the IDE attached to this session (`mcpServers` in
     /// `session/new`, `session/load`, `session/fork`, `session/resume`).
     ///
-    /// Empty when the IDE sent none or no MCP manager is configured. The spawner must add them
-    /// to the session's own tool list: the servers are registered on the shared manager under
-    /// session-scoped ids and are released when the session ends.
+    /// Informational: empty when the IDE sent none or no MCP manager is configured. The spawner
+    /// does **not** seed the session from this list; it reads the live, scope-filtered
+    /// `McpManager::tool_snapshot`, which already contains these servers (registered on the shared
+    /// manager under session-scoped ids and released when the session ends).
     pub ide_mcp_tools: Vec<zeph_mcp::McpTool>,
     /// Ids of the IDE MCP servers attached to this session, including tool-less ones.
     ///

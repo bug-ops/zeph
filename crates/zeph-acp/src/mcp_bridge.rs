@@ -29,8 +29,9 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 ///
 /// All converted entries start with [`McpTrustLevel::Untrusted`], no tool allowlist, and
 /// `allow_untrusted_without_allowlist = false`, so the agent sandbox applies to
-/// IDE-requested MCP servers: with no allowlist declared, these servers expose zero tools
-/// by default (fail-closed). An IDE must declare a `tool_allowlist` to expose any tools.
+/// IDE-requested MCP servers: with no allowlist, these servers expose zero tools
+/// (fail-closed). Nothing the IDE sends can set an allowlist; only an operator grant in
+/// `[acp.ide_mcp.servers.<name>]` does, applied by the session attach path after this conversion.
 ///
 /// `elicitation_enabled` is read from the `_meta` field of each server entry under
 /// the key `"elicitation_enabled"`. Absent or non-boolean values default to `false`.

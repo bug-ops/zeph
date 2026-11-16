@@ -2712,6 +2712,24 @@ mod tests {
     use super::*;
     use std::assert_matches;
 
+    #[test]
+    fn acp_ide_mcp_cap_from_wizard_reaches_config() {
+        let state = WizardState {
+            acp_enabled: true,
+            acp_ide_mcp_max_servers: 3,
+            ..WizardState::default()
+        };
+        let mut config = Config::default();
+
+        apply_acp_config(&mut config, &state);
+
+        assert_eq!(config.acp.ide_mcp.max_servers_per_session, 3);
+        assert!(
+            config.acp.ide_mcp.servers.is_empty(),
+            "grants are hand-authored"
+        );
+    }
+
     fn single_provider_state() -> WizardState {
         WizardState {
             provider: Some(ProviderKind::Claude),

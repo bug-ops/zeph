@@ -62,6 +62,29 @@ impl McpManager {
         self.tools_watch_tx.subscribe()
     }
 
+    /// Live flattened tool list of every connected server, in deterministic order (configured
+    /// servers first, then the rest ascending).
+    ///
+    /// This is the authoritative current list: `add_server` and `remove_server` change it without
+    /// publishing on the watch channel, so a late subscriber reads it here instead of waiting for
+    /// a `tools/list_changed` event it will never receive. Subscribe first, then call this, so an
+    /// event landing in between is either in the snapshot or flagged by `has_changed()`.
+    pub async fn tool_snapshot(&self) -> Vec<McpTool> {
+        tools_in_server_order(&*self.server_tools.read().await, &self.configured_order)
+    }
+
+    /// Register `tools` for `server_id` as if the server had connected, without a transport.
+    ///
+    /// Test support for crates that cannot reach the manager's internals; it bypasses the whole
+    /// connection and ingest pipeline, so never call it outside tests.
+    #[doc(hidden)]
+    pub async fn inject_tools_for_testing(&self, server_id: &str, tools: Vec<McpTool>) {
+        self.server_tools
+            .write()
+            .await
+            .insert(server_id.into(), tools);
+    }
+
     /// Returns the number of configured servers (connected or not).
     #[must_use]
     pub fn configured_server_count(&self) -> usize {
@@ -134,8 +157,7 @@ impl McpManager {
             .await?;
 
         // Detect collisions against the full current tool list (SF-1: add_server path).
-        let all_tools =
-            tools_in_server_order(&*self.server_tools.read().await, &self.configured_order);
+        let all_tools = self.tool_snapshot().await;
         self.record_tool_diagnostics(&all_tools).await;
 
         tracing::info!(
@@ -320,8 +342,7 @@ impl McpManager {
         self.server_fingerprints.write().await.remove(server_id);
         self.last_refresh.remove(server_id);
         self.tool_list_locked.remove(server_id);
-        let remaining =
-            tools_in_server_order(&*self.server_tools.read().await, &self.configured_order);
+        let remaining = self.tool_snapshot().await;
         self.record_tool_diagnostics(&remaining).await;
         // Release the serialization lock before the potentially slow shutdown call.
         drop(add_remove_guard);

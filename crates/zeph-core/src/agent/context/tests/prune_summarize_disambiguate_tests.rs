@@ -519,6 +519,12 @@ fn prune_stale_tool_outputs_clears_old() {
     assert!(freed > 0);
     assert_eq!(rx.borrow().tool_output_prunes, 1);
 
+    // Guard against the loops below passing vacuously on a shorter list.
+    assert!(
+        agent.msg.messages.len() >= 7,
+        "fixture must hold 7 messages"
+    );
+
     // Messages 1..3 should be pruned (boundary = 7-4=3)
     for (i, message) in agent.msg.messages.iter().enumerate().take(3).skip(1) {
         if let MessagePart::ToolOutput {

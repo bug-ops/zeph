@@ -432,6 +432,9 @@ impl ZephAcpAgentState {
 }
 
 #[cfg(test)]
+mod attachment_servers_tests;
+
+#[cfg(test)]
 mod grant_tests;
 
 #[cfg(test)]

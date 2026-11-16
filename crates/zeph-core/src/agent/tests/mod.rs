@@ -28,6 +28,8 @@ mod inline_tool_loop_tests;
 #[cfg(test)]
 mod mage_signal_mapping_tests;
 #[cfg(test)]
+mod mcp_tool_scope_membership_tests;
+#[cfg(test)]
 mod mcp_tool_scope_tests;
 #[cfg(all(test, feature = "scheduler"))]
 mod per_task_verify_signal_tests;

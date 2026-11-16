@@ -476,6 +476,8 @@ mod retry;
 mod server;
 
 #[cfg(test)]
+mod refresh_task_idempotency_tests;
+#[cfg(test)]
 mod server_order_tests;
 #[cfg(test)]
 mod tests;

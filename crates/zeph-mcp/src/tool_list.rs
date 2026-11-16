@@ -195,25 +195,36 @@ impl McpToolListWriter {
     ///
     /// The id registry keeps covering the full list, so classification of any tool the executor
     /// can still dispatch is unaffected by pruning. Cached definitions are reused by `Arc`.
-    pub fn publish_pruned(&self, pruned: Vec<McpTool>) {
+    ///
+    /// Fails closed: a tool of `pruned` that is not in the last published full list is skipped
+    /// with a WARN, in release builds too, so the exposed list can never hold a tool the id
+    /// registry would classify as native. The exposed tools are the published ones, not the
+    /// caller's copies.
+    pub fn publish_pruned(&self, pruned: impl IntoIterator<Item = McpTool>) {
         let full = self.full.lock();
         let ids = Arc::clone(&full.exposed.ids);
-        debug_assert!(
-            pruned.iter().all(|p| ids.contains(&p.sanitized_id())),
-            "pruned set must be a subset of the published full list"
-        );
-        let published = pruned
-            .iter()
-            .map(|t| {
-                full.by_identity
+        let published: Vec<Arc<PublishedMcpTool>> = pruned
+            .into_iter()
+            .filter_map(|t| {
+                let member = full
+                    .by_identity
                     .get(&t.server_id)
                     .and_then(|by_name| by_name.get(&t.name))
-                    .map_or_else(|| Arc::new(PublishedMcpTool::build(t)), Arc::clone)
+                    .map(Arc::clone);
+                if member.is_none() {
+                    tracing::warn!(
+                        server_id = %t.server_id,
+                        tool = %t.name,
+                        "pruned MCP tool is not in the published list; not exposed"
+                    );
+                }
+                member
             })
             .collect();
         drop(full);
+        let tools = published.iter().map(|p| p.tool.clone()).collect();
         *self.exposed.write() = Arc::new(ExposedMcpTools {
-            tools: pruned,
+            tools,
             ids,
             published,
         });
@@ -249,6 +260,8 @@ impl McpToolListReader {
     }
 }
 
+#[cfg(test)]
+mod prune_membership_tests;
 #[cfg(test)]
 mod published_cache_tests;
 

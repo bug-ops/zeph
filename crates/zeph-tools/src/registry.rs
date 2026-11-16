@@ -101,12 +101,16 @@ impl McpToolIds {
         joined
     }
 
-    /// Union of `a` and `b` that returns an existing `Arc` when no allocation is needed.
+    /// Union of `a` and `b` that returns an existing `Arc` instead of building a new map when it
+    /// can.
     ///
     /// Returns `a` when `b` is empty, is the same allocation, or only holds ids `a` already has;
     /// returns `b` when `a` is empty; otherwise builds the union with `a` winning on shared ids
-    /// (the same rule as [`join`](Self::join)). In production the executor ids are a subset of
-    /// the registry, so the per-batch join allocates nothing.
+    /// (the same rule as [`join`](Self::join)). This saves only the union map: obtaining `b` can
+    /// still cost, for example the default `ToolExecutor::mcp_dispatch_ids` rebuilds the ids
+    /// from the executor's definitions on every call, and a composite with native leaves builds
+    /// their `ToolDef`s per batch. Only executors that cache their ids (the MCP executor) are
+    /// cheap.
     ///
     /// # Examples
     ///

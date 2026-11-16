@@ -502,7 +502,7 @@ impl McpManager {
     }
 
     /// Insert a trust entry directly, bypassing the real connection path.
-    async fn inject_server_trust_for_test(&self, server_id: &str, level: McpTrustLevel) {
+    pub(super) async fn inject_server_trust_for_test(&self, server_id: &str, level: McpTrustLevel) {
         self.server_trust
             .write()
             .await
@@ -2434,4 +2434,132 @@ async fn truncation_warns_once_per_diagnostic_pass_not_per_id_call() {
             Err(format!("expected one truncation warning, got {n}"))
         }
     });
+}
+
+// --- tool_snapshot (#7083) ---
+
+fn snapshot_entry(id: &str) -> ServerEntry {
+    ServerEntry {
+        id: id.into(),
+        transport: McpTransport::Stdio {
+            command: "nonexistent-mcp-binary".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+        },
+        timeout: Duration::from_secs(5),
+        trust_level: McpTrustLevel::Trusted,
+        tool_allowlist: None,
+        allow_untrusted_without_allowlist: false,
+        expected_tools: Vec::new(),
+        roots: Vec::new(),
+        tool_metadata: HashMap::new(),
+        elicitation_enabled: false,
+        elicitation_timeout_secs: 120,
+        env_isolation: false,
+        media_passthrough: false,
+    }
+}
+
+fn names_of(tools: &[McpTool]) -> Vec<String> {
+    tools.iter().map(McpTool::qualified_name).collect()
+}
+
+#[tokio::test]
+async fn tool_snapshot_lists_configured_then_dynamic_servers_including_add_server_only_ones() {
+    let mgr = McpManager::new(
+        vec![snapshot_entry("zz"), snapshot_entry("aa")],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    );
+    {
+        // `add_server` commits to `server_tools` without publishing on the watch channel.
+        let mut tools = mgr.server_tools.write().await;
+        for id in ["mm", "aa", "dyn", "zz"] {
+            tools.insert(id.into(), vec![make_tool(id, "t")]);
+        }
+    }
+    let rx = mgr.subscribe_tool_changes();
+
+    assert_eq!(
+        names_of(&mgr.tool_snapshot().await),
+        ["zz:t", "aa:t", "dyn:t", "mm:t"]
+    );
+    assert!(
+        !rx.has_changed().unwrap(),
+        "the watch never saw those servers"
+    );
+}
+
+#[tokio::test]
+async fn tool_snapshot_reflects_a_list_applied_by_the_refresh_path() {
+    let mgr = McpManager::new(
+        vec![snapshot_entry("zz")],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    );
+    mgr.spawn_refresh_task(None);
+    mgr.inject_server_trust_for_test("zz", McpTrustLevel::Trusted)
+        .await;
+    mgr.server_tools
+        .write()
+        .await
+        .insert("dyn".into(), vec![make_tool("dyn", "t")]);
+    let mut rx = mgr.subscribe_tool_changes();
+
+    mgr.clone_refresh_tx()
+        .expect("refresh sender is alive")
+        .try_send(crate::client::ToolRefreshEvent {
+            server_id: "zz".into(),
+            tools: vec![make_tool("zz", "new_tool")],
+        })
+        .expect("queue accepts the event");
+    tokio::time::timeout(Duration::from_secs(2), rx.changed())
+        .await
+        .expect("refresh must be published")
+        .expect("watch sender alive");
+
+    assert_eq!(
+        names_of(&mgr.tool_snapshot().await),
+        ["zz:new_tool", "dyn:t"]
+    );
+}
+
+#[tokio::test]
+async fn late_subscriber_reads_a_published_refresh_from_the_snapshot_and_sees_later_ones() {
+    let mgr = McpManager::new(
+        vec![snapshot_entry("zz")],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    );
+    mgr.spawn_refresh_task(None);
+    mgr.inject_server_trust_for_test("zz", McpTrustLevel::Trusted)
+        .await;
+    let mut early = mgr.subscribe_tool_changes();
+    let tx = mgr.clone_refresh_tx().expect("refresh sender is alive");
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "zz".into(),
+        tools: vec![make_tool("zz", "first")],
+    })
+    .expect("queue accepts the event");
+    tokio::time::timeout(Duration::from_secs(2), early.changed())
+        .await
+        .expect("first refresh published")
+        .expect("watch sender alive");
+
+    // A subscriber created after the publish is not flagged, but the snapshot has the tool.
+    let mut late = mgr.subscribe_tool_changes();
+    assert!(!late.has_changed().unwrap());
+    assert_eq!(names_of(&mgr.tool_snapshot().await), ["zz:first"]);
+
+    // A publish after subscribing is flagged.
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "zz".into(),
+        tools: vec![make_tool("zz", "second")],
+    })
+    .expect("queue accepts the event");
+    tokio::time::timeout(Duration::from_secs(2), late.changed())
+        .await
+        .expect("second refresh published")
+        .expect("watch sender alive");
+    assert!(late.borrow().iter().any(|t| t.name == "second"));
 }
