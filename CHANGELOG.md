@@ -8,9 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `zeph-core`, `zeph-channels`, `zeph-tui`, `zeph-acp`, `zeph-tools`, `zeph-config`: opt-in model-callable `ask_user` tool (`[tools.ask_user]`, `--ask-user`) with a fixed warning header, secret scrubbing, per-turn cap and timeout on CLI, TUI, Telegram, Discord, Slack and ACP (breaking: new `Channel::ask_user` method, `Agent::with_interaction_config` and `InteractionConfig` without `Default`, `ConfirmLoop::run_reply`, `ClaimSource::UserAnswer`)
-- `zeph-llm`, `zeph-core`, `zeph-commands`, `zeph-tui`, `zeph-config`: opt-in prompt-cache keepalive pings (`[llm.cache_keepalive]`, `--cache-keepalive`, `/keepalive on|off|status`) through `LlmProvider::keepalive_ping` with a worst-case cost gate and ping count and cost in `/cost` and the status bar
-- `zeph-config`: `--migrate-config` step 118 and `--init` wizard step for `[tools.ask_user]` and `[llm.cache_keepalive]`
+- `zeph-core`, `zeph-channels`, `zeph-tui`, `zeph-acp`, `zeph-tools`, `zeph-config`: opt-in model-callable `ask_user` tool (`[tools.ask_user]`, `--ask-user`) with a fixed warning header, secret scrubbing, per-turn cap and timeout on CLI, TUI, Telegram, Discord, Slack and ACP (breaking: new `Channel::ask_user` method, `Agent::with_interaction_config` and `InteractionConfig` without `Default`, `ConfirmLoop::run_reply`, `ClaimSource::UserAnswer`) (#7130)
+- `zeph-llm`, `zeph-core`, `zeph-commands`, `zeph-tui`, `zeph-config`: opt-in prompt-cache keepalive pings (`[llm.cache_keepalive]`, `--cache-keepalive`, `/keepalive on|off|status`) through `LlmProvider::keepalive_ping` with a worst-case cost gate and ping count and cost in `/cost` and the status bar (#7130)
+- `zeph-config`: `--migrate-config` step 118 and `--init` wizard step for `[tools.ask_user]` and `[llm.cache_keepalive]` (#7130)
 - `zeph-common`: `BodyLimit::from_const` and `McpServerId` newtype (breaking: `ToolResultSource::Mcp`, `DataFlowViolation::SensitivityTrustMismatch` and MCP registries take `McpServerId`) (#7078)
 - `zeph-mcp`, `zeph-tools`, `zeph-core`, `zeph-subagent`: single-writer `McpToolList` and shared `McpToolIdsHandle` replace four separate MCP tool id registries and colon-split server id derivation (breaking: `SpawnContext.session_mcp_servers`, `SpawnContext.mcp_tool_names`, `TranscriptMeta.mcp_tool_names`, `McpToolExecutor::set_tools`, `Agent::with_mcp_shared_tools` and `with_mcp_tool_ids_handle` removed in favor of `with_mcp_tool_list`, `SpawnContext.mcp_tool_ids` and `TrustGateExecutor`/`ShadowSentinel::with_mcp_tool_ids`) (#7078)
 - `zeph-mcp`, `zeph-tui`: `/mcp list` and the TUI show MCP tools shadowed by an id collision; long tool id warning is logged once per tool-list change; new pub `McpServerStatus.shadowed_tools` and `AcpContext.ide_mcp_tools` (#7078)
@@ -34,8 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `zeph-channels`: Telegram confirmations ignore bot senders; Discord and Slack confirmations accept replies only from the channel of the prompt
-- `zeph-acp`: the `ask_user` elicitation bridge starts for loaded, forked and resumed sessions, not only new ones (MCP elicitation uses its own bridge)
+- `zeph-channels`: Telegram confirmations ignore bot senders; Discord and Slack confirmations accept replies only from the channel of the prompt (#7130)
+- `zeph-acp`: the `ask_user` elicitation bridge starts for loaded, forked and resumed sessions, not only new ones (MCP elicitation uses its own bridge) (#7130)
 - `zeph-channels`: Telegram guest proxy forwards file downloads to `/file/bot<T>/<path>` instead of a doubled upstream path and returns 404 for malformed paths (#7079)
 - `zeph-llm`: OpenAI 400 body embedded in `ModelCapabilityMismatch`/`InvalidInput` errors is scrubbed of secret shapes and control chars and capped at 500 chars (#7085)
 - `zeph-mcp`: tool and connect-outcome order follows configured server order, so the shadowed-id winner no longer flips after `tools/list_changed` (#7087)
