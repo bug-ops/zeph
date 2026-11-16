@@ -508,3 +508,8 @@ The following systems are **explicitly excluded** from the supervisor's purview:
 - [[001-system-invariants/spec#5. Concurrency Contract]] — concurrency invariants
 - GitHub PR #2816 — Phase 1 implementation
 - GitHub Epic #2883 — Phase 2 coordination
+
+## Cache Keepalive Service (#6911, spec 091)
+
+- The prompt-cache keepalive service is spawned once per agent with `TaskSupervisor::spawn_oneshot` under the unique name `llm.cache_keepalive.<agent uuid>`, on the agent's own supervisor, so concurrent ACP, serve and daemon agents never replace each other's task (fixed names replace the earlier task).
+- A guard in the keepalive state aborts the task when the agent drops. The spawn-site scan count is unchanged.

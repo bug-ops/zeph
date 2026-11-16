@@ -36,6 +36,12 @@ embedding_model = "qwen3-embedding"
 # type = "claude"                          # claude, openai, compatible, ollama, candle
 # model = "claude-haiku-4-5-20251001"     # model override (or [[llm.compatible]] entry name for compatible)
 
+# Keep the provider prompt cache warm while the session is idle (default: off).
+# [llm.cache_keepalive]
+# enabled = false
+# keepalive_provider = ""        # [[llm.providers]] name; empty = main provider
+# max_consecutive_pings = 6
+
 [llm.cloud]
 # Claude API model (used when provider = "claude")
 model = "claude-sonnet-4-5-20250929"
@@ -467,6 +473,12 @@ max_per_call_override = 131072
 enabled = false
 # Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
 destination = "stdout"
+
+# Let the model ask the user a clarifying question mid-turn (default: off).
+# [tools.ask_user]
+# enabled = false
+# timeout_secs = 300
+# max_questions_per_turn = 3
 
 [tools.policy]
 # Enable declarative policy compiler for tool call authorization (requires policy-enforcer feature)

@@ -675,6 +675,11 @@ impl<C: Channel> Agent<C> {
         let pending_focus_checkpoint = self
             .preprocess_focus_compress_calls(tool_calls, &mut tool_results)
             .await;
+        let ask_user_blocked: Vec<bool> = (0..tool_calls.len())
+            .map(|idx| pre_exec_blocked[idx] || quota_blocked || repeat_blocked[idx])
+            .collect();
+        self.preprocess_ask_user_calls(tool_calls, &ask_user_blocked, cancel, &mut tool_results)
+            .await;
 
         // Track which indices have a failed/ConfirmationRequired prerequisite so that
         // dependent calls in later tiers receive a synthetic error instead of executing.
@@ -1913,6 +1918,9 @@ impl<C: Channel> Agent<C> {
             builtins.push(crate::agent::focus::request_compaction_tool_definition());
         }
         builtins.extend(self.skill_state_tool_definition());
+        if self.runtime.ask_user.config.enabled {
+            builtins.push(crate::agent::ask_user::ask_user_tool_definition());
+        }
         always_present.extend(builtins.iter().map(|d| d.name.clone()));
         tool_defs.extend(builtins);
 

@@ -448,6 +448,12 @@ pub struct MetricsSnapshot {
     /// Configured hard-fail threshold for the compaction probe.
     pub compaction_probe_hard_fail_threshold: f32,
     pub cache_read_tokens: u64,
+    /// State of the prompt-cache keepalive service.
+    pub cache_keepalive: crate::cache_keepalive::KeepaliveState,
+    /// Keepalive pings sent this session.
+    pub cache_keepalive_pings: u64,
+    /// Cost of keepalive pings this session, in cents.
+    pub cache_keepalive_cost_cents: f64,
     pub cache_creation_tokens: u64,
     pub cost_spent_cents: f64,
     /// Effective service speed of the main provider's last call (drives the TUI `fast` marker).

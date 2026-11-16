@@ -199,6 +199,13 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
         self.inner.elicit(request).await
     }
 
+    async fn ask_user(
+        &mut self,
+        request: zeph_core::channel::AskUserRequest,
+    ) -> Result<zeph_core::channel::AskUserOutcome, zeph_core::channel::ChannelError> {
+        self.inner.ask_user(request).await
+    }
+
     async fn send_stop_hint(
         &mut self,
         hint: zeph_core::channel::StopHint,

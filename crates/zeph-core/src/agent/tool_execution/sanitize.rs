@@ -301,6 +301,12 @@ impl<C: Channel> Agent<C> {
             let mut slot = self.services.security.memory_consent_trust.write();
             *slot = (*slot).max(trust_level as u8);
         }
+        // The user's own answer to `ask_user` already took the channel-message path (secret
+        // scrub, then `sanitize_channel_text_if_untrusted`) at its choke point; the tool-output
+        // pipeline would only mangle it (PII scrub of an e-mail address, spotlight wrapper).
+        if origin.claim_source() == Some(zeph_tools::ClaimSource::UserAnswer) {
+            return (body.to_owned(), false, kind, trust_level);
+        }
         #[cfg(feature = "classifiers")]
         let memory_hint = source.memory_hint;
         #[cfg(not(feature = "classifiers"))]

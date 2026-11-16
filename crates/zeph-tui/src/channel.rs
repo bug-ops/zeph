@@ -5,12 +5,50 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use zeph_core::channel::{
-    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
-    SkillCatalogItem, StatusText, ToolOutputEvent, ToolStartEvent,
+    ASK_USER_ANSWER_FIELD, ASK_USER_RETRY_HINT, AskUserOutcome, AskUserRequest, Channel,
+    ChannelError, ChannelMessage, ElicitationField, ElicitationFieldType, ElicitationRequest,
+    ElicitationResponse, SkillCatalogItem, StatusText, ToolOutputEvent, ToolStartEvent,
 };
 
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
+
+/// Shown as the requesting party so the dialog never looks like a system prompt.
+const ASK_USER_SOURCE: &str = "assistant question";
+
+/// Map an `ask_user` question onto the elicitation dialog the TUI already renders.
+///
+/// A closed single choice becomes an enum field; every other kind becomes a text field, because
+/// the dialog has no multi-select. Esc on the dialog cancels the question.
+fn ask_user_form(request: &AskUserRequest, hint: Option<&str>) -> ElicitationRequest {
+    let mut message = String::new();
+    if let Some(hint) = hint {
+        message.push_str(hint);
+        message.push_str("\n\n");
+    }
+    message.push_str(&request.dialog_message());
+    let (field_type, description) = match request.closed_choice_values() {
+        Some(values) => (ElicitationFieldType::Enum(values), None),
+        None => (ElicitationFieldType::String, request.dialog_answer_hint()),
+    };
+    ElicitationRequest {
+        server_name: ASK_USER_SOURCE.to_owned(),
+        message,
+        fields: vec![ElicitationField {
+            name: ASK_USER_ANSWER_FIELD.to_owned(),
+            description,
+            field_type,
+            required: true,
+        }],
+    }
+}
+
+/// The text the user submitted in the dialog, if the submission carries one.
+fn submitted_answer(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get(ASK_USER_ANSWER_FIELD)
+        .and_then(serde_json::Value::as_str)
+}
 
 /// The [`zeph_core::channel::Channel`] implementation for the TUI.
 ///
@@ -408,6 +446,40 @@ impl Channel for TuiChannel {
         rx.await.map_err(|_| ChannelError::ChannelClosed)
     }
 
+    /// Show the question in a modal dialog. Esc cancels it; the dialog also closes on its own
+    /// when the agent drops this future (timeout or turn cancel).
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.ask_user", skip_all)
+    )]
+    async fn ask_user(&mut self, request: AskUserRequest) -> Result<AskUserOutcome, ChannelError> {
+        let mut hint: Option<&str> = None;
+        loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.agent_event_tx
+                .send(AgentEvent::ElicitationRequest {
+                    request: ask_user_form(&request, hint),
+                    response_tx: tx,
+                })
+                .await
+                .map_err(|_| ChannelError::ChannelClosed)?;
+            let response = rx.await.map_err(|_| ChannelError::ChannelClosed)?;
+            let ElicitationResponse::Accepted(value) = response else {
+                return Ok(AskUserOutcome::Cancelled);
+            };
+            let Some(text) = submitted_answer(&value) else {
+                return Ok(AskUserOutcome::Cancelled);
+            };
+            match request.parse_dialog_answer(text) {
+                Ok(answer) => return Ok(AskUserOutcome::Answered(answer)),
+                Err(error) => {
+                    tracing::debug!(%error, "ask_user: dialog answer did not match the question");
+                    hint = Some(ASK_USER_RETRY_HINT);
+                }
+            }
+        }
+    }
+
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "tui.channel.notify_foreground_subagent_started", skip_all)
@@ -477,6 +549,7 @@ impl Channel for TuiChannel {
 mod tests {
     use super::*;
     use std::assert_matches;
+    use zeph_core::channel::{ASK_USER_HEADER, ChoiceOptions, OtherAnswer};
 
     fn make_channel() -> (TuiChannel, mpsc::Sender<String>, mpsc::Receiver<AgentEvent>) {
         let (user_tx, user_rx) = mpsc::channel(16);
@@ -939,5 +1012,107 @@ mod tests {
             ch.send_queue_count(3).await.is_ok(),
             "send_queue_count should not block or error"
         );
+    }
+
+    fn choice(other: OtherAnswer) -> AskUserRequest {
+        let options = ChoiceOptions::new(vec!["red".into(), "green".into()]).unwrap();
+        AskUserRequest::single_choice("Pick", options, other).unwrap()
+    }
+
+    #[test]
+    fn form_carries_the_fixed_header_and_a_labelled_source() {
+        let form = ask_user_form(&choice(OtherAnswer::Forbidden), None);
+        assert_eq!(form.server_name, ASK_USER_SOURCE);
+        assert!(
+            form.message.starts_with(ASK_USER_HEADER),
+            "{}",
+            form.message
+        );
+        assert!(form.message.contains("Pick"));
+    }
+
+    #[test]
+    fn closed_single_choice_is_an_enum_field() {
+        let form = ask_user_form(&choice(OtherAnswer::Forbidden), None);
+        assert!(matches!(
+            &form.fields[0].field_type,
+            ElicitationFieldType::Enum(labels) if labels == &["1. red", "2. green"]
+        ));
+    }
+
+    #[test]
+    fn other_allowed_becomes_text_with_numbered_options() {
+        let form = ask_user_form(&choice(OtherAnswer::Allowed), None);
+        assert!(matches!(
+            form.fields[0].field_type,
+            ElicitationFieldType::String
+        ));
+        assert!(form.message.contains("1. red") && form.message.contains("2. green"));
+    }
+
+    #[test]
+    fn hint_is_shown_before_the_header() {
+        let form = ask_user_form(&choice(OtherAnswer::Forbidden), Some("try again"));
+        assert!(form.message.starts_with("try again"));
+        assert!(form.message.contains(ASK_USER_HEADER));
+    }
+
+    #[tokio::test]
+    async fn ask_user_returns_the_selected_option() {
+        let (_user_tx, user_rx) = mpsc::channel(4);
+        let (agent_tx, mut agent_rx) = mpsc::channel(4);
+        let mut ch = TuiChannel::new(user_rx, agent_tx);
+        let asker = tokio::spawn(async move { ch.ask_user(choice(OtherAnswer::Forbidden)).await });
+        let Some(AgentEvent::ElicitationRequest { response_tx, .. }) = agent_rx.recv().await else {
+            panic!("expected an elicitation request");
+        };
+        let _ = response_tx.send(ElicitationResponse::Accepted(
+            serde_json::json!({ "answer": "2. green" }),
+        ));
+        let outcome = asker.await.unwrap().unwrap();
+        assert_eq!(
+            outcome,
+            AskUserOutcome::Answered(zeph_core::channel::AskUserAnswer::Selected {
+                indices: vec![1]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_numeric_label_is_read_by_position_not_by_text() {
+        let options =
+            ChoiceOptions::new(vec!["2 GB".into(), "4 GB".into(), "8 GB".into()]).unwrap();
+        let request =
+            AskUserRequest::single_choice("Size?", options, OtherAnswer::Forbidden).unwrap();
+        let (_user_tx, user_rx) = mpsc::channel(4);
+        let (agent_tx, mut agent_rx) = mpsc::channel(4);
+        let mut ch = TuiChannel::new(user_rx, agent_tx);
+        let asker = tokio::spawn(async move { ch.ask_user(request).await });
+        let Some(AgentEvent::ElicitationRequest { response_tx, .. }) = agent_rx.recv().await else {
+            panic!("expected an elicitation request");
+        };
+        // Option 1 is "2 GB": its leading digit equals the position of a different option.
+        let _ = response_tx.send(ElicitationResponse::Accepted(
+            serde_json::json!({ "answer": "1. 2 GB" }),
+        ));
+        assert_eq!(
+            asker.await.unwrap().unwrap(),
+            AskUserOutcome::Answered(zeph_core::channel::AskUserAnswer::Selected {
+                indices: vec![0]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_cancels_the_question() {
+        let (_user_tx, user_rx) = mpsc::channel(4);
+        let (agent_tx, mut agent_rx) = mpsc::channel(4);
+        let mut ch = TuiChannel::new(user_rx, agent_tx);
+        let asker = tokio::spawn(async move { ch.ask_user(choice(OtherAnswer::Forbidden)).await });
+        let Some(AgentEvent::ElicitationRequest { response_tx, .. }) = agent_rx.recv().await else {
+            panic!("expected an elicitation request");
+        };
+        let _ = response_tx.send(ElicitationResponse::Cancelled);
+        assert_eq!(asker.await.unwrap().unwrap(), AskUserOutcome::Cancelled);
     }
 }

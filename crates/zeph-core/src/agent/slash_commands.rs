@@ -775,6 +775,7 @@ pub(crate) fn build_agent_command_registry<'ctx>()
         conv::ConvCommand,
         experiment::ExperimentCommand,
         goal::GoalCommand,
+        keepalive::KeepaliveCommand,
         loop_cmd::LoopCommand,
         lsp::LspCommand,
         mcp::McpCommand,
@@ -808,6 +809,7 @@ pub(crate) fn build_agent_command_registry<'ctx>()
     agent_reg.register(ModelCommand);
     agent_reg.register(ProviderCommand);
     agent_reg.register(ThinkTokensCommand);
+    agent_reg.register(KeepaliveCommand);
     agent_reg.register(ReasoningEffortCommand);
     // Phase 6 migrations: /skill, /skills, /feedback use clone-before-await pattern.
     agent_reg.register(SkillCommand);

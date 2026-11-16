@@ -139,6 +139,26 @@ pub struct AcpContext {
     pub(crate) elicitation_bridge: Option<elicitation::ElicitationBridge>,
 }
 
+#[cfg(feature = "unstable-elicitation")]
+impl AcpContext {
+    /// A responder that shows `ask_user` questions in the IDE, or `None` when the IDE did not
+    /// advertise elicitation.
+    ///
+    /// Attach it with [`LoopbackChannel::with_ask_user_responder`]; without it the session
+    /// declines every question.
+    #[must_use]
+    pub fn ask_user_responder(
+        &self,
+        session_id: &acp::schema::v1::SessionId,
+    ) -> Option<Arc<dyn zeph_core::channel::AskUserResponder>> {
+        let bridge = self.elicitation_bridge.clone()?;
+        Some(Arc::new(elicitation::AcpAskUserResponder::new(
+            bridge,
+            session_id.clone(),
+        )))
+    }
+}
+
 /// Factory that receives a [`LoopbackChannel`], optional [`AcpContext`], and [`SessionContext`],
 /// then drives the agent loop to completion.
 ///
@@ -578,10 +598,7 @@ impl ZephAcpAgentState {
             ide_mcp_servers: Vec::new(),
             status_notifier: SessionStatusNotifier::new(notify_tx, session_id.clone()),
             #[cfg(feature = "unstable-elicitation")]
-            elicitation_bridge: elicitation_tx.map(|tx| elicitation::ElicitationBridge {
-                tx,
-                timeout_secs: self.timeouts.elicitation_secs,
-            }),
+            elicitation_bridge: elicitation_tx.map(|tx| elicitation::ElicitationBridge { tx }),
         }
     }
 

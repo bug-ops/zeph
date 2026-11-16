@@ -611,6 +611,39 @@ fn try_switch_blocked_by_elicitation_modal() {
     );
 }
 
+fn open_elicitation(
+    app: &mut App,
+) -> tokio::sync::oneshot::Receiver<zeph_core::channel::ElicitationResponse> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = zeph_core::channel::ElicitationRequest {
+        server_name: "assistant question".into(),
+        message: "q".into(),
+        fields: vec![],
+    };
+    app.elicitation_state = Some(ElicitationState {
+        dialog: crate::widgets::elicitation::ElicitationDialogState::new(req),
+        response_tx: Some(tx),
+    });
+    rx
+}
+
+#[test]
+fn tick_closes_a_dialog_whose_requester_gave_up() {
+    let (mut app, _rx, _tx) = make_app();
+    let answers = open_elicitation(&mut app);
+    app.handle_event(AppEvent::Tick);
+    assert!(
+        app.elicitation_state.is_some(),
+        "an awaited dialog must stay open"
+    );
+    drop(answers);
+    app.handle_event(AppEvent::Tick);
+    assert!(
+        app.elicitation_state.is_none(),
+        "a dialog nobody awaits must close on the next tick"
+    );
+}
+
 #[test]
 fn try_switch_close_refused_on_last_slot() {
     let (mut app, _rx, _tx) = make_app();

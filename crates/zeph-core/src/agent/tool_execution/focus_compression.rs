@@ -29,6 +29,21 @@ pub(super) fn context_management_output(
     }
 }
 
+/// Result of an `ask_user` call: typed by a person, so it is untrusted but not third-party.
+pub(in crate::agent) fn user_answer_output(
+    tool_name: zeph_common::ToolName,
+    reply: BuiltinReply,
+) -> zeph_tools::ToolOutput {
+    zeph_tools::ToolOutput {
+        tool_name,
+        summary: reply.text,
+        status: reply.status,
+        blocks_executed: 1,
+        claim_source: Some(zeph_tools::ClaimSource::UserAnswer),
+        ..Default::default()
+    }
+}
+
 /// Synthetic tools the agent loop answers itself, never reaching hooks, gates or executors.
 ///
 /// Invariant: a name that maps to `Some` always gets a result written into its slot by
@@ -40,6 +55,8 @@ pub(in crate::agent) enum BuiltinTool {
     /// `start_focus` / `complete_focus`; only a built-in while focus is enabled.
     Focus,
     SkillStatePatch,
+    /// `ask_user`; only a built-in while `[tools.ask_user]` is enabled.
+    AskUser,
 }
 
 impl<C: Channel> Agent<C> {
@@ -52,6 +69,9 @@ impl<C: Channel> Agent<C> {
                 Some(BuiltinTool::Focus)
             }
             crate::agent::skill_state::SKILL_STATE_PATCH_TOOL => Some(BuiltinTool::SkillStatePatch),
+            crate::agent::ask_user::ASK_USER_TOOL if self.runtime.ask_user.config.enabled => {
+                Some(BuiltinTool::AskUser)
+            }
             _ => None,
         }
     }
@@ -78,6 +98,8 @@ impl<C: Channel> Agent<C> {
                 continue;
             };
             let result = match builtin {
+                // Answered by `preprocess_ask_user_calls`, which needs the cancel token.
+                BuiltinTool::AskUser => continue,
                 BuiltinTool::CompressContext => self.handle_compress_context().await,
                 BuiltinTool::RequestCompaction
                     if !self
@@ -103,6 +125,28 @@ impl<C: Channel> Agent<C> {
             tool_results[idx] = Ok(Some(context_management_output(tc.name.clone(), result)));
         }
         pending_focus_checkpoint
+    }
+
+    /// Answer the `ask_user` calls of a batch, one at a time so questions never overlap.
+    ///
+    /// `blocked[idx]` marks calls the dispatch gates already refused (pre-exec block, session
+    /// quota, repeat detection); those get a failed reply instead of reaching the user.
+    pub(super) async fn preprocess_ask_user_calls(
+        &mut self,
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        blocked: &[bool],
+        cancel: &tokio_util::sync::CancellationToken,
+        tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
+    ) {
+        for (idx, tc) in tool_calls.iter().enumerate() {
+            if self.builtin_tool(tc.name.as_str()) != Some(BuiltinTool::AskUser) {
+                continue;
+            }
+            let reply = self
+                .handle_ask_user(tc, blocked.get(idx).copied().unwrap_or(false), cancel)
+                .await;
+            tool_results[idx] = Ok(Some(user_answer_output(tc.name.clone(), reply)));
+        }
     }
 
     /// Apply Acon tool-result compression to `result_parts` in-place before the parts enter

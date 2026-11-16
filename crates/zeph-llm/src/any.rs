@@ -338,6 +338,56 @@ impl AnyProvider {
         }
     }
 
+    /// Whether requests are routed across several backends, looking through the masking layer.
+    ///
+    /// The prompt-cache keepalive uses it to decide whether `keepalive_provider` names a
+    /// router backend or must equal the serving provider.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::any::AnyProvider;
+    /// use zeph_llm::ollama::OllamaProvider;
+    ///
+    /// let provider =
+    ///     AnyProvider::Ollama(OllamaProvider::new("http://localhost:11434", "m".into(), "e".into()));
+    /// assert!(!provider.is_router());
+    /// ```
+    #[must_use]
+    pub fn is_router(&self) -> bool {
+        match self {
+            Self::Router(_) => true,
+            Self::Masked(p) => p.inner().is_router(),
+            _ => false,
+        }
+    }
+
+    /// The provider a keepalive ping is actually sent to: the router backend chosen by
+    /// `target` (or the single prefix-caching one), looking through the masking layer, and `self`
+    /// for every other provider.
+    ///
+    /// Cost gating and accounting must use this provider's model, price and thinking budget,
+    /// not those of the router, which reports the backend that served its last request.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::any::AnyProvider;
+    /// use zeph_llm::ollama::OllamaProvider;
+    ///
+    /// let provider =
+    ///     AnyProvider::Ollama(OllamaProvider::new("http://localhost:11434", "m".into(), "e".into()));
+    /// assert!(std::ptr::eq(provider.keepalive_backend(None), &provider));
+    /// ```
+    #[must_use]
+    pub fn keepalive_backend(&self, target: Option<&zeph_common::ProviderName>) -> &AnyProvider {
+        match self {
+            Self::Router(r) => r.keepalive_backend(target).unwrap_or(self),
+            Self::Masked(p) => p.inner().keepalive_backend(target),
+            _ => self,
+        }
+    }
+
     /// Returns a static string identifying the provider kind for cost/logging purposes.
     ///
     /// Returns `"ollama"` or `"candle"` for local inference providers (no API cost),
@@ -550,6 +600,8 @@ impl AnyProvider {
                 };
                 p.set_thinking_budget(Some(i))
             }
+            #[cfg(any(test, feature = "testing"))]
+            Self::Mock(p) => p.set_thinking_budget(budget),
             Self::Masked(p) => p.inner.set_thinking_budget(budget),
             Self::Router(r) => r.set_thinking_budget_delegated(budget),
             Self::Triage(t) => t.set_thinking_budget_delegated(budget),
@@ -627,6 +679,8 @@ impl AnyProvider {
                 .current_thinking_budget()
                 .and_then(|b| u32::try_from(b).ok())
                 .filter(|&b| b > 0),
+            #[cfg(any(test, feature = "testing"))]
+            Self::Mock(p) => p.thinking_budget(),
             Self::Masked(p) => p.inner().current_thinking_budget(),
             Self::Router(r) => r.current_thinking_budget_delegated(),
             Self::Triage(t) => t.current_thinking_budget_delegated(),
@@ -808,6 +862,13 @@ impl LlmProvider for AnyProvider {
 
     fn last_ttft_ms(&self) -> Option<u64> {
         delegate_provider!(self, |p| p.last_ttft_ms())
+    }
+
+    async fn keepalive_ping(
+        &self,
+        req: &crate::provider::KeepaliveRequest,
+    ) -> Result<crate::provider::KeepaliveOutcome, crate::LlmError> {
+        delegate_provider!(self, |p| p.keepalive_ping(req).await)
     }
 
     fn debug_request_json(

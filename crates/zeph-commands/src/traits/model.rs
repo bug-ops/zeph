@@ -63,4 +63,17 @@ pub trait ModelAccess {
         &'a mut self,
         arg: &'a str,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+
+    // ----- /keepalive -----
+
+    /// Handle `/keepalive [on|off|status]` and return a user-visible result.
+    ///
+    /// Controls the opt-in prompt-cache keepalive for the session. `on` clears any stop (cost
+    /// limit, no cache hit, prefix rewritten, provider mismatch) and restarts the timer; `off`
+    /// stops pings until `on`; empty or `status` reports the service state. Session-only:
+    /// never persisted.
+    fn handle_keepalive<'a>(
+        &'a mut self,
+        arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 }

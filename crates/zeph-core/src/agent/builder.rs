@@ -2051,6 +2051,36 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Apply the `ask_user` and prompt-cache keepalive settings.
+    #[must_use]
+    pub fn with_interaction_config(mut self, config: crate::InteractionConfig) -> Self {
+        self.runtime.ask_user = super::ask_user::AskUserState::new(config.ask_user);
+        self.runtime.cache_keepalive =
+            super::cache_keepalive::KeepaliveRuntime::new(config.cache_keepalive);
+        self
+    }
+
+    /// The effective `[tools.ask_user]` and `[llm.cache_keepalive]` settings after wiring.
+    ///
+    /// Read-only, for diagnostics and for tests that assert configuration reached the agent at
+    /// each build site. Runtime changes go through `/keepalive`, never through this getter.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn show<C: zeph_core::Channel>(agent: &zeph_core::Agent<C>) {
+    /// let settings = agent.interaction_config();
+    /// println!("ask_user enabled: {}", settings.ask_user.enabled);
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn interaction_config(&self) -> crate::InteractionConfig {
+        crate::InteractionConfig {
+            ask_user: self.runtime.ask_user.config.clone(),
+            cache_keepalive: self.runtime.cache_keepalive.config.clone(),
+        }
+    }
+
     /// Attach the graceful-shutdown receiver.
     #[must_use]
     pub fn with_shutdown(mut self, rx: watch::Receiver<bool>) -> Self {
@@ -2534,7 +2564,7 @@ impl<C: Channel> Agent<C> {
     /// Attach a cost tracker for per-session token budget accounting.
     #[must_use]
     pub fn with_cost_tracker(mut self, tracker: CostTracker) -> Self {
-        self.runtime.metrics.cost_tracker = Some(tracker);
+        self.runtime.metrics.cost_tracker = Some(std::sync::Arc::new(tracker));
         self
     }
 

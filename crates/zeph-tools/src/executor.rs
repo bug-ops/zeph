@@ -245,6 +245,13 @@ pub enum ClaimSource {
     /// Message relayed from a sibling sub-agent through the peer mailbox: the body is
     /// authored by another model and may carry content that sibling fetched.
     PeerMessage,
+    /// The user's answer to a model-asked `ask_user` question. It is typed by a person on the
+    /// local channel, so it is untrusted content but not third-party content.
+    ///
+    /// Invariant: the agent skips the tool-output sanitizer for this variant because the answer
+    /// already took the channel-message path. That is safe only while no [`ToolExecutor`] sets
+    /// it: `ToolOutput` is not `Deserialize`, and only the agent's `ask_user` handler builds it.
+    UserAnswer,
 }
 
 impl From<ClaimSource> for zeph_common::trust_level::ToolProvenance {
@@ -261,7 +268,8 @@ impl From<ClaimSource> for zeph_common::trust_level::ToolProvenance {
             | ClaimSource::Memory
             | ClaimSource::Moderation
             | ClaimSource::ContextManagement
-            | ClaimSource::PeerMessage => Self::Native,
+            | ClaimSource::PeerMessage
+            | ClaimSource::UserAnswer => Self::Native,
         }
     }
 }
@@ -291,7 +299,8 @@ impl ClaimSource {
             | Self::CodeSearch
             | Self::Diagnostics
             | Self::Moderation
-            | Self::ContextManagement => TurnContextTrust::LocalUntrusted,
+            | Self::ContextManagement
+            | Self::UserAnswer => TurnContextTrust::LocalUntrusted,
             Self::WebScrape
             | Self::WebSearch
             | Self::Mcp
@@ -1393,6 +1402,7 @@ mod tests {
             ClaimSource::Shell,
             ClaimSource::WebSearch,
             ClaimSource::PeerMessage,
+            ClaimSource::UserAnswer,
         ] {
             assert_eq!(ToolProvenance::from(claim), ToolProvenance::Native);
         }

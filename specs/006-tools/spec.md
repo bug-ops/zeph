@@ -900,3 +900,10 @@ Rules appended after `[tools.policy]` rules. `[tools.policy]` has precedence (fi
 - See `008-mcp/spec.md` for the complete invariant list
 - NEVER let quota exhaustion silently drop a tool call — always return `quota_blocked`
 - OAP rules are merged at startup — runtime changes require restart
+
+## `ask_user` Built-in Tool (#6912, spec 090)
+
+- `ask_user` is an agent built-in like `compress_context`: answered in the agent loop, never reaching hooks, gates or executors, and listed only while `[tools.ask_user] enabled = true` (default off). `[tools.permissions]` does not apply to built-ins; `enabled` is the switch.
+- Calls the pre-exec, quota or repeat gates refused get a failed reply and never reach the user. The result carries `ClaimSource::UserAnswer` (native provenance, `LocalUntrusted`) and bypasses the tool-output sanitizer: the answer already took the incoming-channel-message path at its choke point.
+- Subagents run `zeph-subagent::run_agent_loop` with executor tools only, so they never see the tool.
+- NEVER offer `ask_user` while disabled; NEVER route its answer through the tool-output PII scrub.

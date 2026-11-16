@@ -258,6 +258,8 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn clear_history(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         svc.clear_history(&mut self.message_window_view());
+        // The keepalive snapshot replays the history that was just cleared.
+        self.runtime.cache_keepalive.shared().clear_snapshot();
         self.msg.layout.reset();
         self.reset_skill_state();
         // `ContextService` mutates `messages` through a borrowed view, so the non-system
@@ -274,7 +276,7 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn budget_hint_snapshot(&self, tool_calls_used: usize) -> BudgetHint {
         let cost = self.runtime.metrics.cost_tracker.as_ref();
         let max_cost = cost
-            .map(crate::cost::CostTracker::max_daily_cents)
+            .map(|tracker| tracker.max_daily_cents())
             .filter(|m| *m > 0.0);
         let max_tool_calls = self.tool_orchestrator.max_iterations;
         BudgetHint {

@@ -38,6 +38,15 @@ impl UsageSink {
     }
 }
 
+/// Scripted `keepalive_ping` behaviour, shared across clones so a ping issued on a provider
+/// clone captured with a keepalive snapshot is still recorded and answered in order.
+#[derive(Debug, Clone)]
+struct KeepaliveScript {
+    usages: Arc<[crate::provider::ResponseUsage]>,
+    next: Arc<std::sync::atomic::AtomicUsize>,
+    recorded: Arc<Mutex<Vec<crate::provider::KeepaliveRequest>>>,
+}
+
 #[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 #[derive(Debug, Clone)]
 pub struct MockProvider {
@@ -129,6 +138,14 @@ pub struct MockProvider {
     /// Boxed to keep `MockProvider` (and so `AnyProvider`) small; set via
     /// [`MockProvider::with_published_usage`].
     published_usage: Option<Box<PublishedUsage>>,
+    /// Boxed for the same reason; set via [`MockProvider::with_keepalive`].
+    keepalive: Option<Box<KeepaliveScript>>,
+    /// Thinking-token budget set through [`MockProvider::set_thinking_budget`].
+    thinking_budget: Option<u32>,
+    /// Whether `set_thinking_budget` is accepted; off by default so the mock keeps standing in
+    /// for a provider without thinking-token support. [`MockProvider::with_keepalive`] turns it
+    /// on to emulate a thinking-capable cached provider such as Claude.
+    supports_thinking_budget: bool,
 }
 
 impl Default for MockProvider {
@@ -170,6 +187,9 @@ impl Default for MockProvider {
             per_call_embed_delays: Arc::new(Mutex::new(VecDeque::new())),
             captured_overrides: Arc::new(Mutex::new(None)),
             published_usage: None,
+            keepalive: None,
+            thinking_budget: None,
+            supports_thinking_budget: false,
         }
     }
 }
@@ -520,6 +540,46 @@ impl MockProvider {
         self
     }
 
+    /// Script `keepalive_ping`: each ping is recorded and answered `Pinged(usages[i])`, repeating
+    /// the last entry; an empty script answers `Pinged(ResponseUsage::default())`.
+    #[must_use]
+    pub fn with_keepalive(
+        mut self,
+        usages: Vec<crate::provider::ResponseUsage>,
+    ) -> (Self, Arc<Mutex<Vec<crate::provider::KeepaliveRequest>>>) {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        self.supports_thinking_budget = true;
+        self.keepalive = Some(Box::new(KeepaliveScript {
+            usages: usages.into(),
+            next: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            recorded: Arc::clone(&recorded),
+        }));
+        (self, recorded)
+    }
+
+    /// Store a thinking-token budget, readable through [`Self::thinking_budget`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LlmError::ModelCapabilityMismatch`] unless thinking-budget support was
+    /// enabled, which [`Self::with_keepalive`] does.
+    pub fn set_thinking_budget(&mut self, budget: Option<u32>) -> Result<(), crate::LlmError> {
+        if !self.supports_thinking_budget {
+            return Err(crate::LlmError::ModelCapabilityMismatch {
+                provider: self.name().to_owned(),
+                message: "does not support a thinking-token budget".into(),
+            });
+        }
+        self.thinking_budget = budget;
+        Ok(())
+    }
+
+    /// The thinking-token budget last stored with [`Self::set_thinking_budget`].
+    #[must_use]
+    pub fn thinking_budget(&self) -> Option<u32> {
+        self.thinking_budget
+    }
+
     /// Set the [`PrefixCache`](crate::provider::PrefixCache) reported by `prefix_cache()`.
     #[must_use]
     pub fn with_prefix_cache(mut self, cache: crate::provider::PrefixCache) -> Self {
@@ -670,6 +730,28 @@ impl LlmProvider for MockProvider {
 
     fn prefix_cache(&self) -> crate::provider::PrefixCache {
         self.prefix_cache
+    }
+
+    async fn keepalive_ping(
+        &self,
+        req: &crate::provider::KeepaliveRequest,
+    ) -> Result<crate::provider::KeepaliveOutcome, crate::LlmError> {
+        use std::sync::atomic::Ordering as AOrdering;
+        let Some(script) = &self.keepalive else {
+            return Ok(crate::provider::KeepaliveOutcome::Unsupported);
+        };
+        script.recorded.lock().unwrap().push(req.clone());
+        let i = script.next.fetch_add(1, AOrdering::SeqCst);
+        let usage = script
+            .usages
+            .get(i)
+            .or_else(|| script.usages.last())
+            .copied()
+            .unwrap_or_default();
+        if self.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
+        Ok(crate::provider::KeepaliveOutcome::Pinged(usage))
     }
 
     fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {

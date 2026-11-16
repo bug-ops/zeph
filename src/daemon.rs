@@ -490,6 +490,7 @@ where
             .collect(),
     )
     .with_tools_enabled(config.tools.enabled)
+    .with_interaction_config(zeph_core::InteractionConfig::from_config(config))
     .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), deps.embedding_provider)
     .await
 }
@@ -1579,6 +1580,72 @@ mod tests {
              ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
              swapped with_skill_matching_config argument); got: {output}"
         );
+    }
+
+    /// Spec 090/091 wiring: `[tools.ask_user]` and `[llm.cache_keepalive]` parsed from TOML must
+    /// reach the `Agent` built by the daemon's `build_daemon_agent` chain.
+    #[tokio::test]
+    async fn build_daemon_agent_wires_interaction_config_from_toml() {
+        let memory = make_daemon_test_memory().await;
+        let conversation_id = memory.sqlite().create_conversation().await.unwrap();
+        let mut config = Config::default();
+        config.tools.ask_user.enabled = true;
+        config.tools.ask_user.timeout_secs = std::num::NonZeroU64::new(17).unwrap();
+        config.llm.cache_keepalive.enabled = true;
+        config.llm.cache_keepalive.max_consecutive_pings = std::num::NonZeroU32::new(2).unwrap();
+
+        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let shell_policy_handle =
+            zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let provider_config_snapshot = crate::agent_setup::build_provider_config_snapshot(&config);
+        let mcp_manager = std::sync::Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
+            &config, false, None,
+        ));
+
+        let deps = BuildDaemonAgentDeps {
+            config: &config,
+            provider: mock_provider(),
+            embedding_provider: mock_provider(),
+            registry: std::sync::Arc::new(RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
+                zeph_tools::SetCwdExecutor::new(vec![]),
+            )),
+            session_config,
+            skill_paths: Vec::new(),
+            reload_rx,
+            plugin_dirs_supplier: || Vec::<PathBuf>::new(),
+            memory: std::sync::Arc::clone(&memory),
+            conversation_id,
+            shutdown_rx,
+            config_path: PathBuf::new(),
+            config_reload_rx,
+            shell_policy_handle,
+            mcp_tools: Vec::new(),
+            mcp_registry: None,
+            mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+            mcp_manager,
+            provider_config_snapshot,
+            trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
+            clock: std::sync::Arc::new(zeph_common::SystemClock),
+        };
+
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = Box::pin(build_daemon_agent(deps, channel)).await;
+        assert_eq!(
+            agent.interaction_config(),
+            zeph_core::InteractionConfig::from_config(&config)
+        );
+        assert!(agent.interaction_config().ask_user.enabled);
+        assert!(agent.interaction_config().cache_keepalive.enabled);
     }
 
     /// #5867 regression: `build_daemon_agent` must call `Agent::with_skill_group_config` so

@@ -661,6 +661,14 @@ impl TelegramChannel {
         }
     }
 
+    /// Whether `recv` answers this text itself instead of passing it to the agent.
+    fn is_handled_locally(text: &str) -> bool {
+        matches!(
+            Self::is_command(text),
+            Some("/start" | "/reset" | "/skills")
+        )
+    }
+
     /// Sends `text` as a new message (retrying on Telegram rate-limiting) and records the
     /// resulting message id in `self.message_id` so later chunks edit it in place.
     async fn send_new_chunk(&mut self, chat_id: ChatId, text: &str) -> Result<(), ChannelError> {
@@ -1280,6 +1288,11 @@ async fn download_file(bot: &Bot, file_id: String, capacity: u32) -> Result<Vec<
     Ok(buf)
 }
 
+/// Escapes an `ask_user` prompt for Telegram; the send path converts the rest to `MarkdownV2`.
+fn ask_user_sanitizer(text: &str) -> String {
+    crate::ask_user::neutralize_links(text)
+}
+
 impl crate::confirm::ConfirmLoop for TelegramChannel {
     type Incoming = IncomingMessage;
 
@@ -1292,7 +1305,8 @@ impl crate::confirm::ConfirmLoop for TelegramChannel {
     }
 
     fn confirm_accepts(&self, incoming: &IncomingMessage) -> bool {
-        self.chat_id.is_none_or(|id| id == incoming.chat_id)
+        // A peer bot in the same chat must never answer on the user's behalf.
+        !incoming.is_from_bot && self.chat_id.is_none_or(|id| id == incoming.chat_id)
     }
 
     fn confirm_reply_text<'a>(&self, incoming: &'a IncomingMessage) -> &'a str {
@@ -1636,6 +1650,30 @@ impl Channel for TelegramChannel {
         crate::confirm::ConfirmLoop::run_confirm(self, prompt).await
     }
 
+    /// Ask the user a model-authored question and wait for the reply, with no deadline of its
+    /// own.
+    ///
+    /// A reply that `recv` handles locally (`/start`, `/reset`, `/skills`) cancels the question
+    /// instead of becoming answer text.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if sending a prompt message fails.
+    #[tracing::instrument(name = "channels.telegram.ask_user", skip_all)]
+    async fn ask_user(
+        &mut self,
+        request: zeph_core::channel::AskUserRequest,
+    ) -> Result<zeph_core::channel::AskUserOutcome, ChannelError> {
+        // A guest reply is buffered rather than sent, so the question would never be shown.
+        if self.guest_query_id.is_some() {
+            return Ok(zeph_core::channel::AskUserOutcome::Declined(
+                zeph_core::channel::DeclineReason::NonInteractive,
+            ));
+        }
+        crate::ask_user::run_ask_user(self, request, ask_user_sanitizer, Self::is_handled_locally)
+            .await
+    }
+
     /// Collect structured input from the user on behalf of an MCP server.
     ///
     /// Sends an introductory message identifying the requesting MCP server,
@@ -1977,6 +2015,16 @@ mod tests {
         assert!(allowlist.authorize_user(sender(9, Some("alice"))));
         assert!(allowlist.authorize_bot(sender(2, None)));
         assert!(allowlist.authorize_bot(sender(9, Some("bot"))));
+    }
+
+    #[test]
+    fn locally_handled_commands_are_detected() {
+        for text in ["/start", "/reset now", "/skills"] {
+            assert!(TelegramChannel::is_handled_locally(text), "{text}");
+        }
+        for text in ["/home/me/proj", "hello", "/status", ""] {
+            assert!(!TelegramChannel::is_handled_locally(text), "{text}");
+        }
     }
 
     #[test]
@@ -2378,6 +2426,55 @@ mod tests {
 
         let result = channel.confirm("delete everything?").await.unwrap();
         assert!(!result, "confirm() should return false for non-yes reply");
+    }
+
+    #[tokio::test]
+    async fn confirm_ignores_a_bot_yes_and_accepts_the_initiator() {
+        let server = MockServer::start().await;
+        let (mut channel, tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
+        let mut from_bot = message_from_chat("yes", 1);
+        from_bot.is_from_bot = true;
+        tx.send(from_bot).await.unwrap();
+        tx.send(message_from_chat("no", 1)).await.unwrap();
+
+        let result = channel.confirm("delete everything?").await.unwrap();
+        assert!(
+            !result,
+            "the bot's yes must be skipped, the human's no taken"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_bot_cannot_answer_a_question_or_confirmation() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
+        channel.chat_id = Some(ChatId(1));
+        let mut from_bot = message_from_chat("yes", 1);
+        from_bot.is_from_bot = true;
+        assert!(!crate::confirm::ConfirmLoop::confirm_accepts(
+            &channel, &from_bot
+        ));
+        let human = message_from_chat("yes", 1);
+        assert!(crate::confirm::ConfirmLoop::confirm_accepts(
+            &channel, &human
+        ));
+    }
+
+    #[tokio::test]
+    async fn ask_user_in_guest_context_declines_at_once() {
+        use zeph_core::channel::{AskUserOutcome, AskUserRequest, DeclineReason};
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
+        channel.guest_query_id = Some("q1".into());
+        let request = AskUserRequest::free_text("Where?").unwrap();
+        let out = channel.ask_user(request).await.unwrap();
+        assert_eq!(out, AskUserOutcome::Declined(DeclineReason::NonInteractive));
+    }
+
+    #[test]
+    fn ask_user_prompt_breaks_markdown_links() {
+        let out = ask_user_sanitizer("[docs](https://evil.example)");
+        assert!(!out.contains("]("));
     }
 
     // ---------------------------------------------------------------------------

@@ -24,8 +24,9 @@ use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
 use zeph_common::path_guard::{PathRejection, classify_relative_path};
 use zeph_core::channel::{
-    Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
-    ElicitationFieldType, ElicitationRequest, ElicitationResponse,
+    ASK_USER_COMMAND_NOTICE, ASK_USER_RETRY_HINT, AskUserOutcome, AskUserRequest, Attachment,
+    AttachmentKind, Channel, ChannelError, ChannelMessage, DeclineReason, ElicitationField,
+    ElicitationFieldType, ElicitationRequest, ElicitationResponse, ReplyKind, classify_reply,
 };
 
 use crate::line_editor::{self, ReadLineResult};
@@ -113,37 +114,68 @@ impl<'a> ElicitGuard<'a> {
         // Constructed before the ack wait so `Drop` clears `elicit_active`
         // even if this future is dropped mid-await (#6404 S2).
         let guard = Self { coord };
-
-        let deadline = tokio::time::Instant::now() + ACK_HANDSHAKE_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                tracing::debug!(
-                    "ack handshake timed out waiting for the background stdin reader to park; \
-                    proceeding without it (reader may not be running)"
-                );
-                break;
-            }
-            if tokio::time::timeout(remaining, coord.ack.notified())
-                .await
-                .is_err()
-            {
-                tracing::debug!(
-                    "ack handshake timed out waiting for the background stdin reader to park; \
-                    proceeding without it (reader may not be running)"
-                );
-                break;
-            }
-            // A woken `notified()` can be a stale permit from a park that
-            // predates this acquire() (#6404 S1) — only a generation strictly
-            // newer than the one observed at entry proves the reader parked
-            // *for this request*. A stale wakeup loops back and keeps
-            // waiting within the same overall deadline.
-            if coord.parked_generation.load(Ordering::Acquire) > start_generation {
-                break;
-            }
-        }
+        wait_for_reader_park(coord, start_generation).await;
         guard
+    }
+}
+
+/// Wait, bounded by [`ACK_HANDSHAKE_TIMEOUT`], until `run_tty_reader` has parked after
+/// `elicit_active` was set (a park newer than `start_generation`).
+async fn wait_for_reader_park(coord: &StdinCoordination, start_generation: u64) {
+    let deadline = tokio::time::Instant::now() + ACK_HANDSHAKE_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            tracing::debug!(
+                "ack handshake timed out waiting for the background stdin reader to park; \
+                proceeding without it (reader may not be running)"
+            );
+            return;
+        }
+        if tokio::time::timeout(remaining, coord.ack.notified())
+            .await
+            .is_err()
+        {
+            tracing::debug!(
+                "ack handshake timed out waiting for the background stdin reader to park; \
+                proceeding without it (reader may not be running)"
+            );
+            return;
+        }
+        // A woken `notified()` can be a stale permit from a park that
+        // predates this acquire() (#6404 S1) — only a generation strictly
+        // newer than the one observed at entry proves the reader parked
+        // *for this request*. A stale wakeup loops back and keeps
+        // waiting within the same overall deadline.
+        if coord.parked_generation.load(Ordering::Acquire) > start_generation {
+            return;
+        }
+    }
+}
+
+/// [`ElicitGuard`] that owns its coordinator, so it can move into a blocking read and be
+/// released only when that read has really returned.
+struct OwnedElicitGuard {
+    coord: Arc<StdinCoordination>,
+}
+
+impl OwnedElicitGuard {
+    async fn acquire(coord: &Arc<StdinCoordination>) -> Arc<Self> {
+        let start_generation = coord.parked_generation.load(Ordering::Acquire);
+        coord.elicit_active.store(true, Ordering::Release);
+        // Built before the wait so `Drop` clears the flag if this future is dropped mid-await.
+        let guard = Arc::new(Self {
+            coord: Arc::clone(coord),
+        });
+        wait_for_reader_park(coord, start_generation).await;
+        guard
+    }
+}
+
+impl Drop for OwnedElicitGuard {
+    fn drop(&mut self) {
+        self.coord.elicit_active.store(false, Ordering::Release);
+        self.coord.resume.notify_one();
     }
 }
 
@@ -568,6 +600,15 @@ impl CliChannel {
     }
 }
 
+/// Sets the flag when dropped, telling a yieldable blocking read to stop.
+struct AbortOnDrop(Arc<AtomicBool>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 impl Default for CliChannel {
     fn default() -> Self {
         Self::new()
@@ -671,6 +712,58 @@ impl Channel for CliChannel {
             // panicking.
             ReadLineResult::Interrupted | ReadLineResult::Eof | ReadLineResult::Yielded => {
                 Ok(false)
+            }
+        }
+    }
+
+    /// Ask the user a model-authored question on the terminal.
+    ///
+    /// Piped stdin declines at once. On a TTY the call holds the stdin coordinator (so the chat
+    /// reader stands aside) and reads with the yieldable line editor; dropping the future (agent
+    /// timeout or turn cancel) sets an abort flag so the blocking read ends within one poll
+    /// cycle instead of keeping stdin. `cancel`, `Ctrl-C` and `Ctrl-D` cancel the question; a
+    /// slash command cancels it with a notice, since it cannot be replayed from here.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if spawning the blocking task fails or the readline call returns an I/O
+    /// error.
+    #[tracing::instrument(name = "channels.cli.ask_user", skip_all)]
+    async fn ask_user(&mut self, request: AskUserRequest) -> Result<AskUserOutcome, ChannelError> {
+        if !std::io::stdin().is_terminal() {
+            tracing::debug!("non-interactive stdin, declining ask_user");
+            return Ok(AskUserOutcome::Declined(DeclineReason::NonInteractive));
+        }
+        // Each blocking read holds a clone of this guard, so the chat reader resumes only after
+        // the read has returned and restored the terminal, even when this future is dropped.
+        let guard = OwnedElicitGuard::acquire(&self.stdin_coord).await;
+        println!("\n{}", crate::ask_user::render_prompt(&request));
+        loop {
+            let abort = Arc::new(AtomicBool::new(false));
+            let _abort_on_drop = AbortOnDrop(Arc::clone(&abort));
+            let held = Arc::clone(&guard);
+            // NOTE: raw spawn_blocking is intentional — interactive terminal readline; not an
+            // agent task, so the task_supervisor semaphore does not apply.
+            let result = tokio::task::spawn_blocking(move || {
+                let _held = held;
+                line_editor::read_line_yieldable("> ", &[], &abort)
+            })
+            .await
+            .map_err(ChannelError::other)?
+            .map_err(ChannelError::Io)?;
+            let ReadLineResult::Line(line) = result else {
+                return Ok(AskUserOutcome::Cancelled);
+            };
+            match classify_reply(&line) {
+                ReplyKind::Cancel => return Ok(AskUserOutcome::Cancelled),
+                ReplyKind::Command => {
+                    println!("{ASK_USER_COMMAND_NOTICE}");
+                    return Ok(AskUserOutcome::Cancelled);
+                }
+                ReplyKind::Answer(answer) => match request.parse_reply(&answer) {
+                    Ok(parsed) => return Ok(AskUserOutcome::Answered(parsed)),
+                    Err(error) => println!("{ASK_USER_RETRY_HINT} ({error})"),
+                },
             }
         }
     }
@@ -826,6 +919,23 @@ fn coerce_field_value(raw: &str, field_type: &ElicitationFieldType) -> Option<se
 mod tests {
     use super::*;
     use std::assert_matches;
+
+    #[tokio::test]
+    async fn ask_user_declines_fast_when_stdin_is_not_a_terminal() {
+        // `cargo test` and nextest run with a piped stdin; on a real terminal there is
+        // nothing to assert without a human.
+        if std::io::stdin().is_terminal() {
+            return;
+        }
+        let mut ch = CliChannel::new();
+        let started = std::time::Instant::now();
+        let out = ch
+            .ask_user(AskUserRequest::free_text("anything?").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(out, AskUserOutcome::Declined(DeclineReason::NonInteractive));
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
 
     #[test]
     fn cli_channel_default() {

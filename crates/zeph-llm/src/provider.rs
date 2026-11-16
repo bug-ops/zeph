@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::{
     any::TypeId,
     collections::HashMap,
-    sync::{LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use futures_core::Stream;
@@ -1044,6 +1044,64 @@ impl PrefixCache {
     pub fn is_prefix(self) -> bool {
         matches!(self, Self::Prefix { .. })
     }
+}
+
+/// Snapshot of the last successful main-loop request, replayed by the prompt-cache keepalive.
+///
+/// Core captures it after a successful main response, so `provider` is a clone that carries the
+/// thinking, reasoning-effort and model state the request was sent with. The ping is always
+/// issued on `provider`, never on a live handle.
+#[derive(Debug, Clone)]
+pub struct KeepaliveRequest {
+    /// Provider clone the main request was sent with.
+    pub provider: crate::any::AnyProvider,
+    /// Exact message slice the main request carried.
+    pub messages: Arc<[Message]>,
+    /// Exact tool definitions the main request carried.
+    pub tools: Arc<[ToolDefinition]>,
+    /// Router backend to ping; `None` lets the router pick its single prefix-caching backend.
+    pub target: Option<zeph_common::ProviderName>,
+}
+
+/// Why a keepalive ping was not sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum KeepaliveSkip {
+    /// The estimated prefix is below the model's minimum cacheable size; nothing is cached.
+    BelowMinCacheable,
+}
+
+/// Largest number of output tokens a keepalive ping may generate for a provider whose thinking
+/// budget is `thinking_budget`.
+///
+/// Extended thinking requires `max_tokens` above the budget, so a ping replaying a thinking
+/// request may spend `budget + 1` output tokens; without a budget one token refreshes the cache.
+/// Both the provider (as `max_tokens`) and the service's cost gate (as the worst-case output
+/// price) use this one function, so the price checked is the one that can be billed.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::keepalive_output_cap;
+///
+/// assert_eq!(keepalive_output_cap(None), 1);
+/// assert_eq!(keepalive_output_cap(Some(8192)), 8193);
+/// ```
+#[must_use]
+pub fn keepalive_output_cap(thinking_budget: Option<u32>) -> u32 {
+    thinking_budget.map_or(1, |budget| budget.saturating_add(1))
+}
+
+/// Result of [`LlmProvider::keepalive_ping`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum KeepaliveOutcome {
+    /// The ping was sent; carries the usage it reported.
+    Pinged(ResponseUsage),
+    /// The ping was deliberately not sent.
+    Skipped(KeepaliveSkip),
+    /// The provider has no keepalive support.
+    Unsupported,
 }
 
 /// Which assistant messages keep their thinking blocks in a request.
@@ -2249,6 +2307,22 @@ pub trait LlmProvider: Send + Sync {
     /// Routers report [`PrefixCache::Prefix`] when any member does; wrappers delegate.
     fn prefix_cache(&self) -> PrefixCache {
         PrefixCache::None
+    }
+
+    /// Send a side-effect-free request that re-reads the cached prefix of `req`.
+    ///
+    /// Implementors send only `req.messages` and `req.tools`, write nothing to their own
+    /// usage or prefix-guard state, and return the usage the ping reported. The default
+    /// reports [`KeepaliveOutcome::Unsupported`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider request fails.
+    fn keepalive_ping(
+        &self,
+        _req: &KeepaliveRequest,
+    ) -> impl std::future::Future<Output = Result<KeepaliveOutcome, LlmError>> + Send {
+        std::future::ready(Ok(KeepaliveOutcome::Unsupported))
     }
 
     /// Return the time-to-first-byte (milliseconds) of the last API call, if available.

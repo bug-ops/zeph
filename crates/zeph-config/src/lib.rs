@@ -72,7 +72,9 @@
 // TODO(#6935): post-v1.0 — re-evaluate ConfigSection derive macro for the 131 config structs.
 
 pub mod agent;
+pub mod ask_user;
 pub mod autonomous;
+pub mod cache_keepalive;
 pub mod calibration;
 pub mod channels;
 pub mod classifiers;
@@ -122,6 +124,8 @@ pub use agent::{
     ParentContextPolicy, PeerMessagingConfig, SubAgentConfig, SubAgentLifecycleHooks,
     TaskSupervisorConfig, ToolFilterConfig,
 };
+pub use ask_user::AskUserConfig;
+pub use cache_keepalive::CacheKeepaliveConfig;
 pub use calibration::{
     CalibrationError, ConfidenceCalibration, ConfidenceThreshold, DEFAULT_CORRECTION_CONFIDENCE,
 };

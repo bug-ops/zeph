@@ -368,7 +368,8 @@ pub(crate) async fn build_agent_factory(
         .with_allowed_paths(deps.allowed_paths)
         // #6386: propagate `[tools] enabled` onto this session's Agent so a `false` value
         // actually suppresses tool definitions, matching src/runner.rs/src/acp.rs/src/daemon.rs.
-        .with_tools_enabled(deps.tools_enabled);
+        .with_tools_enabled(deps.tools_enabled)
+        .with_interaction_config(deps.interaction);
         // #6580/#6582: wire the sanitizer/classifier security pipeline — quarantine, guardrail,
         // ML injection classification, PII detection, causal-IPI, NLI, VIGIL, and secret masking
         // — onto this session's Agent, using the same `_with_cfg` helpers and ordering
@@ -1037,6 +1038,7 @@ mod tests {
             semantic_scan: false,
             semantic_scan_provider: String::new(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,
@@ -1144,6 +1146,7 @@ mod tests {
             semantic_scan: false,
             semantic_scan_provider: String::new(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,
@@ -1250,6 +1253,7 @@ mod tests {
             semantic_scan: false,
             semantic_scan_provider: String::new(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,
@@ -1388,7 +1392,6 @@ mod tests {
         let memory = make_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
         let session_id = zeph_common::SessionId::new("skill-matching-config-test-session");
-
         let config = zeph_core::config::Config::default();
         let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
         let (condenser, token_counter) = make_test_condenser();
@@ -1425,6 +1428,7 @@ mod tests {
             semantic_scan: false,
             semantic_scan_provider: String::new(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,
@@ -1487,9 +1491,8 @@ mod tests {
             .expect("handle_skills(\"confusability\") must not error");
         assert!(
             output.contains("above 0.42"),
-            "ServeAgentDeps::skill_confusability_threshold = 0.42 must reach the built Agent's \
-             ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
-             swapped with_skill_matching_config argument); got: {output}"
+            "skill_confusability_threshold = 0.42 must reach the built Agent's ConfusabilityReport \
+             exactly, not the 0.77 disambiguation threshold; got: {output}"
         );
     }
 
@@ -1547,6 +1550,7 @@ mod tests {
             semantic_scan: false,
             semantic_scan_provider: String::new(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,
@@ -1668,6 +1672,7 @@ mod tests {
             semantic_scan: false,
             semantic_scan_provider: String::new(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config,
             rl_routing_enabled: true,
             rl_learning_rate: 0.05,
@@ -1786,6 +1791,7 @@ mod tests {
             semantic_scan: true,
             semantic_scan_provider: "scan-test-provider".to_owned(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,
@@ -1886,6 +1892,7 @@ mod tests {
             semantic_scan: false,
             semantic_scan_provider: String::new(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,
@@ -1995,6 +2002,57 @@ mod tests {
         if let Err(e) = result {
             std::panic::resume_unwind(e);
         }
+    }
+
+    /// Spec 090/091 wiring: `ServeAgentDeps::interaction` must reach each session's `Agent`.
+    /// Large-stack thread for the same reason as the trust-state test above (#6699).
+    #[test]
+    fn build_agent_factory_wires_interaction_config() {
+        let result = std::thread::Builder::new()
+            .name("agent-factory-interaction-test".into())
+            .stack_size(TEST_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build test runtime")
+                    .block_on(build_agent_factory_wires_interaction_config_body());
+            })
+            .expect("failed to spawn test thread")
+            .join();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    async fn build_agent_factory_wires_interaction_config_body() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("interaction-session");
+
+        let mut config = zeph_core::config::Config::default();
+        config.tools.ask_user.enabled = true;
+        config.llm.cache_keepalive.enabled = true;
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+        let mut deps = make_gate_test_deps(
+            Arc::clone(&memory),
+            session_config,
+            condenser,
+            token_counter,
+            crate::agent_setup::PolicyGatePieces::default(),
+        );
+        deps.interaction = zeph_core::InteractionConfig::from_config(&config);
+
+        let (_, build_agent) = Box::pin(build_agent_factory(deps, session_id, cid, false)).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+        assert_eq!(
+            agent.interaction_config(),
+            zeph_core::InteractionConfig::from_config(&config)
+        );
+        assert!(agent.interaction_config().ask_user.enabled);
+        assert!(agent.interaction_config().cache_keepalive.enabled);
     }
 
     async fn build_agent_factory_gates_trust_state_independently_per_session_body() {

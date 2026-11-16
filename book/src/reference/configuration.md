@@ -249,6 +249,11 @@ model = "whisper-1"
 # max_thinking_bytes = 1048576           # Max bytes for Claude thinking content (default: 1 MiB)
 # max_compaction_bytes = 32768           # Max bytes for context compaction responses (default: 32 KiB)
 
+[llm.cache_keepalive]
+enabled = false                # Re-read the cached prompt prefix while idle so the provider cache does not expire; spends tokens per ping (default: false)
+keepalive_provider = ""        # Provider name from [[llm.providers]] to ping; empty = main provider (default: "")
+max_consecutive_pings = 6      # Pings in a row without real activity before the service stops; must be > 0 (default: 6)
+
 [skills]
 # Defaults to the user config dir when omitted
 # (for example ~/.config/zeph/skills on Linux,
@@ -658,6 +663,11 @@ enabled = true              # Enable smart output filtering for tool results
 [tools.overflow]
 threshold = 50000           # Offload output larger than N chars to SQLite overflow table (default: 50000)
 retention_days = 7          # Days to retain overflow entries before age-based cleanup (default: 7)
+
+[tools.ask_user]
+enabled = false             # Let the model ask the user a question mid-turn (the ask_user tool; default: false)
+timeout_secs = 300          # Seconds to wait for the answer before the question times out; must be > 0 (default: 300)
+max_questions_per_turn = 3  # Questions the model may ask in one turn; 1-255 (default: 3)
 
 [tools.audit]
 enabled = false             # Structured JSON audit log for tool executions

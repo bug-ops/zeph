@@ -1162,3 +1162,9 @@ Open questions, resolved:
 2. Schema pin — resolved to `=1.5.0` by `cargo tree` (not `=1.6.0`).
 3. Pure mechanical bump — confirmed; no new 2.x surface (batch framing, `unstable_protocol_v2`
    draft, `AcpAgent`/`AcpAgentConfig`) adopted.
+
+## `ask_user` over Elicitation (#6912, spec 090)
+
+- When the IDE advertised elicitation, every session entry point (new, load, fork, resume) starts the elicitation bridge, and `AcpContext::ask_user_responder` yields an `AcpAskUserResponder` attached to the session's `LoopbackChannel` via `with_ask_user_responder`.
+- A question is one string field (a selection list of `"{n}. {label}"` values for a closed single choice); the answer is read back by position. Decline, cancel and an empty accept cancel the question; a bridge failure that is not a closed channel declines with `DeclineReason::Unsupported`.
+- Without the capability the session declines with `NonInteractive`. The bridge's own timeout is the IDE round-trip bound; the agent's `timeout_secs` drops the future.

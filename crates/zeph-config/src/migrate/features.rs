@@ -13,6 +13,56 @@ use super::{
     MigrateError, MigrationResult, insert_after_section, section_body, section_header_present,
 };
 
+/// Append a commented `[tools.ask_user]` block and a commented `[llm.cache_keepalive]` block
+/// when the matching parent section exists and neither form of the sub-section is present.
+///
+/// Both features default to off, so the blocks only aid discoverability. Idempotent: the
+/// commented header is detected explicitly because `section_header_present` ignores comments.
+///
+/// # Errors
+///
+/// Never returns `Err`; the `Result` matches the `Migration` trait signature.
+pub fn migrate_interaction_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    const BLOCKS: [(&str, &str, &str); 2] = [
+        (
+            "tools",
+            "tools.ask_user",
+            "\n# Let the model ask the user a clarifying question mid-turn (default: off).\n\
+             # [tools.ask_user]\n\
+             # enabled = false\n\
+             # timeout_secs = 300\n\
+             # max_questions_per_turn = 3\n",
+        ),
+        (
+            "llm",
+            "llm.cache_keepalive",
+            "\n# Keep the provider prompt cache warm while the session is idle (default: off).\n\
+             # [llm.cache_keepalive]\n\
+             # enabled = false\n\
+             # keepalive_provider = \"\"\n\
+             # max_consecutive_pings = 6\n",
+        ),
+    ];
+
+    let mut output = toml_src.to_owned();
+    let mut sections_changed = Vec::new();
+    for (parent, section, block) in BLOCKS {
+        let commented_header = format!("# [{section}]");
+        let present = section_header_present(&output, section)
+            || output.lines().any(|l| l.trim() == commented_header);
+        if present || !section_header_present(&output, parent) {
+            continue;
+        }
+        output.push_str(block);
+        sections_changed.push(section.to_owned());
+    }
+    Ok(MigrationResult {
+        output,
+        changed_count: sections_changed.len(),
+        sections_changed,
+    })
+}
+
 /// Regex matching the `[tui]` section header line (used by step 67).
 static TUI_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"(?m)^[ \t]*\[tui\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")

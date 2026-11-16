@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::event::{AgentEvent, AppEvent, LaneUpdate};
 use crate::status_board::StatusLane;
@@ -21,6 +21,7 @@ impl App {
                 self.throbber_state.calc_next();
                 self.wave_tick = self.wave_tick.saturating_add(1);
                 self.tick_delights();
+                self.drop_abandoned_elicitation();
             }
             AppEvent::Resize(_, _) => {
                 self.sessions.current_mut().render_cache.clear();
@@ -37,6 +38,19 @@ impl App {
                 crate::app::reducer::run_effects(self, effects);
             }
             AppEvent::Mouse(m) => self.handle_mouse(m),
+        }
+    }
+
+    /// Close the elicitation dialog once its requester dropped the answer channel, for example
+    /// when an `ask_user` question timed out, so a stale dialog never lingers.
+    fn drop_abandoned_elicitation(&mut self) {
+        let abandoned = self
+            .elicitation_state
+            .as_ref()
+            .and_then(|s| s.response_tx.as_ref())
+            .is_some_and(oneshot::Sender::is_closed);
+        if abandoned {
+            self.elicitation_state = None;
         }
     }
 

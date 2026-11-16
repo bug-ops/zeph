@@ -36,6 +36,7 @@ pub(crate) fn parse_telegram_user_ids(input: &str) -> Result<Vec<TelegramUserId>
 
 pub(super) mod agents;
 pub(super) mod durable;
+pub(super) mod interaction;
 pub(super) mod llm;
 pub(super) mod mcp;
 pub(super) mod memory;
@@ -46,6 +47,7 @@ pub(super) mod worktree;
 
 use agents::{step_agents, step_learning, step_orchestration, step_router};
 use durable::step_durable;
+use interaction::step_interaction;
 use llm::step_llm;
 use mcp::{step_mcp_discovery, step_mcp_remote, step_mcpls, write_mcpls_config};
 use memory::{step_context_compression, step_memory};
@@ -377,6 +379,9 @@ pub(crate) struct WizardState {
     pub(crate) type_aware_compose_enabled: bool,
     /// Widen the active set per classified query intent when type-aware composition is enabled.
     pub(crate) type_aware_compose_intent_scoped: bool,
+    // Model-callable ask_user tool and prompt-cache keepalive (specs 090 / 091)
+    pub(crate) ask_user_enabled: bool,
+    pub(crate) cache_keepalive_enabled: bool,
     // Worktree isolation for sub-agents (#4656)
     pub(crate) worktree_enabled: bool,
     pub(crate) worktree_bg_isolation: BgIsolation,
@@ -648,6 +653,8 @@ impl Default for WizardState {
             fidelity_enabled: false,
             type_aware_compose_enabled: false,
             type_aware_compose_intent_scoped: false,
+            ask_user_enabled: false,
+            cache_keepalive_enabled: false,
             worktree_enabled: false,
             worktree_bg_isolation: BgIsolation::Worktree,
             worktree_base_ref: WorktreeBaseRef::Head,
@@ -732,6 +739,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_lsp_context(&mut state)?;
     step_agents(&mut state)?;
     step_worktree(&mut state)?;
+    step_interaction(&mut state)?;
     step_router(&mut state)?;
     step_learning(&mut state)?;
     step_security(&mut state)?;
@@ -1061,6 +1069,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         complexity_routing: None,
         coe: None,
         stream_limits: zeph_config::StreamLimits::default(),
+        cache_keepalive: zeph_config::CacheKeepaliveConfig::default(),
     };
 
     // When postgres backend was chosen, sqlite_path is left at its serde default (unused).
@@ -1299,6 +1308,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.agents.default_memory_scope = state.agents_default_memory_scope;
     config.agents.forward_transcript = state.agents_forward_transcript;
     config.agents.peer_messaging.enabled = state.agents_peer_messaging_enabled;
+
+    config.tools.ask_user.enabled = state.ask_user_enabled;
+    config.llm.cache_keepalive.enabled = state.cache_keepalive_enabled;
 
     // Worktree isolation for sub-agents (#4656)
     if state.worktree_enabled {
@@ -3938,6 +3950,25 @@ mod tests {
         let config = build_config(&state);
         let p = &config.llm.providers[0];
         assert!(p.cocoon_access_hash.is_none());
+    }
+
+    #[test]
+    fn build_config_interaction_features_off_by_default() {
+        let config = build_config(&WizardState::default());
+        assert!(!config.tools.ask_user.enabled);
+        assert!(!config.llm.cache_keepalive.enabled);
+    }
+
+    #[test]
+    fn build_config_interaction_features_follow_wizard_answers() {
+        let state = WizardState {
+            ask_user_enabled: true,
+            cache_keepalive_enabled: true,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.tools.ask_user.enabled);
+        assert!(config.llm.cache_keepalive.enabled);
     }
 
     #[test]

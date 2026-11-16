@@ -291,6 +291,15 @@ impl<C: Channel + Send + 'static> ModelAccess for Agent<C> {
             }
         })
     }
+
+    // ----- /keepalive -----
+
+    fn handle_keepalive<'a>(
+        &'a mut self,
+        arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async move { self.keepalive_command(arg) })
+    }
 }
 
 #[cfg(test)]

@@ -24,6 +24,10 @@ pub(crate) struct AgentRuntime {
     pub(crate) metrics: MetricsState,
     pub(crate) debug: DebugState,
     pub(crate) instructions: InstructionState,
+    /// `ask_user` tool settings (spec 090).
+    pub(crate) ask_user: crate::agent::ask_user::AskUserState,
+    /// Prompt-cache keepalive settings (spec 091).
+    pub(crate) cache_keepalive: crate::agent::cache_keepalive::KeepaliveRuntime,
     /// Session-scoped ephemeral plugin directories loaded via `--plugin-url`.
     ///
     /// Holds the `TempDir` handles so extracted archives remain on disk for the session.

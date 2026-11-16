@@ -253,6 +253,13 @@ impl ModelAccess for NullAgent {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
         Box::pin(async { String::new() })
     }
+
+    fn handle_keepalive<'a>(
+        &'a mut self,
+        _arg: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
+        Box::pin(async { String::new() })
+    }
 }
 
 impl SkillAccess for NullAgent {

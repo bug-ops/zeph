@@ -685,7 +685,7 @@ pub(crate) struct ProviderState {
 /// Groups metrics and cost tracking state.
 pub(crate) struct MetricsState {
     pub(crate) metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
-    pub(crate) cost_tracker: Option<CostTracker>,
+    pub(crate) cost_tracker: Option<Arc<CostTracker>>,
     /// Usage snapshot for the LLM call the turn loop just made, awaiting the paired
     /// `messages` row's id (issue #6549). Consumed (`.take()`) at the next assistant
     /// message persist — see `persistence::store::persist_message_inner`'s eager-take.

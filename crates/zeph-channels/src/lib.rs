@@ -41,6 +41,7 @@
 #![cfg_attr(not(test), warn(clippy::string_slice))]
 
 mod any;
+mod ask_user;
 pub mod auth;
 pub mod cli;
 mod common;

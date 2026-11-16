@@ -191,6 +191,8 @@ status: moc
 
 ### Per-Turn Goal Self-Evaluation
 - [[089-per-turn-goal-self-evaluation/spec|Per-Turn Goal Self-Evaluation]] — `/goal check [condition]` advisory `GoalSupervisor::verify` call from any chat session, opt-in `[goals] auto_check` turn-end check
+- [[090-ask-user-model-callable-tool/spec|Model-callable ask_user Tool]] — opt-in `ask_user` built-in, `Channel::ask_user` default decline, fixed header, secret scrub, CLI/TUI/bot/ACP parity
+- [[091-prompt-cache-keepalive-pings/spec|Prompt-Cache Keepalive Pings]] — opt-in supervised idle service, `LlmProvider::keepalive_ping`, worst-case cost gate, `/keepalive`
 
 ---
 
@@ -315,6 +317,8 @@ status: moc
 | 087 | [[087-subagent-peer-messaging/spec\|Subagent Peer Messaging]] | specify | implemented |
 | 088 | [[088-prompt-cache-prefix-stability/spec\|Prompt Cache Prefix Stability]] | specify | approved |
 | 089 | [[089-per-turn-goal-self-evaluation/spec\|Per-Turn Goal Self-Evaluation]] | specify | approved |
+| 090 | [[090-ask-user-model-callable-tool/spec\|Model-callable ask_user Tool]] | specify | approved |
+| 091 | [[091-prompt-cache-keepalive-pings/spec\|Prompt-Cache Keepalive Pings]] | specify | approved |
 
 ---
 

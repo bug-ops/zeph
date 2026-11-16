@@ -117,6 +117,7 @@ pub(super) struct MessageAccessImpl<'a> {
     pub metrics: &'a MetricsState,
     pub security: &'a mut SecurityState,
     pub tool_orchestrator: &'a mut ToolOrchestrator,
+    pub keepalive: &'a crate::cache_keepalive::Shared,
 }
 
 impl MessageAccess for MessageAccessImpl<'_> {
@@ -127,6 +128,8 @@ impl MessageAccess for MessageAccessImpl<'_> {
         if let Some(sp) = system_prompt {
             self.msg.messages.push(sp);
         }
+        // The keepalive snapshot replays the history that was just cleared.
+        self.keepalive.clear_snapshot();
         // A new conversation re-pins its context layout on the first turn (spec 088).
         self.msg.layout.reset();
         // Clear tool dependency state (reset between conversations).
@@ -424,6 +427,7 @@ mod tests {
             metrics: &agent.runtime.metrics,
             security: &mut agent.services.security,
             tool_orchestrator: &mut agent.tool_orchestrator,
+            keepalive: agent.runtime.cache_keepalive.shared(),
         }
     }
 
@@ -582,6 +586,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn capture_keepalive_snapshot(agent: &Agent<MockChannel>) {
+        let shared = agent.runtime.cache_keepalive.shared();
+        shared.capture(
+            zeph_llm::provider::KeepaliveRequest {
+                provider: agent.provider.clone(),
+                messages: std::sync::Arc::from(vec![msg(Role::User, "old history")]),
+                tools: std::sync::Arc::from(Vec::new()),
+                target: None,
+            },
+            zeph_config::ServiceSpeed::default(),
+        );
+        assert!(shared.has_snapshot());
+    }
+
+    #[test]
+    fn slash_clear_path_drops_the_keepalive_snapshot() {
+        let mut agent = make_agent();
+        capture_keepalive_snapshot(&agent);
+        access(&mut agent).clear_history();
+        assert!(!agent.runtime.cache_keepalive.shared().has_snapshot());
+    }
+
+    #[test]
+    fn agent_clear_history_path_drops_the_keepalive_snapshot() {
+        let mut agent = make_agent();
+        capture_keepalive_snapshot(&agent);
+        agent.clear_history();
+        assert!(!agent.runtime.cache_keepalive.shared().has_snapshot());
     }
 
     #[test]

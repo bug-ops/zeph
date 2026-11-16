@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ask_user::AskUserConfig;
 use crate::providers::ProviderName;
 use zeph_common::SkillTrustLevel;
 
@@ -1548,6 +1549,9 @@ pub struct ToolsConfig {
     /// TACO self-evolving tool output compression configuration.
     #[serde(default)]
     pub compression: ToolCompressionConfig,
+    /// Model-callable `ask_user` tool (`[tools.ask_user]`).
+    #[serde(default)]
+    pub ask_user: AskUserConfig,
 }
 
 impl Default for ToolsConfig {
@@ -1577,6 +1581,7 @@ impl Default for ToolsConfig {
             sandbox: SandboxConfig::default(),
             egress: EgressConfig::default(),
             compression: ToolCompressionConfig::default(),
+            ask_user: AskUserConfig::default(),
         }
     }
 }

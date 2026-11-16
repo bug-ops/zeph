@@ -22,6 +22,11 @@ use zeph_memory::semantic::SemanticMemory;
 use super::AppState;
 use super::deps::ServeAgentDeps;
 
+/// Default-config [`zeph_core::InteractionConfig`] for the `ServeAgentDeps` literals of the tests.
+pub(crate) fn test_interaction() -> zeph_core::InteractionConfig {
+    zeph_core::InteractionConfig::from_config(&zeph_core::config::Config::default())
+}
+
 /// A condenser whose summarization threshold is never crossed — these router tests only care
 /// about routing/auth/serialization, not summarization behavior. Mirrors
 /// `handlers::tests::make_test_condenser` / `agent_factory::tests::make_test_condenser`.
@@ -121,6 +126,7 @@ impl ServeTestHarness {
             semantic_scan: false,
             semantic_scan_provider: String::new(),
             skill_state_enabled: false,
+            interaction: crate::serve::test_support::test_interaction(),
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,

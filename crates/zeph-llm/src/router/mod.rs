@@ -199,4 +199,6 @@ pub struct RouterProvider {
 }
 
 #[cfg(test)]
+mod keepalive_tests;
+#[cfg(test)]
 mod tests;

@@ -15,6 +15,10 @@ use crate::app::{App, InputMode};
 use crate::layout::truncate_to_width;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
+use crate::widgets::spinner::breeze_frame;
+
+/// Status text shown while a prompt-cache keepalive ping is in flight.
+const KEEPALIVE_STATUS: &str = "Warming prompt cache\u{2026}";
 
 /// Priority level for a status bar segment.
 ///
@@ -296,6 +300,7 @@ fn build_segment_lists(
 
     push_api_segment(&mut list, metrics, theme);
     push_speed_segment(&mut list, metrics, theme);
+    push_keepalive_segment(&mut list, app, metrics, theme);
     push_extra_low_segments(&mut list, app, metrics, theme);
 
     let uptime_spans = build_uptime_spans(metrics, theme);
@@ -394,6 +399,31 @@ fn push_api_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &T
     );
 }
 
+/// Spinner and status text while a prompt-cache keepalive ping is in flight (Spinner Rule,
+/// spec 011-tui): the ping is a background operation the user cannot otherwise see.
+fn push_keepalive_segment(
+    list: &mut SegmentList,
+    app: &App,
+    metrics: &MetricsSnapshot,
+    theme: &Theme,
+) {
+    if metrics.cache_keepalive != zeph_core::cache_keepalive::KeepaliveState::InFlight {
+        return;
+    }
+    let glyph = breeze_frame(
+        u64::from(app.throbber_state().index().cast_unsigned()),
+        app.is_ascii_only(),
+    );
+    list.push(
+        Priority::Medium,
+        vec![
+            Span::styled(" · ", theme.system_message),
+            Span::styled(glyph, theme.highlight),
+            Span::styled(format!(" {KEEPALIVE_STATUS}"), theme.system_message),
+        ],
+    );
+}
+
 fn push_speed_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &Theme) {
     if metrics.service_speed == zeph_config::ServiceSpeed::Fast {
         list.push(
@@ -425,6 +455,18 @@ fn push_extra_low_segments(
             Priority::Low,
             format!(" · ${:.4}", metrics.cost_spent_cents / 100.0),
             format!(" ${:.2}", metrics.cost_spent_cents / 100.0),
+            theme.status_bar,
+        );
+    }
+    if metrics.cache_keepalive_pings > 0 {
+        list.push_abbrev_styled(
+            Priority::Low,
+            format!(
+                " · keepalive {} ${:.4}",
+                metrics.cache_keepalive_pings,
+                metrics.cache_keepalive_cost_cents / 100.0
+            ),
+            format!(" ka{}", metrics.cache_keepalive_pings),
             theme.status_bar,
         );
     }
@@ -950,6 +992,42 @@ mod tests {
         };
         assert!(render(&fast).contains("fast"));
         assert!(!render(&MetricsSnapshot::default()).contains("fast"));
+    }
+
+    #[test]
+    fn status_bar_shows_warming_text_only_while_a_keepalive_ping_is_in_flight() {
+        use tokio::sync::mpsc;
+        use zeph_core::cache_keepalive::{KeepaliveState, StopReason};
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let app = App::new(user_tx, agent_rx);
+        let render = |state: KeepaliveState| {
+            let metrics = MetricsSnapshot {
+                cache_keepalive: state,
+                ..MetricsSnapshot::default()
+            };
+            render_to_string(180, 1, |frame, area| {
+                super::render(&app, &metrics, frame, area);
+            })
+        };
+        assert!(render(KeepaliveState::InFlight).contains("Warming prompt cache"));
+        assert!(!render(KeepaliveState::Idle).contains("Warming"));
+        let counted = MetricsSnapshot {
+            cache_keepalive_pings: 3,
+            cache_keepalive_cost_cents: 12.5,
+            ..MetricsSnapshot::default()
+        };
+        let shown = render_to_string(180, 1, |frame, area| {
+            super::render(&app, &counted, frame, area);
+        });
+        assert!(shown.contains("keepalive 3 $0.1250"), "{shown}");
+        assert!(!render(KeepaliveState::Idle).contains("keepalive"));
+        assert!(!render(KeepaliveState::Stopped(StopReason::CapReached)).contains("Warming"));
     }
 
     #[test]

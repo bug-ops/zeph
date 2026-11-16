@@ -6,6 +6,13 @@
 /// `zeph-llm` dependency.
 pub use zeph_llm::status::{StatusText, StatusUpdate};
 
+mod ask_user;
+pub use ask_user::{
+    ASK_USER_ANSWER_FIELD, ASK_USER_COMMAND_NOTICE, ASK_USER_HEADER, ASK_USER_RETRY_HINT,
+    AskUserAnswer, AskUserInputError, AskUserKind, AskUserOutcome, AskUserRequest, ChoiceOptions,
+    DeclineReason, OtherAnswer, ReplyKind, ReplyParseError, classify_reply,
+};
+
 /// A single field in an elicitation form request.
 ///
 /// Created by the MCP layer when a server sends an elicitation request; passed to
@@ -629,6 +636,23 @@ pub trait Channel: Send {
         async { Ok(ElicitationResponse::Declined) }
     }
 
+    /// Ask the user a model-authored question and wait for the answer.
+    ///
+    /// Implementations render [`ASK_USER_HEADER`] before the question, never block when no
+    /// interactive user exists, apply no timeout of their own (the agent owns the deadline), and
+    /// must be cancel-safe: dropping the future releases stdin, modals and receivers.
+    /// Default: [`AskUserOutcome::Declined`] with [`DeclineReason::NonInteractive`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn ask_user(
+        &mut self,
+        _request: AskUserRequest,
+    ) -> impl Future<Output = Result<AskUserOutcome, ChannelError>> + Send {
+        async { Ok(AskUserOutcome::Declined(DeclineReason::NonInteractive)) }
+    }
+
     /// Signal the non-default stop reason to the consumer before flushing.
     ///
     /// Called by the agent loop immediately before `flush_chunks()` when a
@@ -835,10 +859,50 @@ pub struct LoopbackHandle {
     pub cancel_signal: std::sync::Arc<tokio::sync::Notify>,
 }
 
+/// Answers `ask_user` questions on behalf of a [`LoopbackChannel`]'s remote client.
+///
+/// A loopback channel has no user of its own; a transport that does (for example an IDE
+/// connection) supplies a responder. Without one the channel declines every question.
+///
+/// Implementations must be cancel-safe: the agent drops the returned future when the question
+/// times out or the turn is cancelled, and they must not apply a deadline of their own.
+///
+/// # Examples
+///
+/// ```
+/// use std::pin::Pin;
+/// use zeph_core::channel::{
+///     AskUserOutcome, AskUserRequest, AskUserResponder, ChannelError, DeclineReason,
+/// };
+///
+/// struct AlwaysDecline;
+///
+/// impl AskUserResponder for AlwaysDecline {
+///     fn ask(
+///         &self,
+///         _request: AskUserRequest,
+///     ) -> Pin<Box<dyn Future<Output = Result<AskUserOutcome, ChannelError>> + Send + '_>> {
+///         Box::pin(async { Ok(AskUserOutcome::Declined(DeclineReason::Unsupported)) })
+///     }
+/// }
+/// ```
+pub trait AskUserResponder: Send + Sync {
+    /// Show `request` to the remote user and wait for the outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transport fails while asking.
+    fn ask(
+        &self,
+        request: AskUserRequest,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<AskUserOutcome, ChannelError>> + Send + '_>>;
+}
+
 /// Headless channel bridging an A2A `TaskProcessor` with the agent loop.
 pub struct LoopbackChannel {
     input_rx: tokio::sync::mpsc::Receiver<ChannelMessage>,
     output_tx: tokio::sync::mpsc::Sender<LoopbackEvent>,
+    ask_user_responder: Option<std::sync::Arc<dyn AskUserResponder>>,
 }
 
 impl LoopbackChannel {
@@ -852,6 +916,7 @@ impl LoopbackChannel {
             Self {
                 input_rx,
                 output_tx,
+                ask_user_responder: None,
             },
             LoopbackHandle {
                 input_tx,
@@ -859,6 +924,43 @@ impl LoopbackChannel {
                 cancel_signal,
             },
         )
+    }
+}
+
+impl LoopbackChannel {
+    /// Route `ask_user` questions to `responder` instead of declining them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use zeph_core::channel::{
+    ///     AskUserOutcome, AskUserRequest, AskUserResponder, ChannelError, DeclineReason,
+    ///     LoopbackChannel,
+    /// };
+    ///
+    /// struct AlwaysDecline;
+    ///
+    /// impl AskUserResponder for AlwaysDecline {
+    ///     fn ask(
+    ///         &self,
+    ///         _request: AskUserRequest,
+    ///     ) -> std::pin::Pin<Box<dyn Future<Output = Result<AskUserOutcome, ChannelError>> + Send + '_>>
+    ///     {
+    ///         Box::pin(async { Ok(AskUserOutcome::Declined(DeclineReason::Unsupported)) })
+    ///     }
+    /// }
+    ///
+    /// let (channel, _handle) = LoopbackChannel::pair(4);
+    /// let _channel = channel.with_ask_user_responder(Arc::new(AlwaysDecline));
+    /// ```
+    #[must_use]
+    pub fn with_ask_user_responder(
+        mut self,
+        responder: std::sync::Arc<dyn AskUserResponder>,
+    ) -> Self {
+        self.ask_user_responder = Some(responder);
+        self
     }
 }
 
@@ -938,6 +1040,13 @@ impl Channel for LoopbackChannel {
         _prompt: &str,
     ) -> impl std::future::Future<Output = Result<bool, ChannelError>> + Send {
         std::future::ready(Ok(true))
+    }
+
+    async fn ask_user(&mut self, request: AskUserRequest) -> Result<AskUserOutcome, ChannelError> {
+        match &self.ask_user_responder {
+            Some(responder) => responder.ask(request).await,
+            None => Ok(AskUserOutcome::Declined(DeclineReason::NonInteractive)),
+        }
     }
 
     async fn send_stop_hint(&mut self, hint: StopHint) -> Result<(), ChannelError> {
