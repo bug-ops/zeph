@@ -1517,7 +1517,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         // Workspace roots and language server settings are written to .zeph/mcpls.toml
         // by write_mcpls_config() in step_review_and_write().
         config.mcp.servers.push(McpServerConfig {
-            id: "mcpls".to_owned(),
+            id: "mcpls".into(),
             command: Some("mcpls".to_owned()),
             args: vec!["--config".to_owned(), ".zeph/mcpls.toml".to_owned()],
             env: std::collections::HashMap::new(),
@@ -2892,7 +2892,7 @@ mod tests {
         // `config.mcp.servers` unchanged (#6241).
         let state = WizardState {
             mcp_remote_servers: vec![McpServerConfig {
-                id: "vision-tool".to_owned(),
+                id: "vision-tool".into(),
                 command: None,
                 args: Vec::new(),
                 env: std::collections::HashMap::new(),
@@ -2930,7 +2930,7 @@ mod tests {
     fn build_config_mcp_remote_server_media_passthrough_defaults_false() {
         let state = WizardState {
             mcp_remote_servers: vec![McpServerConfig {
-                id: "text-tool".to_owned(),
+                id: "text-tool".into(),
                 command: None,
                 args: Vec::new(),
                 env: std::collections::HashMap::new(),

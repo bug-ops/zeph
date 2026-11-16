@@ -36,6 +36,7 @@ mod loop_event;
 mod lsp_commands;
 mod magic_docs;
 mod mcp;
+pub use mcp::McpToolScope;
 pub(crate) mod memcot;
 mod memory_commands;
 mod message_queue;

@@ -164,7 +164,7 @@ pub use semantic_index::{
     DiscoveryParams, SemanticIndexError, SemanticToolIndex, ToolDiscoveryStrategy,
 };
 pub use tool::{McpTool, infer_security_meta};
-pub use tool_list::{McpToolList, McpToolListReader, McpToolListWriter};
+pub use tool_list::{ExposedMcpTools, McpToolList, McpToolListReader, McpToolListWriter};
 pub use trust_score::{ServerTrustScore, TrustScoreStore};
 pub use zeph_config::mcp_security::{
     CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta,

@@ -944,6 +944,13 @@ pub trait ToolExecutor: Send + Sync {
         vec![]
     }
 
+    /// MCP dispatch ids this executor serves, shared as an `Arc` so wrappers can forward it
+    /// without cloning the map.
+    // STUB(#7080): default derives the ids from `tool_definitions`; implemented later.
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        todo!()
+    }
+
     /// Execute a structured tool call. Returns `Ok(None)` if `call.tool_id` is not handled.
     ///
     /// # Errors
@@ -1094,6 +1101,12 @@ pub trait ErasedToolExecutor: Send + Sync {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>;
 
     fn tool_definitions_erased(&self) -> Vec<crate::registry::ToolDef>;
+
+    /// Object-safe form of [`ToolExecutor::mcp_dispatch_ids`].
+    // STUB(#7080): default derives the ids from `tool_definitions_erased`; implemented later.
+    fn mcp_dispatch_ids_erased(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        todo!()
+    }
 
     fn execute_tool_call_erased<'a>(
         &'a self,

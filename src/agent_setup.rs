@@ -2535,7 +2535,7 @@ fn resolve_search_lsp_server_id(config: &Config) -> Option<String> {
                     .is_some_and(|command| command.ends_with("mcpls"))
             })
         })
-        .map(|server| server.id.clone())
+        .map(|server| server.id.to_string())
 }
 
 #[cfg(feature = "candle")]

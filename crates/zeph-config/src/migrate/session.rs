@@ -82,6 +82,16 @@ pub fn migrate_acp_subagents_config(toml_src: &str) -> Result<MigrationResult, M
     })
 }
 
+/// Add a commented-out `[acp.ide_mcp]` block if the config lacks it (#7081, #7082).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] when the document cannot be processed.
+// STUB(#7081): body and pipeline registration land with the implementation step.
+pub fn migrate_acp_ide_mcp_config(_toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    todo!()
+}
+
 /// Add a commented-out `[[acp.auth_clients]]` block if the config lacks it (#5868).
 ///
 /// Introduced alongside named-client bearer-token isolation for ACP HTTP/WS session

@@ -101,6 +101,13 @@ impl McpToolIds {
         joined
     }
 
+    /// Union of `a` and `b` that returns an existing `Arc` when the union equals it.
+    // STUB(#7080): short-circuits (empty / ptr_eq / subset) implemented later.
+    #[must_use]
+    pub fn join_arc(_a: &Arc<Self>, _b: &Arc<Self>) -> Arc<Self> {
+        todo!()
+    }
+
     /// Returns `true` when `id` is a registered MCP dispatch id.
     #[must_use]
     pub fn contains(&self, id: &str) -> bool {

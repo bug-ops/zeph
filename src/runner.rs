@@ -3110,7 +3110,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_mcp_server_outcomes(mcp_outcomes);
-    let agent = agent.with_mcp_tool_rx(mcp_tool_rx);
+    let agent = agent.with_mcp_tool_rx(mcp_tool_rx, zeph_core::agent::McpToolScope::AllServers);
     let agent = if let Some(rx) = mcp_elicitation_rx {
         agent.with_mcp_elicitation_rx(rx)
     } else {

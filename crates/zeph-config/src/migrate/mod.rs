@@ -77,7 +77,7 @@ pub use memory::{
 pub use plugins::migrate_plugins_reputation_config;
 pub use serve::migrate_serve_config;
 pub use session::{
-    migrate_acp_auth_clients_config, migrate_acp_subagents_config,
+    migrate_acp_auth_clients_config, migrate_acp_ide_mcp_config, migrate_acp_subagents_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,

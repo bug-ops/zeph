@@ -1164,6 +1164,7 @@ impl<C: Channel> Agent<C> {
     pub fn with_mcp_tool_rx(
         mut self,
         rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
+        _scope: super::McpToolScope,
     ) -> Self {
         self.services.mcp.tool_rx = Some(rx);
         self

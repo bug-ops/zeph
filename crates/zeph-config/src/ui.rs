@@ -751,6 +751,48 @@ pub struct AcpConfig {
     /// clients via the `model_config` `session/set_config_option` category (schema 1.1.0+).
     #[serde(default)]
     pub model_config: AcpModelConfigConfig,
+    /// Operator grants and per-session cap for IDE-provided MCP servers (`[acp.ide_mcp]`).
+    // STUB(#7081): serde wiring (`#[serde(default)]`, grant parsing) lands with the implementation.
+    #[serde(skip)]
+    pub ide_mcp: AcpIdeMcpConfig,
+}
+
+/// Operator policy for MCP servers an ACP client attaches to a session (`[acp.ide_mcp]`).
+// STUB(#7081): defaults (cap 10) and serde derive are added by the implementation step.
+#[derive(Debug, Clone, Default)]
+pub struct AcpIdeMcpConfig {
+    /// Maximum IDE MCP servers attached per session; `0` disables IDE servers.
+    pub max_servers_per_session: usize,
+    /// Grants keyed by the IDE-supplied server name.
+    pub servers: std::collections::BTreeMap<String, AcpIdeMcpGrant>,
+}
+
+/// One operator grant for an IDE-provided MCP server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpIdeMcpGrant {
+    /// Exact transport the grant is pinned to.
+    pub target: AcpIdeMcpTarget,
+    /// Tool names the server may expose.
+    pub tools: Vec<String>,
+}
+
+/// Transport pin of an [`AcpIdeMcpGrant`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcpIdeMcpTarget {
+    /// Stdio server pinned by command, args and the set of allowed env keys.
+    Stdio {
+        /// Executable.
+        command: String,
+        /// Arguments, matched exactly.
+        args: Vec<String>,
+        /// Env keys the IDE may send; values are not pinned.
+        env_keys: std::collections::BTreeSet<String>,
+    },
+    /// HTTP/SSE server pinned by URL.
+    Http {
+        /// Server URL, matched exactly.
+        url: String,
+    },
 }
 
 impl Default for AcpConfig {
@@ -776,6 +818,7 @@ impl Default for AcpConfig {
             subagents: AcpSubagentsConfig::default(),
             timeouts: AcpTimeoutsConfig::default(),
             model_config: AcpModelConfigConfig::default(),
+            ide_mcp: AcpIdeMcpConfig::default(),
         }
     }
 }
@@ -806,6 +849,7 @@ impl std::fmt::Debug for AcpConfig {
             .field("subagents", &self.subagents)
             .field("timeouts", &self.timeouts)
             .field("model_config", &self.model_config)
+            .field("ide_mcp", &self.ide_mcp)
             .finish()
     }
 }

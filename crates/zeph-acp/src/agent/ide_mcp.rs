@@ -263,6 +263,7 @@ fn scoped_entries(
     servers: &[acp::schema::v1::McpServer],
     session_id: &str,
     elicitation_default_timeout_secs: u64,
+    _grants: &zeph_config::AcpIdeMcpConfig,
 ) -> Vec<ServerEntry> {
     let mut seen = HashSet::new();
     acp_mcp_servers_to_entries(servers, elicitation_default_timeout_secs)
@@ -297,6 +298,7 @@ impl ZephAcpAgentState {
             servers,
             &session_id.to_string(),
             self.timeouts.elicitation_secs,
+            &zeph_config::AcpIdeMcpConfig::default(),
         );
         if entries.is_empty() {
             return IdeMcpAttachment::empty();
@@ -345,6 +347,9 @@ impl ZephAcpAgentState {
         });
     }
 }
+
+#[cfg(test)]
+mod grant_tests;
 
 #[cfg(test)]
 mod tests {
@@ -490,7 +495,12 @@ mod tests {
             McpServer::Stdio(McpServerStdio::new("dup", "/bin/b")),
             McpServer::Stdio(McpServerStdio::new("other", "/bin/c")),
         ];
-        let entries = scoped_entries(&servers, "0123456789", 120);
+        let entries = scoped_entries(
+            &servers,
+            "0123456789",
+            120,
+            &zeph_config::AcpIdeMcpConfig::default(),
+        );
         let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["dup-01234567", "other-01234567"]);
     }

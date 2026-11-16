@@ -898,7 +898,7 @@ async fn check_mcp_server(
         .unwrap_or(mcp_config.elicitation_enabled);
 
     let entry = ServerEntry {
-        id: server.id.clone(),
+        id: server.id.to_string(),
         transport,
         timeout: Duration::from_secs(server.timeout),
         trust_level: server.trust_level,
@@ -915,7 +915,7 @@ async fn check_mcp_server(
         media_passthrough: server.media_passthrough,
     };
 
-    let enforcer = PolicyEnforcer::new(vec![(server.id.clone(), McpPolicy::default())]);
+    let enforcer = PolicyEnforcer::new(vec![(server.id.to_string(), McpPolicy::default())]);
     let manager =
         McpManager::with_elicitation_capacity(vec![entry.clone()], Vec::new(), enforcer, 1);
 

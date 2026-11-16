@@ -233,7 +233,7 @@ pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
         };
 
         state.mcp_remote_servers.push(McpServerConfig {
-            id,
+            id: id.into(),
             command: None,
             args: Vec::new(),
             env: std::collections::HashMap::new(),

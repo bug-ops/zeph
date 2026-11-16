@@ -2083,4 +2083,6 @@ fn normalize_for_openai_strict(schema: &mut serde_json::Value, depth: u8) {
 }
 
 #[cfg(test)]
+mod message_scrub_tests;
+#[cfg(test)]
 mod tests;

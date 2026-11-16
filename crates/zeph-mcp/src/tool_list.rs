@@ -105,6 +105,12 @@ impl McpToolListWriter {
         *self.exposed.write() = pruned;
     }
 
+    /// Re-expose the full published list after a prune, keeping the published ids `Arc`.
+    // STUB(#7080): implemented with the publish-time cache.
+    pub fn expose_full(&self) {
+        todo!()
+    }
+
     /// A read handle onto the id registry this writer publishes.
     #[must_use]
     pub fn ids_handle(&self) -> McpToolIdsHandle {
@@ -118,12 +124,31 @@ pub struct McpToolListReader {
     exposed: Arc<RwLock<Vec<McpTool>>>,
 }
 
+/// Immutable view of the exposed tools together with the dispatch ids published with them.
+#[derive(Debug)]
+pub struct ExposedMcpTools {
+    /// Tools the executor may dispatch.
+    pub tools: Vec<McpTool>,
+    /// Dispatch ids covering the full published list.
+    pub ids: Arc<McpToolIds>,
+}
+
 impl McpToolListReader {
+    /// Cheap consistent snapshot of the exposed tools and their ids.
+    // STUB(#7080): implemented with the publish-time cache.
+    #[must_use]
+    pub fn snapshot(&self) -> Arc<ExposedMcpTools> {
+        todo!()
+    }
+
     /// Lock the exposed list for reading. Never hold the guard across an `.await`.
     pub fn read(&self) -> RwLockReadGuard<'_, Vec<McpTool>> {
         self.exposed.read()
     }
 }
+
+#[cfg(test)]
+mod published_cache_tests;
 
 #[cfg(test)]
 mod tests {

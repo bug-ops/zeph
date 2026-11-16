@@ -284,6 +284,16 @@ pub struct ServerConnectOutcome {
     pub output_schemas_dropped: usize,
 }
 
+/// Flatten per-server tool lists in configured order, then remaining server ids ascending.
+// STUB(#7087): implemented when `server_tools` iteration is made deterministic.
+#[allow(dead_code)]
+fn tools_in_server_order(
+    _tools: &HashMap<zeph_common::types::McpServerId, Vec<McpTool>>,
+    _configured: &[zeph_common::types::McpServerId],
+) -> Vec<McpTool> {
+    todo!()
+}
+
 /// Multi-server MCP lifecycle manager.
 ///
 /// `McpManager` owns connections to all configured MCP servers. It drives the full
@@ -447,5 +457,7 @@ mod ingest;
 mod retry;
 mod server;
 
+#[cfg(test)]
+mod server_order_tests;
 #[cfg(test)]
 mod tests;

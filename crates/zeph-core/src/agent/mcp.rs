@@ -5,6 +5,16 @@ use rmcp::model::{ElicitResult, ElicitationAction};
 
 use super::{Agent, Channel, LlmProvider};
 
+/// Which MCP servers' tools an agent may see on `tools/list_changed` refreshes.
+// STUB(#7083): scope filtering is implemented in `check_tool_refresh` by the implementation step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpToolScope {
+    /// Every connected server (runner, daemon).
+    AllServers,
+    /// Only the listed servers (ACP session: static ids plus attached IDE ids).
+    Servers(std::collections::HashSet<zeph_common::types::McpServerId>),
+}
+
 /// Render the `/mcp list` "Shadowed tools" section; empty when nothing is shadowed.
 fn format_shadowed_tools(collisions: &[zeph_mcp::tool::ToolCollision]) -> String {
     use std::fmt::Write;
