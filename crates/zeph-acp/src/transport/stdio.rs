@@ -117,7 +117,7 @@ pub(crate) async fn build_agent_state(
     if !server_config.auth_methods.is_empty() {
         agent = agent.with_auth_methods(server_config.auth_methods);
     }
-    agent = agent.with_timeouts(server_config.timeouts);
+    agent = agent.with_timeouts((*server_config.timeouts).clone());
     agent = agent.with_model_config(server_config.model_config);
     agent = agent.with_ide_mcp_config(server_config.ide_mcp);
 

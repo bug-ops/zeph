@@ -61,7 +61,6 @@ impl ZephAcpAgentState {
             auth_methods_config: vec![zeph_core::config::AcpAuthMethod::Agent],
             timeouts: zeph_config::AcpTimeoutsConfig::default(),
             model_config: zeph_config::AcpModelConfigConfig::default(),
-            ide_mcp_config: zeph_config::AcpIdeMcpConfig::default(),
             prompt_injection_detector: ContentSanitizer::new(&ContentIsolationConfig {
                 spotlight_untrusted: false,
                 ..ContentIsolationConfig::default()
@@ -115,8 +114,11 @@ impl ZephAcpAgentState {
     /// Configure operator grants and the per-session cap for IDE-attached MCP servers
     /// (`[acp.ide_mcp]`).
     #[must_use]
-    pub fn with_ide_mcp_config(mut self, ide_mcp: zeph_config::AcpIdeMcpConfig) -> Self {
-        self.ide_mcp_config = ide_mcp;
+    pub fn with_ide_mcp_config(
+        mut self,
+        ide_mcp: std::sync::Arc<zeph_config::AcpIdeMcpConfig>,
+    ) -> Self {
+        self.ide_mcp = Arc::new(super::ide_mcp::IdeMcpRegistry::with_config(ide_mcp));
         self
     }
 

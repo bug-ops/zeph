@@ -132,12 +132,20 @@ pub(crate) struct IdeMcpRegistry {
     release_tx: mpsc::UnboundedSender<ReleaseRequest>,
     release_rx: Mutex<mpsc::UnboundedReceiver<ReleaseRequest>>,
     release_task_started: AtomicBool,
+    /// Operator grants and cap (`[acp.ide_mcp]`). Held here, behind the registry's `Arc`, so the
+    /// agent state and the connection futures built around it stay small.
+    config: std::sync::Arc<zeph_config::AcpIdeMcpConfig>,
 }
 
 impl IdeMcpRegistry {
     pub(crate) fn new() -> Self {
+        Self::with_config(std::sync::Arc::new(zeph_config::AcpIdeMcpConfig::default()))
+    }
+
+    pub(crate) fn with_config(config: std::sync::Arc<zeph_config::AcpIdeMcpConfig>) -> Self {
         let (release_tx, release_rx) = mpsc::unbounded_channel();
         Self {
+            config,
             owners: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(0),
             release_tx,
@@ -381,7 +389,7 @@ impl ZephAcpAgentState {
             servers,
             &session_id.to_string(),
             self.timeouts.elicitation_secs,
-            &self.ide_mcp_config,
+            &self.ide_mcp.config,
         );
         if entries.is_empty() {
             return IdeMcpAttachment::empty();

@@ -601,11 +601,11 @@ pub(crate) struct SharedAgentDeps {
     /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
     acp_message_ids_enabled: bool,
     /// ACP timeout configuration (elicitation, terminal, MCP).
-    acp_timeouts: zeph_config::AcpTimeoutsConfig,
+    acp_timeouts: std::sync::Arc<zeph_config::AcpTimeoutsConfig>,
     /// ACP model-related configuration parameters (`[acp.model_config]`).
     acp_model_config: zeph_config::AcpModelConfigConfig,
     /// ACP IDE MCP grants and cap (`[acp.ide_mcp]`).
-    acp_ide_mcp: zeph_config::AcpIdeMcpConfig,
+    acp_ide_mcp: std::sync::Arc<zeph_config::AcpIdeMcpConfig>,
     /// Resolves current per-plugin skill dirs at hot-reload time.
     plugin_dirs_supplier: std::sync::Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 
@@ -1364,9 +1364,9 @@ async fn build_acp_deps(
         acp_additional_directories: config.acp.additional_directories.clone(),
         acp_auth_methods: config.acp.auth_methods.clone(),
         acp_message_ids_enabled: config.acp.message_ids_enabled,
-        acp_timeouts: config.acp.timeouts.clone(),
+        acp_timeouts: std::sync::Arc::new(config.acp.timeouts.clone()),
         acp_model_config: config.acp.model_config.clone(),
-        acp_ide_mcp: config.acp.ide_mcp.clone(),
+        acp_ide_mcp: std::sync::Arc::new(config.acp.ide_mcp.clone()),
         plugin_dirs_supplier: std::sync::Arc::new(plugin_dirs_supplier),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
@@ -2941,9 +2941,9 @@ pub(crate) async fn run_acp_http_server(
         additional_directories: app.config().acp.additional_directories.clone(),
         auth_methods: app.config().acp.auth_methods.clone(),
         message_ids_enabled: app.config().acp.message_ids_enabled,
-        timeouts: app.config().acp.timeouts.clone(),
+        timeouts: std::sync::Arc::new(app.config().acp.timeouts.clone()),
         model_config: app.config().acp.model_config.clone(),
-        ide_mcp: app.config().acp.ide_mcp.clone(),
+        ide_mcp: std::sync::Arc::new(app.config().acp.ide_mcp.clone()),
     };
     let shared_deps: Arc<RwLock<Option<Arc<SharedAgentDeps>>>> = Arc::new(RwLock::new(None));
     let shared_deps_for_spawner = Arc::clone(&shared_deps);
