@@ -301,6 +301,10 @@ impl ErasedToolExecutor for PeerToolExecutor {
         self.inner.execute_confirmed_erased(response)
     }
 
+    fn mcp_dispatch_ids_erased(&self) -> std::sync::Arc<zeph_tools::McpToolIds> {
+        self.inner.mcp_dispatch_ids_erased()
+    }
+
     fn tool_definitions_erased(&self) -> Vec<ToolDef> {
         let mut defs = self.inner.tool_definitions_erased();
         defs.push(ToolDef {

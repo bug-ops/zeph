@@ -195,6 +195,10 @@ impl<T: ToolExecutor> ToolExecutor for AdversarialPolicyGateExecutor<T> {
         self.inner.execute_confirmed(response).await
     }
 
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        self.inner.mcp_dispatch_ids()
+    }
+
     // CRIT-06: delegate all pass-through methods to inner executor.
     fn tool_definitions(&self) -> Vec<ToolDef> {
         self.inner.tool_definitions()

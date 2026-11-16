@@ -4360,13 +4360,18 @@ mod tests {
         );
         let mut cache = QueryEmbedCache::default();
         agent.discover_mcp_tools_for_turn("query", &mut cache).await;
-        assert_eq!(reader.read().len(), 1);
+        assert_eq!(reader.snapshot().tools.len(), 1);
 
         let mut failed = QueryEmbedCache::Failed;
         agent
             .discover_mcp_tools_for_turn("query", &mut failed)
             .await;
-        let names: Vec<String> = reader.read().iter().map(|t| t.name.clone()).collect();
+        let names: Vec<String> = reader
+            .snapshot()
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
         assert_eq!(
             names,
             ["mcp_tool"],

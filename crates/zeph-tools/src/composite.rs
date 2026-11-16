@@ -59,6 +59,13 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
         self.second.execute_confirmed(response).await
     }
 
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        crate::registry::McpToolIds::join_arc(
+            &self.first.mcp_dispatch_ids(),
+            &self.second.mcp_dispatch_ids(),
+        )
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDef> {
         let mut defs = self.first.tool_definitions();
         let seen: std::collections::HashSet<String> =

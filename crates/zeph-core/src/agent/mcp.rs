@@ -1379,7 +1379,7 @@ mod tests {
         agent.check_tool_refresh().await;
 
         assert!(handle.contains("srv_refreshed_tool"));
-        assert_eq!(reader.read().len(), 1);
+        assert_eq!(reader.snapshot().tools.len(), 1);
     }
 
     #[tokio::test]
@@ -1404,7 +1404,8 @@ mod tests {
         assert!(handle.contains("srv_refreshed_tool"));
         assert!(
             reader
-                .read()
+                .snapshot()
+                .tools
                 .iter()
                 .all(|t| t.server_id.as_str() != "stale_server")
         );
@@ -1436,10 +1437,10 @@ mod tests {
         state.tool_list = Some(writer);
         state.set_tools(vec![refreshed_tool("a"), refreshed_tool("b")]);
         state.apply_pruned_tools(vec![refreshed_tool("a")]);
-        assert_eq!(reader.read().len(), 1);
+        assert_eq!(reader.snapshot().tools.len(), 1);
         assert!(handle.contains("srv_b"));
         state.sync_executor_tools();
-        assert_eq!(reader.read().len(), 2);
+        assert_eq!(reader.snapshot().tools.len(), 2);
     }
 
     #[test]

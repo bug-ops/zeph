@@ -1366,7 +1366,7 @@ impl McpState {
     /// it already covers the full list.
     pub(crate) fn sync_executor_tools(&self) {
         if let Some(ref list) = self.tool_list {
-            list.publish_pruned(self.tools.clone());
+            list.expose_full();
         }
     }
 

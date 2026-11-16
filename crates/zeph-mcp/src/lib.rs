@@ -73,7 +73,7 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let server = ServerEntry {
-//!     id: "filesystem".to_owned(),
+//!     id: "filesystem".into(),
 //!     transport: McpTransport::Stdio {
 //!         command: "npx".to_owned(),
 //!         args: vec!["-y".to_owned(), "@modelcontextprotocol/server-filesystem".to_owned()],

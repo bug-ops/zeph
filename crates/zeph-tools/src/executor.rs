@@ -946,9 +946,15 @@ pub trait ToolExecutor: Send + Sync {
 
     /// MCP dispatch ids this executor serves, shared as an `Arc` so wrappers can forward it
     /// without cloning the map.
-    // STUB(#7080): default derives the ids from `tool_definitions`; implemented later.
+    ///
+    /// The default derives the ids from [`tool_definitions`](Self::tool_definitions), so an
+    /// executor that does not override it is still classified correctly, only slower.
+    /// Executors that cache their ids (the MCP executor) or wrap another executor (gates,
+    /// filters, composites) override it to return or forward the shared `Arc`.
     fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
-        todo!()
+        std::sync::Arc::new(crate::registry::McpToolIds::from_definitions(
+            &self.tool_definitions(),
+        ))
     }
 
     /// Execute a structured tool call. Returns `Ok(None)` if `call.tool_id` is not handled.
@@ -1102,10 +1108,12 @@ pub trait ErasedToolExecutor: Send + Sync {
 
     fn tool_definitions_erased(&self) -> Vec<crate::registry::ToolDef>;
 
-    /// Object-safe form of [`ToolExecutor::mcp_dispatch_ids`].
-    // STUB(#7080): default derives the ids from `tool_definitions_erased`; implemented later.
+    /// Object-safe form of [`ToolExecutor::mcp_dispatch_ids`]; the default derives the ids
+    /// from [`tool_definitions_erased`](Self::tool_definitions_erased).
     fn mcp_dispatch_ids_erased(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
-        todo!()
+        std::sync::Arc::new(crate::registry::McpToolIds::from_definitions(
+            &self.tool_definitions_erased(),
+        ))
     }
 
     fn execute_tool_call_erased<'a>(
@@ -1194,6 +1202,10 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
         self.tool_definitions()
     }
 
+    fn mcp_dispatch_ids_erased(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        self.mcp_dispatch_ids()
+    }
+
     fn execute_tool_call_erased<'a>(
         &'a self,
         call: &'a ToolCall,
@@ -1270,6 +1282,10 @@ impl ToolExecutor for DynExecutor {
 
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
         self.0.tool_definitions_erased()
+    }
+
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        self.0.mcp_dispatch_ids_erased()
     }
 
     fn execute_tool_call(

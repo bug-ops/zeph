@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 
 use zeph_common::ToolName;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, extract_fenced_blocks};
-use zeph_tools::registry::{InvocationHint, ToolDef};
+use zeph_tools::registry::ToolDef;
 
 use crate::manager::McpManager;
 use crate::tool::McpTool;
@@ -294,19 +294,7 @@ impl McpToolExecutor {
 
 impl ToolExecutor for McpToolExecutor {
     fn tool_definitions(&self) -> Vec<ToolDef> {
-        let tools = self.tools.read();
-        tools
-            .iter()
-            .map(|t| ToolDef {
-                id: t.sanitized_id().into(),
-                description: t.description.clone().into(),
-                schema: serde_json::from_value(t.input_schema.clone())
-                    .unwrap_or_else(|_| schemars::Schema::default()),
-                invocation: InvocationHint::ToolCall,
-                output_schema: t.output_schema.clone(),
-                server_id: Some(t.server_id.clone()),
-            })
-            .collect()
+        self.tools.snapshot().definitions()
     }
 
     #[cfg_attr(
@@ -318,13 +306,11 @@ impl ToolExecutor for McpToolExecutor {
         //
         // ToolOutput.tool_name is set to qualified_name() for display and audit only. Trust
         // classification keys on the sanitized-id registry and ClaimSource::Mcp, not on the name.
-        let found = {
-            let tools = self.tools.read();
-            tools
-                .iter()
-                .find(|t| t.sanitized_id() == call.tool_id)
-                .cloned()
-        };
+        let found = self
+            .tools
+            .snapshot()
+            .find_by_dispatch_id(call.tool_id.as_ref())
+            .cloned();
         let Some(tool) = found else {
             return Ok(None);
         };
@@ -370,15 +356,13 @@ impl ToolExecutor for McpToolExecutor {
 
             // SECURITY: Validate server:tool against the registered tool list before dispatch.
             // This prevents a prompt injection from routing calls to unregistered servers or tools.
-            let found = {
-                let tools = self.tools.read();
-                tools
-                    .iter()
-                    .find(|t| {
-                        t.server_id == instruction.server.as_str() && t.name == instruction.tool
-                    })
-                    .cloned()
-            };
+            let found = self
+                .tools
+                .snapshot()
+                .tools
+                .iter()
+                .find(|t| t.server_id == instruction.server.as_str() && t.name == instruction.tool)
+                .cloned();
             let Some(tool) = found else {
                 return Err(ToolError::Execution(std::io::Error::other(format!(
                     "MCP tool {}:{} not in registered tool list",
@@ -417,6 +401,10 @@ impl ToolExecutor for McpToolExecutor {
             claim_source: Some(zeph_tools::ClaimSource::Mcp),
             ..Default::default()
         }))
+    }
+
+    fn mcp_dispatch_ids(&self) -> Arc<zeph_tools::McpToolIds> {
+        Arc::clone(&self.tools.snapshot().ids)
     }
 
     zeph_tools::tool_executor_no_inner_defaults!();
