@@ -119,6 +119,12 @@ pub struct AcpContext {
     /// to the session's own tool list: the servers are registered on the shared manager under
     /// session-scoped ids and are released when the session ends.
     pub ide_mcp_tools: Vec<zeph_mcp::McpTool>,
+    /// Ids of the IDE MCP servers attached to this session, including tool-less ones.
+    ///
+    /// The spawner admits them (plus the statically configured servers) in the session's
+    /// `McpToolScope`, so later `tools/list_changed` refreshes of these servers reach only this
+    /// session.
+    pub ide_mcp_servers: Vec<zeph_common::types::McpServerId>,
     /// Handle for proactively notifying the client outside of the prompt-drain path.
     ///
     /// See [`SessionStatusNotifier`] for why this exists alongside `LoopbackChannel::send_status`.
@@ -568,6 +574,7 @@ impl ZephAcpAgentState {
             lsp_provider,
             diagnostics_cache: Arc::clone(&self.diagnostics_cache),
             ide_mcp_tools: Vec::new(),
+            ide_mcp_servers: Vec::new(),
             status_notifier: SessionStatusNotifier::new(notify_tx, session_id.clone()),
             #[cfg(feature = "unstable-elicitation")]
             elicitation_bridge: elicitation_tx.map(|tx| elicitation::ElicitationBridge {

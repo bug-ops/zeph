@@ -1510,6 +1510,8 @@ where
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
     mcp_config: zeph_core::config::McpConfig,
+    mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
+    mcp_tool_scope: zeph_core::agent::McpToolScope,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
     trajectory_config: zeph_core::config::TrajectoryConfig,
@@ -1596,6 +1598,7 @@ where
         Some(deps.mcp_manager),
         &deps.mcp_config,
     )
+    .with_mcp_tool_rx(deps.mcp_tool_rx, deps.mcp_tool_scope)
     .with_focus_and_sidequest_config(deps.focus_config, deps.sidequest_config)
     .with_trajectory_and_category_config(deps.trajectory_config, deps.category_config)
     .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
@@ -1679,9 +1682,13 @@ async fn spawn_acp_agent(
     // The IDE's own MCP servers for this session join the shared tools, so the session's tool
     // list (and its id registry) covers them from the first turn.
     let mut mcp_tools = d.mcp_tools.clone();
+    let mut mcp_servers: std::collections::HashSet<zeph_common::types::McpServerId> =
+        d.mcp_config.servers.iter().map(|s| s.id.clone()).collect();
     if let Some(ctx) = acp_ctx.as_mut() {
         mcp_tools.append(&mut ctx.ide_mcp_tools);
+        mcp_servers.extend(std::mem::take(&mut ctx.ide_mcp_servers));
     }
+    let mcp_tool_scope = zeph_core::agent::McpToolScope::Servers(mcp_servers);
     let mcp_registry = d.mcp_registry.clone();
     let mcp_manager = Arc::clone(&d.mcp_manager);
     let mcp_config = d.mcp_config.clone();
@@ -2189,6 +2196,8 @@ async fn spawn_acp_agent(
         shell_policy_handle: d.shell_policy_handle.clone(),
         mcp_tools,
         mcp_registry,
+        mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+        mcp_tool_scope,
         mcp_manager: Arc::clone(&mcp_manager),
         mcp_config,
         focus_config: d.focus_config.clone(),
@@ -5603,6 +5612,8 @@ mod tests {
             shell_policy_handle,
             mcp_tools: Vec::new(),
             mcp_registry: None,
+            mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+            mcp_tool_scope: zeph_core::agent::McpToolScope::AllServers,
             mcp_manager,
             mcp_config: zeph_core::config::McpConfig::default(),
             focus_config: zeph_core::config::FocusConfig::default(),

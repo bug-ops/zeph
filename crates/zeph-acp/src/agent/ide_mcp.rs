@@ -100,13 +100,25 @@ pub(crate) struct IdeMcpAttachment {
     pub(crate) tools: Vec<McpTool>,
     /// Guard that releases the servers; `None` when nothing was attached.
     pub(crate) lease: Option<IdeMcpLease>,
+    /// Ids of the attached servers, including tool-less ones, so the session's tool scope admits
+    /// them when they later publish tools.
+    pub(crate) servers: Vec<McpServerId>,
 }
 
 impl IdeMcpAttachment {
+    /// Hand the attached tools and server ids to the session's [`AcpContext`](crate::AcpContext)
+    /// and return the lease that releases the servers when the session ends.
+    pub(crate) fn install(self, ctx: &mut crate::AcpContext) -> Option<IdeMcpLease> {
+        ctx.ide_mcp_tools = self.tools;
+        ctx.ide_mcp_servers = self.servers;
+        self.lease
+    }
+
     fn empty() -> Self {
         Self {
             tools: Vec::new(),
             lease: None,
+            servers: Vec::new(),
         }
     }
 }
@@ -164,12 +176,17 @@ impl IdeMcpRegistry {
             }
         }
         drop(owners);
+        let servers = attached.clone();
         let lease = (!attached.is_empty()).then(|| IdeMcpLease {
             id: lease,
             servers: attached,
             release_tx: self.release_tx.clone(),
         });
-        IdeMcpAttachment { tools, lease }
+        IdeMcpAttachment {
+            tools,
+            lease,
+            servers,
+        }
     }
 
     /// Release `leases` now instead of through the drain queue, used when the connection closes.
