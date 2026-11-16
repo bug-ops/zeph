@@ -498,17 +498,15 @@ async fn connect_all_with_http_entries_skips_failing() {
 
 impl McpManager {
     fn mark_server_connected_for_test(&self, server_id: &str) {
-        self.connected_server_ids
-            .write()
-            .insert(server_id.to_owned());
+        self.connected_server_ids.write().insert(server_id.into());
     }
 
     /// Insert a trust entry directly, bypassing the real connection path.
-    async fn inject_server_trust_for_test(&self, server_id: &str, level: McpTrustLevel) {
+    pub(super) async fn inject_server_trust_for_test(&self, server_id: &str, level: McpTrustLevel) {
         self.server_trust
             .write()
             .await
-            .insert(server_id.to_owned(), (level, None, Vec::new(), false));
+            .insert(server_id.into(), (level, None, Vec::new(), false));
     }
 
     /// Read back the trust level for a server, or `None` if the entry was removed.
@@ -525,7 +523,7 @@ impl McpManager {
         self.server_tools
             .write()
             .await
-            .insert(server_id.to_owned(), vec![]);
+            .insert(server_id.into(), vec![]);
     }
 
     /// Return `true` if `server_tools` still contains an entry for `server_id`.
@@ -535,7 +533,7 @@ impl McpManager {
 
     /// Insert a lock entry directly, bypassing the real connect path.
     fn inject_tool_list_locked_for_test(&self, server_id: &str) {
-        self.tool_list_locked.insert(server_id.to_owned(), ());
+        self.tool_list_locked.insert(server_id.into(), ());
     }
 
     /// Return `true` if `tool_list_locked` still contains an entry for `server_id`.
@@ -712,7 +710,7 @@ async fn refresh_task_populates_and_updates_fingerprints_when_expected_tools_con
     mgr.spawn_refresh_task(None);
 
     mgr.server_trust.write().await.insert(
-        "srv1".to_owned(),
+        "srv1".into(),
         (
             McpTrustLevel::Trusted,
             None,
@@ -905,7 +903,7 @@ async fn refresh_task_logs_drift_warning_when_tool_changes_between_reconnects() 
     mgr.spawn_refresh_task(None);
 
     mgr.server_trust.write().await.insert(
-        "srv1".to_owned(),
+        "srv1".into(),
         (
             McpTrustLevel::Trusted,
             None,
@@ -1658,7 +1656,7 @@ async fn make_trust_store() -> Arc<TrustScoreStore> {
 
 fn make_server_trust(server_id: &str, level: McpTrustLevel) -> ServerTrust {
     let mut map = HashMap::new();
-    map.insert(server_id.to_owned(), (level, None, Vec::new(), false));
+    map.insert(server_id.into(), (level, None, Vec::new(), false));
     Arc::new(tokio::sync::RwLock::new(map))
 }
 
@@ -2326,6 +2324,27 @@ fn startup_retry_backoff_ms_default_is_1000() {
 }
 
 #[tokio::test]
+async fn spawn_refresh_task_second_call_is_a_noop() {
+    let cancel = CancellationToken::new();
+    let supervisor = zeph_common::TaskSupervisor::new(cancel);
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+
+    mgr.spawn_refresh_task(Some(&supervisor));
+    mgr.spawn_refresh_task(Some(&supervisor));
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let tasks = supervisor
+        .snapshot()
+        .into_iter()
+        .filter(|s| s.name.as_ref() == "mcp.refresh_task")
+        .count();
+    assert_eq!(
+        tasks, 1,
+        "a shared manager must run exactly one refresh task"
+    );
+}
+
+#[tokio::test]
 async fn spawn_refresh_task_with_supervisor_registers_task() {
     let cancel = CancellationToken::new();
     let supervisor = zeph_common::TaskSupervisor::new(cancel.clone());
@@ -2415,4 +2434,153 @@ async fn truncation_warns_once_per_diagnostic_pass_not_per_id_call() {
             Err(format!("expected one truncation warning, got {n}"))
         }
     });
+}
+
+// --- tool_snapshot (#7083) ---
+
+fn snapshot_entry(id: &str) -> ServerEntry {
+    ServerEntry {
+        id: id.into(),
+        transport: McpTransport::Stdio {
+            command: "nonexistent-mcp-binary".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+        },
+        timeout: Duration::from_secs(5),
+        trust_level: McpTrustLevel::Trusted,
+        tool_allowlist: None,
+        allow_untrusted_without_allowlist: false,
+        expected_tools: Vec::new(),
+        roots: Vec::new(),
+        tool_metadata: HashMap::new(),
+        elicitation_enabled: false,
+        elicitation_timeout_secs: 120,
+        env_isolation: false,
+        media_passthrough: false,
+    }
+}
+
+fn names_of(tools: &[McpTool]) -> Vec<String> {
+    tools.iter().map(McpTool::qualified_name).collect()
+}
+
+#[tokio::test]
+async fn tool_snapshot_lists_configured_then_dynamic_servers_including_add_server_only_ones() {
+    let mgr = McpManager::new(
+        vec![snapshot_entry("zz"), snapshot_entry("aa")],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    );
+    {
+        // `add_server` commits to `server_tools` without publishing on the watch channel.
+        let mut tools = mgr.server_tools.write().await;
+        for id in ["mm", "aa", "dyn", "zz"] {
+            tools.insert(id.into(), vec![make_tool(id, "t")]);
+        }
+    }
+    let rx = mgr.subscribe_tool_changes();
+
+    assert_eq!(
+        names_of(&mgr.tool_snapshot().await),
+        ["zz:t", "aa:t", "dyn:t", "mm:t"]
+    );
+    assert!(
+        !rx.has_changed().unwrap(),
+        "the watch never saw those servers"
+    );
+}
+
+#[tokio::test]
+async fn tool_snapshot_reflects_a_list_applied_by_the_refresh_path() {
+    let mgr = McpManager::new(
+        vec![snapshot_entry("zz")],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    );
+    mgr.spawn_refresh_task(None);
+    mgr.inject_server_trust_for_test("zz", McpTrustLevel::Trusted)
+        .await;
+    mgr.server_tools
+        .write()
+        .await
+        .insert("dyn".into(), vec![make_tool("dyn", "t")]);
+    let mut rx = mgr.subscribe_tool_changes();
+
+    mgr.clone_refresh_tx()
+        .expect("refresh sender is alive")
+        .try_send(crate::client::ToolRefreshEvent {
+            server_id: "zz".into(),
+            tools: vec![make_tool("zz", "new_tool")],
+        })
+        .expect("queue accepts the event");
+    tokio::time::timeout(Duration::from_secs(2), rx.changed())
+        .await
+        .expect("refresh must be published")
+        .expect("watch sender alive");
+
+    assert_eq!(
+        names_of(&mgr.tool_snapshot().await),
+        ["zz:new_tool", "dyn:t"]
+    );
+}
+
+#[tokio::test]
+async fn late_subscriber_reads_a_published_refresh_from_the_snapshot_and_sees_later_ones() {
+    let mgr = McpManager::new(
+        vec![snapshot_entry("zz")],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    );
+    mgr.spawn_refresh_task(None);
+    mgr.inject_server_trust_for_test("zz", McpTrustLevel::Trusted)
+        .await;
+    let mut early = mgr.subscribe_tool_changes();
+    let tx = mgr.clone_refresh_tx().expect("refresh sender is alive");
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "zz".into(),
+        tools: vec![make_tool("zz", "first")],
+    })
+    .expect("queue accepts the event");
+    tokio::time::timeout(Duration::from_secs(2), early.changed())
+        .await
+        .expect("first refresh published")
+        .expect("watch sender alive");
+
+    // A subscriber created after the publish is not flagged, but the snapshot has the tool.
+    let mut late = mgr.subscribe_tool_changes();
+    assert!(!late.has_changed().unwrap());
+    assert_eq!(names_of(&mgr.tool_snapshot().await), ["zz:first"]);
+
+    // A publish after subscribing is flagged.
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "zz".into(),
+        tools: vec![make_tool("zz", "second")],
+    })
+    .expect("queue accepts the event");
+    tokio::time::timeout(Duration::from_secs(2), late.changed())
+        .await
+        .expect("second refresh published")
+        .expect("watch sender alive");
+    assert!(late.borrow().iter().any(|t| t.name == "second"));
+}
+
+#[tokio::test]
+async fn tool_snapshot_lists_a_duplicated_configured_server_once_at_its_first_position() {
+    let mgr = McpManager::new(
+        vec![
+            snapshot_entry("zz"),
+            snapshot_entry("aa"),
+            snapshot_entry("zz"),
+        ],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    );
+    {
+        let mut tools = mgr.server_tools.write().await;
+        for id in ["aa", "zz"] {
+            tools.insert(id.into(), vec![make_tool(id, "t")]);
+        }
+    }
+
+    assert_eq!(names_of(&mgr.tool_snapshot().await), ["zz:t", "aa:t"]);
 }

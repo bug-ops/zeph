@@ -82,6 +82,49 @@ pub fn migrate_acp_subagents_config(toml_src: &str) -> Result<MigrationResult, M
     })
 }
 
+/// Add a commented-out `[acp.ide_mcp]` block if the config lacks it (#7081, #7082).
+///
+/// Existing configs parse unchanged (`AcpConfig::ide_mcp` has `#[serde(default)]`: cap `10`, no
+/// grants); this migration only surfaces the grants and the cap for discoverability.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] when the document cannot be processed.
+pub fn migrate_acp_ide_mcp_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[acp.ide_mcp]" || l.trim() == "# [acp.ide_mcp]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [acp.ide_mcp] — IDE-attached MCP servers (#7081, #7082). IDE servers are \
+         Untrusted: with no\n\
+         # grant they expose zero tools. A grant pins the exact `command`+`args` (or `url`) and \
+         the env KEYS\n\
+         # the IDE may send (values are not pinned). Never list NODE_OPTIONS, JAVA_TOOL_OPTIONS, \
+         PERL5OPT or\n\
+         # npm_config_* in env_keys. `max_servers_per_session = 0` disables IDE servers.\n\
+         # [acp.ide_mcp]\n\
+         # max_servers_per_session = 10\n\
+         # [acp.ide_mcp.servers.filesystem]\n\
+         # command = \"npx\"\n\
+         # args = [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/repo\"]\n\
+         # env_keys = []\n\
+         # tools = [\"read_file\"]\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["acp.ide_mcp".to_owned()],
+    })
+}
+
 /// Add a commented-out `[[acp.auth_clients]]` block if the config lacks it (#5868).
 ///
 /// Introduced alongside named-client bearer-token isolation for ACP HTTP/WS session

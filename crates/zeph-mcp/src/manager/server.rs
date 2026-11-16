@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
+use zeph_common::types::McpServerId;
 
 use crate::client::{McpClient, ToolRefreshEvent};
 use crate::elicitation::ElicitationEvent;
@@ -16,7 +17,7 @@ use crate::tool::McpTool;
 
 use super::ingest::{apply_injection_penalties, ingest_tools};
 use super::retry::connect_entry;
-use super::{IngestConfig, McpManager, ServerEntry};
+use super::{IngestConfig, McpManager, ServerEntry, tools_in_server_order};
 
 impl McpManager {
     /// Take the elicitation receiver to wire into the agent loop.
@@ -61,6 +62,31 @@ impl McpManager {
         self.tools_watch_tx.subscribe()
     }
 
+    /// Live flattened tool list of every connected server, in deterministic order (configured
+    /// servers first, then the rest ascending).
+    ///
+    /// This is the authoritative current list: `add_server` and `remove_server` change it without
+    /// publishing on the watch channel, so a late subscriber reads it here instead of waiting for
+    /// a `tools/list_changed` event it will never receive. Subscribe first, then call this, so an
+    /// event landing in between is either in the snapshot or flagged by `has_changed()`.
+    pub async fn tool_snapshot(&self) -> Vec<McpTool> {
+        tools_in_server_order(&*self.server_tools.read().await, &self.configured_order)
+    }
+
+    /// Register `tools` for `server_id` as if the server had connected, without a transport.
+    ///
+    /// Test support for crates that cannot reach the manager's internals; it bypasses the whole
+    /// connection, ingest, trust and allowlist pipeline, so it only exists with the `mock`
+    /// feature (enabled as a dev-dependency feature) and in this crate's own tests.
+    #[cfg(any(test, feature = "mock"))]
+    #[doc(hidden)]
+    pub async fn inject_tools_for_testing(&self, server_id: &str, tools: Vec<McpTool>) {
+        self.server_tools
+            .write()
+            .await
+            .insert(server_id.into(), tools);
+    }
+
     /// Returns the number of configured servers (connected or not).
     #[must_use]
     pub fn configured_server_count(&self) -> usize {
@@ -81,7 +107,7 @@ impl McpManager {
         tracing::instrument(name = "mcp.manager.add_server", skip(self, entry), fields(server_id = %entry.id), err)
     )]
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
-        self.check_not_already_connected(&entry.id).await?;
+        self.check_not_already_connected(entry.id.as_str()).await?;
 
         // NOTE: add_server retains single-attempt behaviour intentionally; retry policy for
         // dynamic connections requires idempotency review of probe/ingest/commit stages.
@@ -89,7 +115,7 @@ impl McpManager {
         let tx = self
             .clone_refresh_tx()
             .ok_or_else(|| McpError::ManagerShuttingDown {
-                server_id: entry.id.clone(),
+                server_id: entry.id.to_string(),
             })?;
 
         let (client, raw_tools) = self.connect_and_list_tools(entry, tx).await?;
@@ -110,7 +136,7 @@ impl McpManager {
         let (tools, sanitize_result, new_fingerprints) = ingest_tools(
             raw_tools,
             &IngestConfig {
-                server_id: &entry.id,
+                server_id: entry.id.as_str(),
                 trust_level: entry.trust_level,
                 allowlist: entry.tool_allowlist.as_deref(),
                 allow_untrusted_without_allowlist: entry.allow_untrusted_without_allowlist,
@@ -123,7 +149,7 @@ impl McpManager {
         );
         apply_injection_penalties(
             self.trust_store.as_ref(),
-            &entry.id,
+            entry.id.as_str(),
             &sanitize_result,
             &self.server_trust,
         )
@@ -133,18 +159,11 @@ impl McpManager {
             .await?;
 
         // Detect collisions against the full current tool list (SF-1: add_server path).
-        let all_tools: Vec<McpTool> = self
-            .server_tools
-            .read()
-            .await
-            .values()
-            .flatten()
-            .cloned()
-            .collect();
+        let all_tools = self.tool_snapshot().await;
         self.record_tool_diagnostics(&all_tools).await;
 
         tracing::info!(
-            server_id = entry.id,
+            server_id = %entry.id,
             tools = tools.len(),
             "dynamically added MCP server"
         );
@@ -207,7 +226,7 @@ impl McpManager {
         entry: &ServerEntry,
         client: &McpClient,
     ) -> Result<(), McpError> {
-        if let Err(e) = self.run_probe(&entry.id, client).await {
+        if let Err(e) = self.run_probe(entry.id.as_str(), client).await {
             self.tool_list_locked.remove(&entry.id);
             return Err(e);
         }
@@ -219,7 +238,7 @@ impl McpManager {
         if let Some(ref instructions) = client.server_instructions() {
             let truncated = crate::sanitize::truncate_instructions(
                 instructions,
-                &entry.id,
+                entry.id.as_str(),
                 self.max_instructions_bytes,
             );
             self.server_instructions
@@ -250,7 +269,7 @@ impl McpManager {
                 drop(add_remove_guard);
                 client.shutdown().await;
                 return Err(McpError::ServerAlreadyConnected {
-                    server_id: entry.id.clone(),
+                    server_id: entry.id.to_string(),
                 });
             }
             clients.insert(entry.id.clone(), client);
@@ -325,14 +344,7 @@ impl McpManager {
         self.server_fingerprints.write().await.remove(server_id);
         self.last_refresh.remove(server_id);
         self.tool_list_locked.remove(server_id);
-        let remaining: Vec<McpTool> = self
-            .server_tools
-            .read()
-            .await
-            .values()
-            .flatten()
-            .cloned()
-            .collect();
+        let remaining = self.tool_snapshot().await;
         self.record_tool_diagnostics(&remaining).await;
         // Release the serialization lock before the potentially slow shutdown call.
         drop(add_remove_guard);
@@ -359,7 +371,7 @@ impl McpManager {
     )]
     pub async fn list_servers(&self) -> Vec<String> {
         let clients = self.clients.read().await;
-        let mut ids: Vec<String> = clients.keys().cloned().collect();
+        let mut ids: Vec<String> = clients.keys().map(ToString::to_string).collect();
         ids.sort();
         ids
     }
@@ -407,19 +419,19 @@ impl McpManager {
         let _ = self.refresh_tx.lock().take();
 
         let mut clients = self.clients.write().await;
-        let drained: Vec<(String, McpClient)> = clients.drain().collect();
+        let drained: Vec<(McpServerId, McpClient)> = clients.drain().collect();
         self.connected_server_ids.write().clear();
         self.server_tools.write().await.clear();
         self.server_fingerprints.write().await.clear();
         self.last_refresh.clear();
         self.tool_list_locked.clear();
         for (id, client) in drained {
-            tracing::info!(server_id = id, "shutting down MCP client");
+            tracing::info!(server_id = %id, "shutting down MCP client");
             if tokio::time::timeout(Duration::from_secs(5), client.shutdown())
                 .await
                 .is_err()
             {
-                tracing::warn!(server_id = id, "MCP client shutdown timed out");
+                tracing::warn!(server_id = %id, "MCP client shutdown timed out");
             }
         }
     }

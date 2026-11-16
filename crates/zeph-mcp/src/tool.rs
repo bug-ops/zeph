@@ -39,7 +39,7 @@ pub use zeph_config::mcp_security::{
 /// assert_eq!(tool.qualified_name(), "github:create_issue");
 /// assert_eq!(tool.sanitized_id(), "github_create_issue");
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpTool {
     pub server_id: McpServerId,
     pub name: String,

@@ -235,11 +235,10 @@ impl<C: Channel> Agent<C> {
     /// executor that is not paired with the writer (an empty writer, an embedder, a test): such a
     /// tool is still classified as MCP instead of silently falling back to native.
     pub(in crate::agent) fn batch_mcp_tool_ids(&self) -> Arc<McpToolIds> {
-        let from_executor =
-            McpToolIds::from_definitions(&self.tool_executor.tool_definitions_erased());
+        let from_executor = self.tool_executor.mcp_dispatch_ids_erased();
         match self.services.mcp.tool_list.as_ref() {
-            Some(list) => Arc::new(list.ids_handle().snapshot().join(&from_executor)),
-            None => Arc::new(from_executor),
+            Some(list) => McpToolIds::join_arc(&list.ids_handle().snapshot(), &from_executor),
+            None => from_executor,
         }
     }
 

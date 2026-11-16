@@ -100,13 +100,25 @@ pub(crate) struct IdeMcpAttachment {
     pub(crate) tools: Vec<McpTool>,
     /// Guard that releases the servers; `None` when nothing was attached.
     pub(crate) lease: Option<IdeMcpLease>,
+    /// Ids of the attached servers, including tool-less ones, so the session's tool scope admits
+    /// them when they later publish tools.
+    pub(crate) servers: Vec<McpServerId>,
 }
 
 impl IdeMcpAttachment {
+    /// Hand the attached tools and server ids to the session's [`AcpContext`](crate::AcpContext)
+    /// and return the lease that releases the servers when the session ends.
+    pub(crate) fn install(self, ctx: &mut crate::AcpContext) -> Option<IdeMcpLease> {
+        ctx.ide_mcp_tools = self.tools;
+        ctx.ide_mcp_servers = self.servers;
+        self.lease
+    }
+
     fn empty() -> Self {
         Self {
             tools: Vec::new(),
             lease: None,
+            servers: Vec::new(),
         }
     }
 }
@@ -120,12 +132,20 @@ pub(crate) struct IdeMcpRegistry {
     release_tx: mpsc::UnboundedSender<ReleaseRequest>,
     release_rx: Mutex<mpsc::UnboundedReceiver<ReleaseRequest>>,
     release_task_started: AtomicBool,
+    /// Operator grants and cap (`[acp.ide_mcp]`). Held here, behind the registry's `Arc`, so the
+    /// agent state and the connection futures built around it stay small.
+    config: std::sync::Arc<zeph_config::AcpIdeMcpConfig>,
 }
 
 impl IdeMcpRegistry {
     pub(crate) fn new() -> Self {
+        Self::with_config(std::sync::Arc::new(zeph_config::AcpIdeMcpConfig::default()))
+    }
+
+    pub(crate) fn with_config(config: std::sync::Arc<zeph_config::AcpIdeMcpConfig>) -> Self {
         let (release_tx, release_rx) = mpsc::unbounded_channel();
         Self {
+            config,
             owners: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(0),
             release_tx,
@@ -150,7 +170,7 @@ impl IdeMcpRegistry {
         let mut tools = Vec::new();
         let mut attached = Vec::new();
         for entry in entries {
-            let server_id = McpServerId::from(entry.id.as_str());
+            let server_id = entry.id.clone();
             let may_recover = owners.insert(server_id.clone(), lease).is_some();
             match add_with_recovery(manager, &entry, may_recover).await {
                 Ok(server_tools) => {
@@ -164,12 +184,17 @@ impl IdeMcpRegistry {
             }
         }
         drop(owners);
+        let servers = attached.clone();
         let lease = (!attached.is_empty()).then(|| IdeMcpLease {
             id: lease,
             servers: attached,
             release_tx: self.release_tx.clone(),
         });
-        IdeMcpAttachment { tools, lease }
+        IdeMcpAttachment {
+            tools,
+            lease,
+            servers,
+        }
     }
 
     /// Release `leases` now instead of through the drain queue, used when the connection closes.
@@ -242,7 +267,7 @@ async fn add_with_recovery(
     match manager.add_server(entry).await {
         Err(e @ McpError::ServerAlreadyConnected { .. }) if !may_recover => Err(e),
         Err(McpError::ServerAlreadyConnected { .. }) => {
-            match manager.remove_server(&entry.id).await {
+            match manager.remove_server(entry.id.as_str()).await {
                 Ok(()) | Err(McpError::ServerNotFound { .. }) => {}
                 Err(e) => return Err(e),
             }
@@ -253,29 +278,96 @@ async fn add_with_recovery(
 }
 
 /// Scope an IDE-chosen server id to a session: `"{ide_id}-{first 8 chars of session id}"`.
-fn scoped_server_id(ide_id: &str, session_id: &str) -> String {
+fn scoped_server_id(ide_id: &str, session_id: &str) -> McpServerId {
     let suffix: String = session_id.chars().take(SESSION_SUFFIX_CHARS).collect();
-    format!("{ide_id}-{suffix}")
+    McpServerId::from(format!("{ide_id}-{suffix}"))
 }
 
-/// Convert, de-duplicate by IDE id (first wins) and scope the servers of one request.
+/// Tools the operator allows for `entry`, or `None` (zero tools) when no grant applies.
+///
+/// A grant applies only when the raw IDE name has one **and** the transport matches it exactly:
+/// the stdio `command` and `args`, or the HTTP/SSE `url`. For stdio the env keys left after the
+/// bridge's blocklist must be a subset of the grant's `env_keys` (values are not pinned). Any
+/// mismatch fails closed with a WARN. Grants never come from IDE-supplied `_meta`.
+fn granted_allowlist(
+    entry: &ServerEntry,
+    grants: &zeph_config::AcpIdeMcpConfig,
+) -> Option<Vec<String>> {
+    use zeph_config::AcpIdeMcpTarget;
+    use zeph_mcp::McpTransport;
+
+    let name = entry.id.as_str();
+    let grant = grants.servers.get(name)?;
+    let matches = match (&grant.target, &entry.transport) {
+        (
+            AcpIdeMcpTarget::Stdio {
+                command,
+                args,
+                env_keys,
+            },
+            McpTransport::Stdio {
+                command: ide_command,
+                args: ide_args,
+                env,
+            },
+        ) => {
+            command == ide_command
+                && args == ide_args
+                && env.keys().all(|key| env_keys.contains(key))
+        }
+        (AcpIdeMcpTarget::Http { url }, McpTransport::Http { url: ide_url, .. }) => url == ide_url,
+        _ => false,
+    };
+    if matches {
+        Some(grant.tools.clone())
+    } else {
+        tracing::warn!(
+            server = %name,
+            "IDE MCP server does not match its operator grant (transport, args or env keys); \
+             exposing zero tools"
+        );
+        None
+    }
+}
+
+/// Convert, de-duplicate by IDE id (first wins), apply grants and the per-session cap, and scope
+/// the servers of one request.
+///
+/// Servers stay `Untrusted` and `allow_untrusted_without_allowlist` stays `false`, so a server
+/// without a matching grant exposes zero tools.
 fn scoped_entries(
     servers: &[acp::schema::v1::McpServer],
     session_id: &str,
     elicitation_default_timeout_secs: u64,
+    grants: &zeph_config::AcpIdeMcpConfig,
 ) -> Vec<ServerEntry> {
     let mut seen = HashSet::new();
-    acp_mcp_servers_to_entries(servers, elicitation_default_timeout_secs)
-        .into_iter()
-        .filter_map(|mut entry| {
-            if !seen.insert(entry.id.clone()) {
-                tracing::warn!(server_id = %entry.id, "duplicate IDE MCP server id in request ignored");
-                return None;
-            }
-            entry.id = scoped_server_id(&entry.id, session_id);
-            Some(entry)
-        })
-        .collect()
+    let mut entries: Vec<ServerEntry> = acp_mcp_servers_to_entries(
+        servers,
+        elicitation_default_timeout_secs,
+    )
+    .into_iter()
+    .filter_map(|mut entry| {
+        if !seen.insert(entry.id.clone()) {
+            tracing::warn!(server_id = %entry.id, "duplicate IDE MCP server id in request ignored");
+            return None;
+        }
+        entry.tool_allowlist = granted_allowlist(&entry, grants);
+        entry.id = scoped_server_id(entry.id.as_str(), session_id);
+        Some(entry)
+    })
+    .collect();
+    let cap = grants.max_servers_per_session;
+    if entries.len() > cap {
+        tracing::warn!(
+            requested = entries.len(),
+            cap,
+            dropped = entries.len() - cap,
+            "IDE MCP servers exceed [acp.ide_mcp].max_servers_per_session; extra servers ignored"
+        );
+        entries.truncate(cap);
+    }
+    entries
 }
 
 impl ZephAcpAgentState {
@@ -297,6 +389,7 @@ impl ZephAcpAgentState {
             servers,
             &session_id.to_string(),
             self.timeouts.elicitation_secs,
+            &self.ide_mcp.config,
         );
         if entries.is_empty() {
             return IdeMcpAttachment::empty();
@@ -347,6 +440,12 @@ impl ZephAcpAgentState {
 }
 
 #[cfg(test)]
+mod attachment_servers_tests;
+
+#[cfg(test)]
+mod grant_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::time::Duration;
@@ -378,17 +477,17 @@ mod tests {
         }
 
         fn add(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
-            if self.failing.lock().contains(&entry.id) {
+            if self.failing.lock().contains(entry.id.as_str()) {
                 return Err(McpError::ServerNotFound {
-                    server_id: entry.id.clone(),
+                    server_id: entry.id.to_string(),
                 });
             }
-            if !self.connected.lock().insert(entry.id.clone()) {
+            if !self.connected.lock().insert(entry.id.to_string()) {
                 return Err(McpError::ServerAlreadyConnected {
-                    server_id: entry.id.clone(),
+                    server_id: entry.id.to_string(),
                 });
             }
-            Ok(vec![tool(&entry.id)])
+            Ok(vec![tool(entry.id.as_str())])
         }
 
         fn remove(&self, server_id: &str) -> Result<(), McpError> {
@@ -436,7 +535,7 @@ mod tests {
 
     fn entry(id: &str) -> ServerEntry {
         ServerEntry {
-            id: id.to_owned(),
+            id: id.into(),
             transport: zeph_mcp::McpTransport::Stdio {
                 command: "unused".to_owned(),
                 args: Vec::new(),
@@ -490,7 +589,12 @@ mod tests {
             McpServer::Stdio(McpServerStdio::new("dup", "/bin/b")),
             McpServer::Stdio(McpServerStdio::new("other", "/bin/c")),
         ];
-        let entries = scoped_entries(&servers, "0123456789", 120);
+        let entries = scoped_entries(
+            &servers,
+            "0123456789",
+            120,
+            &zeph_config::AcpIdeMcpConfig::default(),
+        );
         let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["dup-01234567", "other-01234567"]);
     }

@@ -29,8 +29,9 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 ///
 /// All converted entries start with [`McpTrustLevel::Untrusted`], no tool allowlist, and
 /// `allow_untrusted_without_allowlist = false`, so the agent sandbox applies to
-/// IDE-requested MCP servers: with no allowlist declared, these servers expose zero tools
-/// by default (fail-closed). An IDE must declare a `tool_allowlist` to expose any tools.
+/// IDE-requested MCP servers: with no allowlist, these servers expose zero tools
+/// (fail-closed). Nothing the IDE sends can set an allowlist; only an operator grant in
+/// `[acp.ide_mcp.servers.<name>]` does, applied by the session attach path after this conversion.
 ///
 /// `elicitation_enabled` is read from the `_meta` field of each server entry under
 /// the key `"elicitation_enabled"`. Absent or non-boolean values default to `false`.
@@ -42,6 +43,10 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 ///
 /// Dangerous environment variables are stripped from `Stdio` server configs.
 /// See module-level documentation for the full blocklist.
+///
+/// The returned entries are `Untrusted` with no tool allowlist, so they expose zero tools. Tools
+/// come only from an operator grant in `[acp.ide_mcp.servers.<name>]`, applied by the session
+/// attach path after this conversion; nothing the IDE sends (including `_meta`) grants tools.
 ///
 /// # Examples
 ///
@@ -72,7 +77,7 @@ pub fn acp_mcp_servers_to_entries(
                     .map(|e| (e.name.clone(), e.value.clone()))
                     .collect();
                 Some(ServerEntry {
-                    id: stdio.name.clone(),
+                    id: stdio.name.clone().into(),
                     transport: McpTransport::Stdio {
                         command: stdio.command.display().to_string(),
                         args: stdio.args.clone(),
@@ -95,7 +100,7 @@ pub fn acp_mcp_servers_to_entries(
                 })
             }
             acp::schema::v1::McpServer::Http(http) => Some(ServerEntry {
-                id: http.name.clone(),
+                id: http.name.clone().into(),
                 transport: McpTransport::Http {
                     url: http.url.clone(),
                     headers: std::collections::HashMap::new(),
@@ -119,7 +124,7 @@ pub fn acp_mcp_servers_to_entries(
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
                 // backward-compatible. rmcp's StreamableHttpClientTransport handles both.
                 Some(ServerEntry {
-                    id: sse.name.clone(),
+                    id: sse.name.clone().into(),
                     transport: McpTransport::Http {
                         url: sse.url.clone(),
                         headers: std::collections::HashMap::new(),

@@ -1199,6 +1199,10 @@ impl LlmProvider for OpenAiProvider {
 
         if status == reqwest::StatusCode::BAD_REQUEST {
             crate::http::log_api_error_body("openai", status, &text);
+            let safe_text = crate::error::sanitize_provider_text(
+                &text,
+                crate::error::ApiErrorDetail::MAX_MESSAGE_CHARS,
+            );
             if crate::error::body_is_context_length_error(&text) {
                 return Err(LlmError::ContextLengthExceeded);
             }
@@ -1212,14 +1216,14 @@ impl LlmProvider for OpenAiProvider {
                          calls on the Chat Completions API (OpenAI requires the /v1/responses \
                          endpoint for this combination, which Zeph does not yet support). Unset \
                          `reasoning_effort` for this provider in config.toml, or use a different \
-                         model for tool-calling turns. Original error: {text}",
+                         model for tool-calling turns. Original error: {safe_text}",
                         self.model
                     ),
                 });
             }
             return Err(LlmError::InvalidInput {
                 provider: self.name().to_owned(),
-                message: text,
+                message: safe_text,
             });
         }
 
@@ -2082,5 +2086,7 @@ fn normalize_for_openai_strict(schema: &mut serde_json::Value, depth: u8) {
     crate::schema::walk_schema(schema, &mut OpenAiStrictVisitor, depth);
 }
 
+#[cfg(test)]
+mod message_scrub_tests;
 #[cfg(test)]
 mod tests;

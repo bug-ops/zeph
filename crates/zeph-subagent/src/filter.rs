@@ -174,6 +174,10 @@ impl ErasedToolExecutor for FilteredToolExecutor {
         Box::pin(std::future::ready(Ok(None)))
     }
 
+    fn mcp_dispatch_ids_erased(&self) -> std::sync::Arc<zeph_tools::McpToolIds> {
+        self.inner.mcp_dispatch_ids_erased()
+    }
+
     fn tool_definitions_erased(&self) -> Vec<ToolDef> {
         // Filter the visible tool definitions according to the policy.
         self.inner
@@ -270,6 +274,10 @@ impl ErasedToolExecutor for PlanModeExecutor {
         Box::pin(std::future::ready(Err(ToolError::Blocked {
             command: "plan_mode".into(),
         })))
+    }
+
+    fn mcp_dispatch_ids_erased(&self) -> std::sync::Arc<zeph_tools::McpToolIds> {
+        self.inner.mcp_dispatch_ids_erased()
     }
 
     fn tool_definitions_erased(&self) -> Vec<ToolDef> {
@@ -426,6 +434,10 @@ impl ErasedToolExecutor for NetworkDenyToolExecutor {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
     {
         self.inner.execute_confirmed_erased(response)
+    }
+
+    fn mcp_dispatch_ids_erased(&self) -> std::sync::Arc<zeph_tools::McpToolIds> {
+        self.inner.mcp_dispatch_ids_erased()
     }
 
     fn tool_definitions_erased(&self) -> Vec<ToolDef> {

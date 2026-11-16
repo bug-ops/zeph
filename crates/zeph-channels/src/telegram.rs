@@ -808,11 +808,46 @@ fn reset_bot_depth(counters: &BotReplyCounters, chat_id: ChatId) {
 /// Shared state for the guest-mode axum proxy.
 #[derive(Clone)]
 struct GuestProxyState {
-    upstream: String,
+    upstream_origin: String,
+    bot_segment: String,
     client: reqwest::Client,
     tx: mpsc::Sender<IncomingMessage>,
     allowlist: Arc<TelegramAllowlist>,
     body_limit: BodyLimit,
+}
+
+/// Parsed shape of a teloxide request path received by the guest proxy.
+#[derive(Debug, PartialEq, Eq)]
+enum UpstreamRoute<'a> {
+    /// `/bot<T>/bot<T>/<method>`
+    Method(&'a str),
+    /// `/bot<T>/file/bot<T>/<file_path>`, forwarded verbatim.
+    File(&'a str),
+}
+
+/// Maps a raw (still percent-encoded) request path onto an [`UpstreamRoute`].
+///
+/// Returns `None` when the path does not carry this bot's segment in both
+/// positions or when the trailing method or file path is empty. The file path is
+/// returned undecoded so the upstream request is byte-identical to teloxide's.
+fn route_upstream<'a>(path: &'a str, bot_segment: &str) -> Option<UpstreamRoute<'a>> {
+    let rest = path
+        .strip_prefix('/')?
+        .strip_prefix(bot_segment)?
+        .strip_prefix('/')?;
+    let (is_file, rest) = match rest.strip_prefix("file/") {
+        Some(r) => (true, r),
+        None => (false, rest),
+    };
+    let tail = rest.strip_prefix(bot_segment)?.strip_prefix('/')?;
+    if tail.is_empty() {
+        return None;
+    }
+    Some(if is_file {
+        UpstreamRoute::File(tail)
+    } else {
+        UpstreamRoute::Method(tail)
+    })
 }
 
 /// Guest Mode transparent HTTP proxy.
@@ -832,14 +867,14 @@ fn spawn_guest_proxy(
     tx: mpsc::Sender<IncomingMessage>,
     allowlist: Arc<TelegramAllowlist>,
 ) -> Result<(String, tokio::task::JoinHandle<()>), ChannelError> {
-    let upstream = format!("https://api.telegram.org/bot{token}");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_mins(1))
         .build()
         .map_err(|e| ChannelError::Other(format!("guest proxy client init failed: {e}")))?;
 
     let state = GuestProxyState {
-        upstream,
+        upstream_origin: "https://api.telegram.org".to_owned(),
+        bot_segment: format!("bot{token}"),
         client,
         tx,
         allowlist,
@@ -903,15 +938,24 @@ fn spawn_guest_proxy(
 ///    variants, so the extra entries are silently dropped by the dispatcher.
 #[tracing::instrument(name = "channels.telegram.proxy_handler", skip_all)]
 async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>) -> Response {
-    // Path structure from teloxide: /bot<TOKEN>/<method>
-    // proxy_url passed to Bot::set_api_url is http://127.0.0.1:<port>/bot<TOKEN>
-    // teloxide appends /<method> to base_url, so path is /bot<TOKEN>/<method>
-    let path = req.uri().path();
+    // teloxide appends `/bot<T>/<method>` (or `/file/bot<T>/<percent-encoded path>`)
+    // to the proxy base URL `http://127.0.0.1:<port>/bot<T>`.
     let query = req.uri().query().map_or_default(|q| format!("?{q}"));
-    let method_part = path.splitn(4, '/').nth(3).unwrap_or("");
-    let upstream_url = format!("{}/{method_part}{query}", state.upstream);
-
-    let is_get_updates = method_part == "getUpdates";
+    let Some(route) = route_upstream(req.uri().path(), &state.bot_segment) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let upstream_url = match route {
+        UpstreamRoute::Method(m) => {
+            format!("{}/{}/{m}{query}", state.upstream_origin, state.bot_segment)
+        }
+        UpstreamRoute::File(f) => {
+            format!(
+                "{}/file/{}/{f}{query}",
+                state.upstream_origin, state.bot_segment
+            )
+        }
+    };
+    let is_get_updates = route == UpstreamRoute::Method("getUpdates");
 
     let method = req.method().clone();
     let headers = req.headers().clone();
@@ -1765,6 +1809,9 @@ fn coerce_telegram_field(text: &str, kind: &ElicitationFieldType) -> Option<serd
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod guest_proxy_route_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2962,7 +3009,8 @@ mod tests {
             .await;
         let (tx, _rx) = mpsc::channel(1);
         let state = GuestProxyState {
-            upstream: format!("{}/bottoken", server.uri()),
+            upstream_origin: server.uri(),
+            bot_segment: "bottoken".to_owned(),
             client: reqwest::Client::new(),
             tx,
             allowlist: Arc::new(TelegramAllowlist::default()),

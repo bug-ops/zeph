@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 
 use zeph_common::ToolName;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, extract_fenced_blocks};
-use zeph_tools::registry::{InvocationHint, ToolDef};
+use zeph_tools::registry::ToolDef;
 
 use crate::manager::McpManager;
 use crate::tool::McpTool;
@@ -112,14 +112,18 @@ impl McpToolExecutor {
     /// always remains as the fallback regardless of this outcome.
     async fn collect_media(
         &self,
-        server_id: &str,
+        server_id: &McpServerId,
         tool_name: &str,
         content: &[rmcp::model::ContentBlock],
     ) -> Vec<zeph_llm::provider::ImageData> {
         let Some(ref sanitizer) = self.media_sanitizer else {
             return Vec::new();
         };
-        if !self.manager.media_passthrough_allowed(server_id).await {
+        if !self
+            .manager
+            .media_passthrough_allowed(server_id.as_str())
+            .await
+        {
             return Vec::new();
         }
 
@@ -141,7 +145,7 @@ impl McpToolExecutor {
             };
             if media.len() >= self.max_images_per_result {
                 tracing::warn!(
-                    server_id,
+                    %server_id,
                     tool_name,
                     cap = self.max_images_per_result,
                     "MCP media: per-result image cap reached, remaining image(s) dropped"
@@ -164,7 +168,7 @@ impl McpToolExecutor {
             };
             let byte_len = decoded.len();
             match sanitizer
-                .sanitize_image(&decoded, &img.mime_type, server_id)
+                .sanitize_image(&decoded, &img.mime_type, server_id.as_str())
                 .await
             {
                 Ok(image_data) => {
@@ -188,8 +192,14 @@ impl McpToolExecutor {
     }
 
     /// Log an accepted MCP media validation via the tool audit path (spec-072 AC-14).
-    async fn audit_media_accept(&self, server_id: &str, tool_name: &str, mime: &str, bytes: usize) {
-        tracing::debug!(server_id, tool_name, mime, bytes, "MCP media: accepted");
+    async fn audit_media_accept(
+        &self,
+        server_id: &McpServerId,
+        tool_name: &str,
+        mime: &str,
+        bytes: usize,
+    ) {
+        tracing::debug!(%server_id, tool_name, mime, bytes, "MCP media: accepted");
         let Some(ref logger) = self.audit_logger else {
             return;
         };
@@ -206,7 +216,7 @@ impl McpToolExecutor {
                 error_domain: None,
                 error_phase: None,
                 claim_source: Some(zeph_tools::ClaimSource::Mcp),
-                mcp_server_id: Some(McpServerId::from(server_id)),
+                mcp_server_id: Some(server_id.clone()),
                 injection_flagged: false,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
@@ -229,14 +239,14 @@ impl McpToolExecutor {
     /// Log a rejected MCP media validation via the tool audit path (spec-072 AC-14, FR-005).
     async fn audit_media_decision(
         &self,
-        server_id: &str,
+        server_id: &McpServerId,
         tool_name: &str,
         mime: &str,
         bytes: usize,
         reason: &str,
     ) {
         tracing::warn!(
-            server_id,
+            %server_id,
             tool_name,
             mime,
             bytes,
@@ -261,7 +271,7 @@ impl McpToolExecutor {
                 error_domain: Some("security".to_owned()),
                 error_phase: None,
                 claim_source: Some(zeph_tools::ClaimSource::Mcp),
-                mcp_server_id: Some(McpServerId::from(server_id)),
+                mcp_server_id: Some(server_id.clone()),
                 injection_flagged: false,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
@@ -284,19 +294,7 @@ impl McpToolExecutor {
 
 impl ToolExecutor for McpToolExecutor {
     fn tool_definitions(&self) -> Vec<ToolDef> {
-        let tools = self.tools.read();
-        tools
-            .iter()
-            .map(|t| ToolDef {
-                id: t.sanitized_id().into(),
-                description: t.description.clone().into(),
-                schema: serde_json::from_value(t.input_schema.clone())
-                    .unwrap_or_else(|_| schemars::Schema::default()),
-                invocation: InvocationHint::ToolCall,
-                output_schema: t.output_schema.clone(),
-                server_id: Some(t.server_id.clone()),
-            })
-            .collect()
+        self.tools.snapshot().definitions()
     }
 
     #[cfg_attr(
@@ -308,13 +306,11 @@ impl ToolExecutor for McpToolExecutor {
         //
         // ToolOutput.tool_name is set to qualified_name() for display and audit only. Trust
         // classification keys on the sanitized-id registry and ClaimSource::Mcp, not on the name.
-        let found = {
-            let tools = self.tools.read();
-            tools
-                .iter()
-                .find(|t| t.sanitized_id() == call.tool_id)
-                .cloned()
-        };
+        let found = self
+            .tools
+            .snapshot()
+            .find_by_dispatch_id(call.tool_id.as_ref())
+            .cloned();
         let Some(tool) = found else {
             return Ok(None);
         };
@@ -332,7 +328,7 @@ impl ToolExecutor for McpToolExecutor {
             crate::sanitize::intent_anchor_wrap(tool.server_id.as_str(), &tool.name, &raw_text);
 
         let media = self
-            .collect_media(tool.server_id.as_str(), &tool.name, &result.content)
+            .collect_media(&tool.server_id, &tool.name, &result.content)
             .await;
 
         Ok(Some(tool_output(&tool, text, media, &result)))
@@ -360,15 +356,13 @@ impl ToolExecutor for McpToolExecutor {
 
             // SECURITY: Validate server:tool against the registered tool list before dispatch.
             // This prevents a prompt injection from routing calls to unregistered servers or tools.
-            let found = {
-                let tools = self.tools.read();
-                tools
-                    .iter()
-                    .find(|t| {
-                        t.server_id == instruction.server.as_str() && t.name == instruction.tool
-                    })
-                    .cloned()
-            };
+            let found = self
+                .tools
+                .snapshot()
+                .tools
+                .iter()
+                .find(|t| t.server_id == instruction.server.as_str() && t.name == instruction.tool)
+                .cloned();
             let Some(tool) = found else {
                 return Err(ToolError::Execution(std::io::Error::other(format!(
                     "MCP tool {}:{} not in registered tool list",
@@ -407,6 +401,10 @@ impl ToolExecutor for McpToolExecutor {
             claim_source: Some(zeph_tools::ClaimSource::Mcp),
             ..Default::default()
         }))
+    }
+
+    fn mcp_dispatch_ids(&self) -> Arc<zeph_tools::McpToolIds> {
+        Arc::clone(&self.tools.snapshot().ids)
     }
 
     zeph_tools::tool_executor_no_inner_defaults!();
@@ -504,7 +502,7 @@ mod tests {
         trust_level: crate::manager::McpTrustLevel,
     ) -> crate::manager::ServerEntry {
         crate::manager::ServerEntry {
-            id: id.to_owned(),
+            id: id.into(),
             transport: crate::manager::McpTransport::Stdio {
                 command: "nonexistent-mcp-binary".into(),
                 args: Vec::new(),
@@ -586,7 +584,11 @@ mod tests {
     async fn collect_media_noop_without_sanitizer_attached() {
         let executor = make_executor();
         let media = executor
-            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .collect_media(
+                &"srv".into(),
+                "tool",
+                std::slice::from_ref(&png_image_block()),
+            )
             .await;
         assert!(media.is_empty());
     }
@@ -596,7 +598,11 @@ mod tests {
         let entry = media_entry("srv", false, crate::manager::McpTrustLevel::Untrusted);
         let executor = executor_with_media(entry);
         let media = executor
-            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .collect_media(
+                &"srv".into(),
+                "tool",
+                std::slice::from_ref(&png_image_block()),
+            )
             .await;
         assert!(
             media.is_empty(),
@@ -609,7 +615,11 @@ mod tests {
         let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
         let executor = executor_with_media(entry);
         let media = executor
-            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .collect_media(
+                &"srv".into(),
+                "tool",
+                std::slice::from_ref(&png_image_block()),
+            )
             .await;
         assert_eq!(
             media.len(),
@@ -624,7 +634,11 @@ mod tests {
         let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Sandboxed);
         let executor = executor_with_media(entry);
         let media = executor
-            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .collect_media(
+                &"srv".into(),
+                "tool",
+                std::slice::from_ref(&png_image_block()),
+            )
             .await;
         assert!(
             media.is_empty(),
@@ -647,7 +661,7 @@ mod tests {
         // Cap of 2, but 3 images in the result — only the first 2 are attached (AC-13).
         let executor = McpToolExecutor::new(mgr, tools).with_media(sanitizer, 2);
         let blocks = vec![png_image_block(), png_image_block(), png_image_block()];
-        let media = executor.collect_media("srv", "tool", &blocks).await;
+        let media = executor.collect_media(&"srv".into(), "tool", &blocks).await;
         assert_eq!(media.len(), 2);
     }
 
@@ -657,7 +671,7 @@ mod tests {
         let executor = executor_with_media(entry);
         let mismatched = rmcp::model::ContentBlock::image(BASE64.encode(PNG_1X1), "image/jpeg");
         let media = executor
-            .collect_media("srv", "tool", std::slice::from_ref(&mismatched))
+            .collect_media(&"srv".into(), "tool", std::slice::from_ref(&mismatched))
             .await;
         assert!(media.is_empty(), "MIME mismatch must be rejected (AC-4)");
     }
@@ -680,7 +694,11 @@ mod tests {
             .with_status_tx(tx);
 
         let media = executor
-            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .collect_media(
+                &"srv".into(),
+                "tool",
+                std::slice::from_ref(&png_image_block()),
+            )
             .await;
         assert_eq!(media.len(), 1);
 
@@ -710,7 +728,8 @@ mod tests {
             .with_status_tx(tx);
 
         let blocks = [png_image_block()];
-        let mut fut = Box::pin(executor.collect_media("srv", "tool", &blocks));
+        let server_id = McpServerId::from("srv");
+        let mut fut = Box::pin(executor.collect_media(&server_id, "tool", &blocks));
         assert!(
             futures::poll!(fut.as_mut()).is_pending(),
             "decode must still be in flight after the first poll"
@@ -732,7 +751,7 @@ mod tests {
 
         let text_block = rmcp::model::ContentBlock::text("no images here".to_owned());
         let media = executor
-            .collect_media("srv", "tool", std::slice::from_ref(&text_block))
+            .collect_media(&"srv".into(), "tool", std::slice::from_ref(&text_block))
             .await;
         assert!(media.is_empty());
         let update = tokio::time::timeout(std::time::Duration::from_millis(50), rx.next()).await;

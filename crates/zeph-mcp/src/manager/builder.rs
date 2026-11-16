@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use dashmap::DashMap;
 use rmcp::transport::auth::CredentialStore;
 use tokio::sync::{RwLock, mpsc, watch};
+use zeph_common::types::McpServerId;
 
 use crate::embedding_guard::EmbeddingAnomalyGuard;
 use crate::policy::PolicyEnforcer;
@@ -62,7 +63,7 @@ impl McpManager {
         let (refresh_tx, refresh_rx) = mpsc::channel(16);
         let (elicitation_tx, elicitation_rx) = mpsc::channel(elicitation_queue_capacity.max(1));
         let (tools_watch_tx, _) = watch::channel(Vec::new());
-        let server_trust: HashMap<String, _> = configs
+        let server_trust: HashMap<McpServerId, _> = configs
             .iter()
             .map(|c| {
                 (
@@ -76,20 +77,28 @@ impl McpManager {
                 )
             })
             .collect();
-        let server_tool_metadata: HashMap<String, HashMap<String, ToolSecurityMeta>> = configs
+        let server_tool_metadata: HashMap<McpServerId, HashMap<String, ToolSecurityMeta>> = configs
             .iter()
             .map(|c| (c.id.clone(), c.tool_metadata.clone()))
             .collect();
-        let server_elicitation: HashMap<String, bool> = configs
+        let server_elicitation: HashMap<McpServerId, bool> = configs
             .iter()
             .map(|c| (c.id.clone(), c.elicitation_enabled))
             .collect();
-        let server_elicitation_timeout: HashMap<String, u64> = configs
+        let server_elicitation_timeout: HashMap<McpServerId, u64> = configs
             .iter()
             .map(|c| (c.id.clone(), c.elicitation_timeout_secs))
             .collect();
+        // A duplicated `[[mcp.servers]]` id keeps its first position, so its tools are listed once.
+        let mut seen = HashSet::new();
+        let configured_order: Arc<[McpServerId]> = configs
+            .iter()
+            .filter(|c| seen.insert(c.id.clone()))
+            .map(|c| c.id.clone())
+            .collect();
         Self {
             configs,
+            configured_order,
             allowed_commands,
             clients: Arc::new(RwLock::new(HashMap::new())),
             connected_server_ids: SyncRwLock::new(HashSet::new()),
@@ -215,7 +224,7 @@ impl McpManager {
     #[must_use]
     pub fn with_oauth_credential_store(
         mut self,
-        server_id: impl Into<String>,
+        server_id: impl Into<McpServerId>,
         store: Arc<dyn CredentialStore>,
     ) -> Self {
         self.oauth_credentials.insert(server_id.into(), store);

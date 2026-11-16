@@ -16,13 +16,21 @@ mod compaction_e2e;
 #[cfg(test)]
 mod confirmation_propagation_tests;
 #[cfg(all(test, feature = "scheduler"))]
+mod ensemble_billing_tests;
+#[cfg(all(test, feature = "scheduler"))]
 mod ensemble_scheduler_loop_tests;
+#[cfg(test)]
+mod failed_turn_error_log_tests;
 #[cfg(test)]
 mod flush_orphaned_tests;
 #[cfg(test)]
 mod inline_tool_loop_tests;
 #[cfg(test)]
 mod mage_signal_mapping_tests;
+#[cfg(test)]
+mod mcp_tool_scope_membership_tests;
+#[cfg(test)]
+mod mcp_tool_scope_tests;
 #[cfg(all(test, feature = "scheduler"))]
 mod per_task_verify_signal_tests;
 #[cfg(test)]

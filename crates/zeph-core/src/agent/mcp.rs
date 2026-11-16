@@ -5,6 +5,47 @@ use rmcp::model::{ElicitResult, ElicitationAction};
 
 use super::{Agent, Channel, LlmProvider};
 
+/// Which MCP servers' tools an agent may see on `tools/list_changed` refreshes.
+///
+/// The shared [`McpManager`](zeph_mcp::McpManager) broadcasts the tools of **every** connected
+/// server, including servers another ACP session attached through its IDE. A session therefore
+/// filters the broadcast by its own scope, so one session never learns the tools of another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpToolScope {
+    /// Every connected server (runner, daemon).
+    AllServers,
+    /// Only the listed servers (ACP session: static ids plus attached IDE ids).
+    Servers(std::collections::HashSet<zeph_common::types::McpServerId>),
+}
+
+impl McpToolScope {
+    /// Keep the tools this scope admits, preserving their order.
+    #[must_use]
+    pub fn filter(&self, tools: Vec<zeph_mcp::McpTool>) -> Vec<zeph_mcp::McpTool> {
+        match self {
+            Self::AllServers => tools,
+            Self::Servers(servers) => tools
+                .into_iter()
+                .filter(|t| servers.contains(&t.server_id))
+                .collect(),
+        }
+    }
+
+    /// Admit `server_id` (a server connected with `/mcp add`); a no-op for `AllServers`.
+    pub fn admit(&mut self, server_id: zeph_common::types::McpServerId) {
+        if let Self::Servers(servers) = self {
+            servers.insert(server_id);
+        }
+    }
+
+    /// Stop admitting `server_id` (a server removed with `/mcp remove`); a no-op for `AllServers`.
+    pub fn release(&mut self, server_id: &str) {
+        if let Self::Servers(servers) = self {
+            servers.remove(server_id);
+        }
+    }
+}
+
 /// Render the `/mcp list` "Shadowed tools" section; empty when nothing is shadowed.
 fn format_shadowed_tools(collisions: &[zeph_mcp::tool::ToolCollision]) -> String {
     use std::fmt::Write;
@@ -74,6 +115,7 @@ impl<C: Channel> Agent<C> {
         match manager.add_server(&entry).await {
             Ok(tools) => {
                 let count = tools.len();
+                self.services.mcp.tool_scope.admit(entry.id.clone());
                 self.services
                     .mcp
                     .server_outcomes
@@ -101,7 +143,7 @@ impl<C: Channel> Agent<C> {
                 ))
             }
             Err(e) => {
-                tracing::warn!(server_id = entry.id, "MCP add failed: {e:#}");
+                tracing::warn!(server_id = %entry.id, "MCP add failed: {e:#}");
                 Ok(format!("Failed to connect server '{}': {e}", entry.id))
             }
         }
@@ -184,6 +226,7 @@ impl<C: Channel> Agent<C> {
 
         match manager.remove_server(server_id).await {
             Ok(()) => {
+                self.services.mcp.tool_scope.release(server_id);
                 let before = self.services.mcp.tools().len();
                 self.services.mcp.retain_tools(|t| t.server_id != server_id);
                 let removed = before - self.services.mcp.tools().len();
@@ -366,7 +409,11 @@ impl<C: Channel> Agent<C> {
         if !rx.has_changed().unwrap_or(false) {
             return;
         }
-        let new_tools = rx.borrow_and_update().clone();
+        let new_tools = self
+            .services
+            .mcp
+            .tool_scope
+            .filter(rx.borrow_and_update().clone());
         if new_tools.is_empty() {
             // Guard against replacing a non-empty initial tool list with the watch's empty
             // initial value. The watch is only updated after a real tools/list_changed event.
@@ -375,6 +422,10 @@ impl<C: Channel> Agent<C> {
             // `tools/list_changed` producer never sends an empty vec, and removing the last
             // server goes through the `pending_semantic_rebuild` branch above, which has no
             // such guard.
+            return;
+        }
+        if new_tools == self.services.mcp.tools() {
+            // Nothing in this agent's scope changed (e.g. another session's server refreshed).
             return;
         }
         tracing::info!(
@@ -683,7 +734,7 @@ fn build_server_entry(id: &str, target: &str, extra_args: &[&str]) -> zeph_mcp::
         }
     };
     zeph_mcp::ServerEntry {
-        id: id.to_owned(),
+        id: id.into(),
         transport,
         timeout: std::time::Duration::from_secs(30),
         trust_level: zeph_config::McpTrustLevel::Untrusted,
@@ -1369,7 +1420,7 @@ mod tests {
         agent.check_tool_refresh().await;
 
         assert!(handle.contains("srv_refreshed_tool"));
-        assert_eq!(reader.read().len(), 1);
+        assert_eq!(reader.snapshot().tools.len(), 1);
     }
 
     #[tokio::test]
@@ -1394,7 +1445,8 @@ mod tests {
         assert!(handle.contains("srv_refreshed_tool"));
         assert!(
             reader
-                .read()
+                .snapshot()
+                .tools
                 .iter()
                 .all(|t| t.server_id.as_str() != "stale_server")
         );
@@ -1426,10 +1478,10 @@ mod tests {
         state.tool_list = Some(writer);
         state.set_tools(vec![refreshed_tool("a"), refreshed_tool("b")]);
         state.apply_pruned_tools(vec![refreshed_tool("a")]);
-        assert_eq!(reader.read().len(), 1);
+        assert_eq!(reader.snapshot().tools.len(), 1);
         assert!(handle.contains("srv_b"));
         state.sync_executor_tools();
-        assert_eq!(reader.read().len(), 2);
+        assert_eq!(reader.snapshot().tools.len(), 2);
     }
 
     #[test]

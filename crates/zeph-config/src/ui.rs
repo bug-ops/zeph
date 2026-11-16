@@ -751,6 +751,164 @@ pub struct AcpConfig {
     /// clients via the `model_config` `session/set_config_option` category (schema 1.1.0+).
     #[serde(default)]
     pub model_config: AcpModelConfigConfig,
+    /// Operator policy for MCP servers the IDE attaches to a session (`[acp.ide_mcp]`).
+    #[serde(default)]
+    pub ide_mcp: AcpIdeMcpConfig,
+}
+
+fn default_acp_ide_mcp_max_servers() -> usize {
+    10
+}
+
+/// Operator policy for MCP servers an ACP client attaches to a session (`[acp.ide_mcp]`).
+///
+/// IDE-supplied servers are always `Untrusted`, and an untrusted server without a tool allowlist
+/// exposes zero tools. A grant here is the only way an IDE server exposes tools: it pins the
+/// exact transport the operator reviewed and names the tools to allow.
+///
+/// # Security
+///
+/// A grant matches only when the IDE-chosen server name, the transport (`command` and `args`, or
+/// `url`) and the environment **key** set all match. Environment values are **not** pinned, so
+/// never list interpreter- or package-manager-control keys (`NODE_OPTIONS`,
+/// `JAVA_TOOL_OPTIONS`, `PERL5OPT`, `npm_config_*`) in `env_keys`: an IDE could use them to
+/// change what the pinned command executes. `env_keys` is the allowlist of keys the IDE may
+/// send; an empty list means the server must receive no environment from the IDE.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [acp.ide_mcp]
+/// max_servers_per_session = 10
+///
+/// [acp.ide_mcp.servers.filesystem]
+/// command = "npx"
+/// args = ["-y", "@modelcontextprotocol/server-filesystem", "/repo"]
+/// env_keys = []
+/// tools = ["read_file"]
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AcpIdeMcpConfig {
+    /// Maximum IDE MCP servers attached per session; `0` disables IDE servers. Default: `10`.
+    pub max_servers_per_session: usize,
+    /// Grants keyed by the IDE-supplied server name.
+    pub servers: std::collections::BTreeMap<String, AcpIdeMcpGrant>,
+}
+
+impl Default for AcpIdeMcpConfig {
+    fn default() -> Self {
+        Self {
+            max_servers_per_session: default_acp_ide_mcp_max_servers(),
+            servers: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// One operator grant for an IDE-provided MCP server.
+///
+/// Parsed from `[acp.ide_mcp.servers.<name>]`: exactly one of `command` / `url`, with `args` and
+/// `env_keys` allowed only next to `command`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "AcpIdeMcpGrantRaw", into = "AcpIdeMcpGrantRaw")]
+pub struct AcpIdeMcpGrant {
+    /// Exact transport the grant is pinned to.
+    pub target: AcpIdeMcpTarget,
+    /// Tool names the server may expose.
+    pub tools: Vec<String>,
+}
+
+/// Transport pin of an [`AcpIdeMcpGrant`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcpIdeMcpTarget {
+    /// Stdio server pinned by command, args and the set of allowed env keys.
+    Stdio {
+        /// Executable, matched exactly.
+        command: String,
+        /// Arguments, matched exactly and in order.
+        args: Vec<String>,
+        /// Env keys the IDE may send; values are not pinned.
+        env_keys: std::collections::BTreeSet<String>,
+    },
+    /// HTTP/SSE server pinned by URL.
+    Http {
+        /// Server URL, matched exactly.
+        url: String,
+    },
+}
+
+/// On-disk shape of an [`AcpIdeMcpGrant`], validated by `TryFrom`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AcpIdeMcpGrantRaw {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    args: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    env_keys: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    tools: Vec<String>,
+}
+
+impl TryFrom<AcpIdeMcpGrantRaw> for AcpIdeMcpGrant {
+    type Error = String;
+
+    fn try_from(raw: AcpIdeMcpGrantRaw) -> Result<Self, Self::Error> {
+        if raw.tools.is_empty() {
+            return Err("grant must list at least one tool in `tools`".to_owned());
+        }
+        let target = match (raw.command, raw.url) {
+            (Some(command), None) if !command.is_empty() => AcpIdeMcpTarget::Stdio {
+                command,
+                args: raw.args,
+                env_keys: raw.env_keys,
+            },
+            (None, Some(url)) if !url.is_empty() => {
+                if !raw.args.is_empty() || !raw.env_keys.is_empty() {
+                    return Err("`args` and `env_keys` apply only to `command` grants".to_owned());
+                }
+                AcpIdeMcpTarget::Http { url }
+            }
+            (Some(_), Some(_)) => {
+                return Err("grant must set exactly one of `command` or `url`, not both".to_owned());
+            }
+            _ => {
+                return Err("grant must set exactly one non-empty `command` or `url`".to_owned());
+            }
+        };
+        Ok(Self {
+            target,
+            tools: raw.tools,
+        })
+    }
+}
+
+impl From<AcpIdeMcpGrant> for AcpIdeMcpGrantRaw {
+    fn from(grant: AcpIdeMcpGrant) -> Self {
+        let (command, url, args, env_keys) = match grant.target {
+            AcpIdeMcpTarget::Stdio {
+                command,
+                args,
+                env_keys,
+            } => (Some(command), None, args, env_keys),
+            AcpIdeMcpTarget::Http { url } => (
+                None,
+                Some(url),
+                Vec::new(),
+                std::collections::BTreeSet::new(),
+            ),
+        };
+        Self {
+            command,
+            url,
+            args,
+            env_keys,
+            tools: grant.tools,
+        }
+    }
 }
 
 impl Default for AcpConfig {
@@ -776,6 +934,7 @@ impl Default for AcpConfig {
             subagents: AcpSubagentsConfig::default(),
             timeouts: AcpTimeoutsConfig::default(),
             model_config: AcpModelConfigConfig::default(),
+            ide_mcp: AcpIdeMcpConfig::default(),
         }
     }
 }
@@ -806,6 +965,7 @@ impl std::fmt::Debug for AcpConfig {
             .field("subagents", &self.subagents)
             .field("timeouts", &self.timeouts)
             .field("model_config", &self.model_config)
+            .field("ide_mcp", &self.ide_mcp)
             .finish()
     }
 }

@@ -71,6 +71,10 @@ impl ErasedToolExecutor for MemoryAwareExecutor {
         self.inner.execute_confirmed_erased(response)
     }
 
+    fn mcp_dispatch_ids_erased(&self) -> std::sync::Arc<zeph_tools::McpToolIds> {
+        self.inner.mcp_dispatch_ids_erased()
+    }
+
     fn tool_definitions_erased(&self) -> Vec<zeph_tools::registry::ToolDef> {
         let mut defs = self.inner.tool_definitions_erased();
         let inner_ids: std::collections::HashSet<String> =

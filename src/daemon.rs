@@ -390,6 +390,7 @@ where
     mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
+    mcp_tool_rx: watch::Receiver<Vec<zeph_mcp::McpTool>>,
     provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
     /// #5975: shared with `SkillInvokeExecutor` — see `run_daemon`'s construction site.
     trust_snapshot: std::sync::Arc<
@@ -460,6 +461,7 @@ where
         Some(deps.mcp_manager),
         &config.mcp,
     )
+    .with_mcp_tool_rx(deps.mcp_tool_rx, zeph_core::agent::McpToolScope::AllServers)
     .with_hybrid_search(config.skills.hybrid_search)
     .with_rl_routing(
         config.skills.rl_routing_enabled,
@@ -784,6 +786,11 @@ pub(crate) async fn run_daemon(
     } else {
         mcp_manager.connect_all().await
     };
+    // Subscribe before spawning the refresh task so no `tools/list_changed` event is missed.
+    let mcp_tool_rx = mcp_manager.subscribe_tool_changes();
+    if !config.cli.safe_mode {
+        mcp_manager.spawn_refresh_task(Some(&task_supervisor));
+    }
     // Retain a reference for explicit pre-shutdown so child processes are killed while the
     // tokio runtime is still live (fixes #2693: ChildWithCleanup::drop races with shutdown).
     let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
@@ -1132,6 +1139,7 @@ pub(crate) async fn run_daemon(
         shell_policy_handle,
         mcp_tools,
         mcp_registry,
+        mcp_tool_rx,
         mcp_manager,
         provider_config_snapshot,
         trust_snapshot,
@@ -1548,6 +1556,7 @@ mod tests {
             shell_policy_handle,
             mcp_tools: Vec::new(),
             mcp_registry: None,
+            mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
             mcp_manager,
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
@@ -1639,6 +1648,7 @@ mod tests {
             shell_policy_handle,
             mcp_tools: Vec::new(),
             mcp_registry: None,
+            mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
             mcp_manager,
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
@@ -1720,6 +1730,7 @@ mod tests {
             shell_policy_handle,
             mcp_tools: Vec::new(),
             mcp_registry: None,
+            mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
             mcp_manager,
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(

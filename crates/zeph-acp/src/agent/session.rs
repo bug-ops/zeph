@@ -303,8 +303,7 @@ impl ZephAcpAgentState {
         let attachment = self
             .attach_ide_mcp_servers(&session_id, &args.mcp_servers)
             .await;
-        acp_ctx.ide_mcp_tools = attachment.tools;
-        entry.ide_mcp_lease = attachment.lease;
+        entry.ide_mcp_lease = attachment.install(&mut acp_ctx);
         self.sessions.lock().insert(session_id.clone(), entry);
 
         let conversation_id = self.create_session_conversation(&session_id).await;
@@ -513,8 +512,7 @@ impl ZephAcpAgentState {
         let attachment = self
             .attach_ide_mcp_servers(&args.session_id, &args.mcp_servers)
             .await;
-        acp_ctx.ide_mcp_tools = attachment.tools;
-        entry.ide_mcp_lease = attachment.lease;
+        entry.ide_mcp_lease = attachment.install(&mut acp_ctx);
 
         self.sessions.lock().insert(args.session_id.clone(), entry);
 
@@ -776,8 +774,7 @@ impl ZephAcpAgentState {
         let attachment = self
             .attach_ide_mcp_servers(&new_id, &args.mcp_servers)
             .await;
-        acp_ctx.ide_mcp_tools = attachment.tools;
-        entry.ide_mcp_lease = attachment.lease;
+        entry.ide_mcp_lease = attachment.install(&mut acp_ctx);
 
         self.sessions.lock().insert(new_id.clone(), entry);
 
@@ -913,8 +910,7 @@ impl ZephAcpAgentState {
         let attachment = self
             .attach_ide_mcp_servers(&args.session_id, &args.mcp_servers)
             .await;
-        acp_ctx.ide_mcp_tools = attachment.tools;
-        entry.ide_mcp_lease = attachment.lease;
+        entry.ide_mcp_lease = attachment.install(&mut acp_ctx);
 
         self.sessions.lock().insert(args.session_id.clone(), entry);
 

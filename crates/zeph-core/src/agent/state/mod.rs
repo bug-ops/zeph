@@ -199,6 +199,8 @@ pub(crate) struct McpState {
     pub(crate) tool_list: Option<zeph_mcp::McpToolListWriter>,
     /// Receives full flattened tool list after any `tools/list_changed` notification.
     pub(crate) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
+    /// Servers whose tools this agent accepts from `tool_rx`.
+    pub(crate) tool_scope: crate::agent::McpToolScope,
     /// Per-server connection outcomes from the initial `connect_all()` call.
     pub(crate) server_outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
     /// Per-message cache for MCP tool pruning results (#2298).
@@ -1312,7 +1314,7 @@ impl McpState {
         self.server_outcomes
             .iter()
             .map(|o| crate::metrics::McpServerStatus {
-                id: o.id.clone(),
+                id: o.id.to_string(),
                 status: if o.connected {
                     crate::metrics::McpServerConnectionStatus::Connected
                 } else {
@@ -1324,7 +1326,7 @@ impl McpState {
                 output_schemas_dropped: o.output_schemas_dropped,
                 shadowed_tools: collisions
                     .iter()
-                    .filter(|c| c.server_b.as_str() == o.id)
+                    .filter(|c| c.server_b.as_str() == o.id.as_str())
                     .count(),
             })
             .collect()
@@ -1366,7 +1368,7 @@ impl McpState {
     /// it already covers the full list.
     pub(crate) fn sync_executor_tools(&self) {
         if let Some(ref list) = self.tool_list {
-            list.publish_pruned(self.tools.clone());
+            list.expose_full();
         }
     }
 
@@ -1509,6 +1511,7 @@ impl Default for McpState {
             elicitation_rx: None,
             tool_list: None,
             tool_rx: None,
+            tool_scope: crate::agent::McpToolScope::AllServers,
             server_outcomes: Vec::new(),
             pruning_cache: zeph_mcp::PruningCache::new(),
             pruning_provider: None,

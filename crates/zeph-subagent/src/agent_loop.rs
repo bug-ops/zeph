@@ -972,10 +972,10 @@ fn batch_mcp_tool_ids(
     executor: &FilteredToolExecutor,
     mcp_tool_ids: Option<&McpToolIdsHandle>,
 ) -> Arc<McpToolIds> {
-    let from_executor = McpToolIds::from_definitions(&executor.tool_definitions_erased());
+    let from_executor = executor.mcp_dispatch_ids_erased();
     match mcp_tool_ids {
-        Some(handle) => Arc::new(handle.snapshot().join(&from_executor)),
-        None => Arc::new(from_executor),
+        Some(handle) => McpToolIds::join_arc(&handle.snapshot(), &from_executor),
+        None => from_executor,
     }
 }
 

@@ -95,27 +95,32 @@ impl Default for MockMcpCaller {
 }
 
 impl McpCaller for MockMcpCaller {
-    async fn call_tool(
+    fn call_tool(
         &self,
         server_id: &str,
         tool_name: &str,
         args: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send {
         self.recorded_calls.lock().unwrap().push(McpCall {
             server_id: server_id.to_owned(),
             tool_name: tool_name.to_owned(),
             args,
         });
 
-        let mut queue = self.pending_responses.lock().unwrap();
-        queue.pop_front().unwrap_or_else(|| {
-            Err(McpError::ServerNotFound {
-                server_id: server_id.to_owned(),
-            })
-        })
+        let result = self
+            .pending_responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| {
+                Err(McpError::ServerNotFound {
+                    server_id: server_id.to_owned(),
+                })
+            });
+        std::future::ready(result)
     }
 
-    async fn list_servers(&self) -> Vec<String> {
-        self.server_ids.lock().unwrap().clone()
+    fn list_servers(&self) -> impl Future<Output = Vec<String>> + Send {
+        std::future::ready(self.server_ids.lock().unwrap().clone())
     }
 }

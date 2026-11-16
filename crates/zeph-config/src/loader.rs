@@ -344,7 +344,7 @@ impl Config {
             }
             // vault key collision detection
             if s.oauth.as_ref().is_some_and(|o| o.enabled) {
-                let key = crate::channels::oauth_vault_key(&s.id);
+                let key = crate::channels::oauth_vault_key(s.id.as_str());
                 if !seen_oauth_vault_keys.insert(key.clone()) {
                     return Err(ConfigError::Validation(format!(
                         "MCP server '{}' has vault key collision ('{key}'): another server \
@@ -1072,7 +1072,7 @@ mod tests {
 
     fn mcp_server(id: &str, oauth_enabled: bool) -> McpServerConfig {
         McpServerConfig {
-            id: id.to_owned(),
+            id: id.into(),
             command: Some("echo".to_owned()),
             args: Vec::new(),
             env: HashMap::new(),

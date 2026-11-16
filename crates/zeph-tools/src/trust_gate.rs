@@ -224,6 +224,10 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         self.inner.execute_confirmed(response).await
     }
 
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        self.inner.mcp_dispatch_ids()
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDef> {
         self.inner.tool_definitions()
     }

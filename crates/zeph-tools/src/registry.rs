@@ -101,6 +101,40 @@ impl McpToolIds {
         joined
     }
 
+    /// Union of `a` and `b` that returns an existing `Arc` instead of building a new map when it
+    /// can.
+    ///
+    /// Returns `a` when `b` is empty, is the same allocation, or only holds ids `a` already has;
+    /// returns `b` when `a` is empty; otherwise builds the union with `a` winning on shared ids
+    /// (the same rule as [`join`](Self::join)). This saves only the union map: obtaining `b` can
+    /// still cost, for example the default `ToolExecutor::mcp_dispatch_ids` rebuilds the ids
+    /// from the executor's definitions on every call, and a composite with native leaves builds
+    /// their `ToolDef`s per batch. Only executors that cache their ids (the MCP executor) are
+    /// cheap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use zeph_tools::McpToolIds;
+    ///
+    /// let mut ids = McpToolIds::default();
+    /// ids.insert("github_create_issue".into(), "github".into());
+    /// let a = Arc::new(ids);
+    /// let joined = McpToolIds::join_arc(&a, &Arc::new(McpToolIds::default()));
+    /// assert!(Arc::ptr_eq(&joined, &a));
+    /// ```
+    #[must_use]
+    pub fn join_arc(a: &Arc<Self>, b: &Arc<Self>) -> Arc<Self> {
+        if b.0.is_empty() || Arc::ptr_eq(a, b) || b.0.keys().all(|id| a.0.contains_key(id)) {
+            return Arc::clone(a);
+        }
+        if a.0.is_empty() {
+            return Arc::clone(b);
+        }
+        Arc::new(a.join(b))
+    }
+
     /// Returns `true` when `id` is a registered MCP dispatch id.
     #[must_use]
     pub fn contains(&self, id: &str) -> bool {
@@ -178,7 +212,13 @@ pub struct McpToolIdsWriter(McpToolIdsHandle);
 impl McpToolIdsWriter {
     /// Replace the published registry.
     pub fn publish(&self, ids: McpToolIds) {
-        *self.0.0.write() = Arc::new(ids);
+        self.publish_shared(Arc::new(ids));
+    }
+
+    /// Replace the published registry with an already shared one, so every holder of the
+    /// `Arc` observes the same allocation.
+    pub fn publish_shared(&self, ids: Arc<McpToolIds>) {
+        *self.0.0.write() = ids;
     }
 
     /// A read handle onto the registry this writer publishes.

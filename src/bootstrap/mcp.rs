@@ -63,7 +63,7 @@ pub fn create_mcp_manager_with_vault(
         .mcp
         .servers
         .iter()
-        .map(|s| (s.id.clone(), s.policy.clone()))
+        .map(|s| (s.id.to_string(), s.policy.clone()))
         .collect();
     let enforcer = zeph_mcp::PolicyEnforcer::new(policy_entries);
     let mut manager = zeph_mcp::McpManager::with_elicitation_capacity(
@@ -93,10 +93,13 @@ pub fn create_mcp_manager_with_vault(
         let store: Arc<dyn rmcp::transport::auth::CredentialStore> = match oauth.token_storage {
             OAuthTokenStorage::Vault => {
                 if let Some(vault_arc) = vault {
-                    Arc::new(VaultCredentialStore::new(&s.id, Arc::clone(vault_arc)))
+                    Arc::new(VaultCredentialStore::new(
+                        s.id.as_str(),
+                        Arc::clone(vault_arc),
+                    ))
                 } else {
                     tracing::warn!(
-                        server_id = s.id,
+                        server_id = %s.id,
                         "OAuth token_storage=vault but no vault provided — falling back to memory"
                     );
                     Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new())

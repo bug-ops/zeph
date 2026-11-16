@@ -90,16 +90,17 @@
 use super::{
     MigrateError, Migration, MigrationResult, migrate_a2a_card_trust_config,
     migrate_a2a_server_remove_inert_fields, migrate_acp_auth_clients_config,
-    migrate_acp_subagents_config, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
-    migrate_agent_time_reminder, migrate_agents_delegation_mode,
-    migrate_agents_max_spawns_per_session, migrate_agents_peer_messaging_config,
-    migrate_autodream_config, migrate_caveman_config, migrate_claude_compaction_trigger,
-    migrate_claude_speed, migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
-    migrate_compression_predictor_config, migrate_correction_confidence_calibration,
-    migrate_database_url, migrate_deep_link_config, migrate_durable_config,
-    migrate_durable_hwm_advisory, migrate_durable_key_rotation, migrate_durable_shared_db,
-    migrate_durable_stale_running_after_secs, migrate_egress_config, migrate_embed_provider_rename,
-    migrate_eval_model_to_provider, migrate_fidelity_timeout_defaults, migrate_five_signal_config,
+    migrate_acp_ide_mcp_config, migrate_acp_subagents_config, migrate_agent_budget_hint,
+    migrate_agent_retry_to_tools_retry, migrate_agent_time_reminder,
+    migrate_agents_delegation_mode, migrate_agents_max_spawns_per_session,
+    migrate_agents_peer_messaging_config, migrate_autodream_config, migrate_caveman_config,
+    migrate_claude_compaction_trigger, migrate_claude_speed, migrate_cocoon_provider_notice,
+    migrate_cocoon_show_balance, migrate_compression_predictor_config,
+    migrate_correction_confidence_calibration, migrate_database_url, migrate_deep_link_config,
+    migrate_durable_config, migrate_durable_hwm_advisory, migrate_durable_key_rotation,
+    migrate_durable_shared_db, migrate_durable_stale_running_after_secs, migrate_egress_config,
+    migrate_embed_provider_rename, migrate_eval_model_to_provider,
+    migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_auto_check,
     migrate_goals_config, migrate_hooks_permission_denied_config,
     migrate_hooks_turn_complete_config, migrate_integrity_config, migrate_knowledge_config,
@@ -1484,6 +1485,18 @@ impl Migration for MigrateTelegramAllowedUserIds {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_telegram_allowed_user_ids(toml_src)
+    }
+}
+
+/// Step 117 — adds a commented `[acp.ide_mcp]` grants and cap block (#7081, #7082).
+pub(super) struct MigrateAcpIdeMcpConfig;
+impl Migration for MigrateAcpIdeMcpConfig {
+    fn name(&self) -> &'static str {
+        "migrate_acp_ide_mcp_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_acp_ide_mcp_config(toml_src)
     }
 }
 

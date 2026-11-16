@@ -10,8 +10,8 @@ use std::assert_matches;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        116,
-        "MIGRATIONS registry must contain all 116 sequential steps"
+        117,
+        "MIGRATIONS registry must contain all 117 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2205,7 +2205,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 116);
+    assert_eq!(MIGRATIONS.len(), 117);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2224,6 +2224,22 @@ fn full_registry_adds_panel_sizing_advisory_to_legacy_tui_config() {
     assert!(
         current.contains("# panel_sizing = \"auto\""),
         "MIGRATIONS must add the panel_sizing advisory comment, got: {current}"
+    );
+}
+
+/// Wire-X-into-registry check for `MigrateAcpIdeMcpConfig` (#7081, #7082).
+#[test]
+fn full_registry_adds_acp_ide_mcp_advisory_to_legacy_acp_config() {
+    let mut current = "[acp]\nenabled = true\n".to_owned();
+    for m in MIGRATIONS.iter() {
+        current = m
+            .apply(&current)
+            .expect("registry migration must not fail")
+            .output;
+    }
+    assert!(
+        current.contains("# [acp.ide_mcp]"),
+        "MIGRATIONS must add the acp.ide_mcp advisory block, got: {current}"
     );
 }
 
@@ -2417,6 +2433,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_goals_auto_check",
         "migrate_telegram_allowed_user_ids",
         "migrate_claude_speed",
+        "migrate_acp_ide_mcp_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

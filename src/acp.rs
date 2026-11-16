@@ -310,7 +310,7 @@ pub(crate) async fn build_shared_core(
 /// - **Optional runtime providers** (`summary_provider`, `judge_provider`,
 ///   `quarantine_provider`) — contain HTTP client pools (`AnyProvider`) with runtime state;
 ///   excluded from `session_config` because they are not purely config-derived.
-/// - **MCP objects** (`mcp_tools`, `mcp_registry`, `mcp_manager`, `mcp_media`,
+/// - **MCP objects** (`mcp_registry`, `mcp_manager`, `mcp_media`,
 ///   `mcp_config`) — runtime + config mixture; passed together to `with_mcp()`. Each session
 ///   builds its own `McpToolList` and `McpToolExecutor` from them, so no tool-list write
 ///   crosses sessions.
@@ -477,7 +477,6 @@ pub(crate) struct SharedAgentDeps {
     config_path: PathBuf,
 
     // MCP — runtime objects + config passed together to `with_mcp()`
-    mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
     /// MCP image passthrough settings (sanitizer and per-result cap) applied to every session's
@@ -602,9 +601,11 @@ pub(crate) struct SharedAgentDeps {
     /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
     acp_message_ids_enabled: bool,
     /// ACP timeout configuration (elicitation, terminal, MCP).
-    acp_timeouts: zeph_config::AcpTimeoutsConfig,
+    acp_timeouts: std::sync::Arc<zeph_config::AcpTimeoutsConfig>,
     /// ACP model-related configuration parameters (`[acp.model_config]`).
     acp_model_config: zeph_config::AcpModelConfigConfig,
+    /// ACP IDE MCP grants and cap (`[acp.ide_mcp]`).
+    acp_ide_mcp: std::sync::Arc<zeph_config::AcpIdeMcpConfig>,
     /// Resolves current per-plugin skill dirs at hot-reload time.
     plugin_dirs_supplier: std::sync::Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 
@@ -891,6 +892,11 @@ async fn build_acp_deps(
     } else {
         mcp_manager.connect_all().await
     };
+    // Without the refresh task nothing feeds `tools_watch_tx`, so per-session
+    // `with_mcp_tool_rx` subscriptions would never fire. Idempotent when the manager is shared.
+    if !config.cli.safe_mode {
+        mcp_manager.spawn_refresh_task(Some(&acp_mem_supervisor));
+    }
     let mcp_media = if config.cli.no_mcp_media {
         tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
         None
@@ -1239,7 +1245,6 @@ async fn build_acp_deps(
         code_qdrant_ops: app.qdrant_ops().cloned(),
         shutdown_rx,
         config_path: config_path_owned,
-        mcp_tools,
         mcp_registry,
         mcp_manager,
         mcp_media,
@@ -1359,8 +1364,9 @@ async fn build_acp_deps(
         acp_additional_directories: config.acp.additional_directories.clone(),
         acp_auth_methods: config.acp.auth_methods.clone(),
         acp_message_ids_enabled: config.acp.message_ids_enabled,
-        acp_timeouts: config.acp.timeouts.clone(),
+        acp_timeouts: std::sync::Arc::new(config.acp.timeouts.clone()),
         acp_model_config: config.acp.model_config.clone(),
+        acp_ide_mcp: std::sync::Arc::new(config.acp.ide_mcp.clone()),
         plugin_dirs_supplier: std::sync::Arc::new(plugin_dirs_supplier),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
@@ -1510,6 +1516,8 @@ where
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
     mcp_config: zeph_core::config::McpConfig,
+    mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
+    mcp_tool_scope: zeph_core::agent::McpToolScope,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
     trajectory_config: zeph_core::config::TrajectoryConfig,
@@ -1596,6 +1604,7 @@ where
         Some(deps.mcp_manager),
         &deps.mcp_config,
     )
+    .with_mcp_tool_rx(deps.mcp_tool_rx, deps.mcp_tool_scope)
     .with_focus_and_sidequest_config(deps.focus_config, deps.sidequest_config)
     .with_trajectory_and_category_config(deps.trajectory_config, deps.category_config)
     .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
@@ -1619,6 +1628,25 @@ where
     .with_tools_enabled(deps.tools_enabled)
     .maybe_init_tool_schema_filter(deps.tool_filter_config, deps.provider)
     .await
+}
+
+#[cfg(feature = "acp")]
+/// Subscribe to MCP tool-list changes and seed an ACP session with the live scope-filtered tools.
+///
+/// Subscribing **first** closes the race with the refresh task: a `tools/list_changed` published
+/// between the subscription and the snapshot is either already in the snapshot or flagged by
+/// `has_changed()`. The snapshot comes from [`zeph_mcp::McpManager::tool_snapshot`], which also
+/// contains servers added through `add_server` (IDE servers) that never reach the watch channel.
+async fn seed_session_mcp(
+    manager: &zeph_mcp::McpManager,
+    scope: &zeph_core::agent::McpToolScope,
+) -> (
+    tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
+    Vec<zeph_mcp::McpTool>,
+) {
+    let rx = manager.subscribe_tool_changes();
+    let tools = scope.filter(manager.tool_snapshot().await);
+    (rx, tools)
 }
 
 /// Spawn an `Agent` from shared deps and per-session context, then run its loop.
@@ -1676,14 +1704,17 @@ async fn spawn_acp_agent(
     let code_qdrant_ops = d.code_qdrant_ops.clone();
     let shutdown_rx = d.shutdown_rx.clone();
     let config_path = d.config_path.clone();
-    // The IDE's own MCP servers for this session join the shared tools, so the session's tool
-    // list (and its id registry) covers them from the first turn.
-    let mut mcp_tools = d.mcp_tools.clone();
+    let mut mcp_servers: std::collections::HashSet<zeph_common::types::McpServerId> =
+        d.mcp_config.servers.iter().map(|s| s.id.clone()).collect();
     if let Some(ctx) = acp_ctx.as_mut() {
-        mcp_tools.append(&mut ctx.ide_mcp_tools);
+        mcp_servers.extend(std::mem::take(&mut ctx.ide_mcp_servers));
     }
+    let mcp_tool_scope = zeph_core::agent::McpToolScope::Servers(mcp_servers);
     let mcp_registry = d.mcp_registry.clone();
     let mcp_manager = Arc::clone(&d.mcp_manager);
+    // Seed from the live list, not the startup snapshot: the session's own IDE servers are already
+    // registered, and refreshes that landed before this session spawned must not be lost.
+    let (mcp_tool_rx, mcp_tools) = seed_session_mcp(&mcp_manager, &mcp_tool_scope).await;
     let mcp_config = d.mcp_config.clone();
     let summary_provider = d.summary_provider.clone();
     let judge_provider = d.judge_provider.clone();
@@ -2189,6 +2220,8 @@ async fn spawn_acp_agent(
         shell_policy_handle: d.shell_policy_handle.clone(),
         mcp_tools,
         mcp_registry,
+        mcp_tool_rx,
+        mcp_tool_scope,
         mcp_manager: Arc::clone(&mcp_manager),
         mcp_config,
         focus_config: d.focus_config.clone(),
@@ -2802,6 +2835,7 @@ pub(crate) async fn run_acp_server(
         message_ids_enabled: effective_message_ids,
         timeouts: deps.acp_timeouts.clone(),
         model_config: deps.acp_model_config.clone(),
+        ide_mcp: deps.acp_ide_mcp.clone(),
     };
 
     let shared = Arc::new(deps);
@@ -2907,8 +2941,9 @@ pub(crate) async fn run_acp_http_server(
         additional_directories: app.config().acp.additional_directories.clone(),
         auth_methods: app.config().acp.auth_methods.clone(),
         message_ids_enabled: app.config().acp.message_ids_enabled,
-        timeouts: app.config().acp.timeouts.clone(),
+        timeouts: std::sync::Arc::new(app.config().acp.timeouts.clone()),
         model_config: app.config().acp.model_config.clone(),
+        ide_mcp: std::sync::Arc::new(app.config().acp.ide_mcp.clone()),
     };
     let shared_deps: Arc<RwLock<Option<Arc<SharedAgentDeps>>>> = Arc::new(RwLock::new(None));
     let shared_deps_for_spawner = Arc::clone(&shared_deps);
@@ -3025,6 +3060,7 @@ pub(crate) fn acp_http_server_config(deps: &mut SharedAgentDeps) -> zeph_acp::Ac
         message_ids_enabled: deps.acp_message_ids_enabled,
         timeouts: deps.acp_timeouts.clone(),
         model_config: deps.acp_model_config.clone(),
+        ide_mcp: deps.acp_ide_mcp.clone(),
     }
 }
 
@@ -3079,6 +3115,60 @@ pub(crate) fn print_acp_manifest() {
 #[cfg(all(test, feature = "acp"))]
 mod tests {
     use super::*;
+
+    fn mcp_tool(server: &str, name: &str) -> zeph_mcp::McpTool {
+        zeph_mcp::McpTool {
+            server_id: server.into(),
+            name: name.to_owned(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+        }
+    }
+
+    /// #7083: an ACP session is seeded from the live manager list, filtered to its own servers
+    /// (static config ids plus its attached IDE ids); another session's IDE server never leaks
+    /// in, and a later change to that foreign server leaves the filtered list equal to the seed.
+    #[tokio::test]
+    async fn seed_session_mcp_is_scoped_to_static_and_own_ide_servers() {
+        let manager = zeph_mcp::McpManager::new(
+            vec![],
+            vec![],
+            zeph_mcp::policy::PolicyEnforcer::new(vec![]),
+        );
+        manager
+            .inject_tools_for_testing("static-a", vec![mcp_tool("static-a", "t")])
+            .await;
+        manager
+            .inject_tools_for_testing("ide-1111", vec![mcp_tool("ide-1111", "t")])
+            .await;
+        manager
+            .inject_tools_for_testing("ide-9999", vec![mcp_tool("ide-9999", "t")])
+            .await;
+        let scope = zeph_core::agent::McpToolScope::Servers(
+            ["static-a", "ide-1111"]
+                .into_iter()
+                .map(zeph_common::types::McpServerId::from)
+                .collect(),
+        );
+
+        let (rx, seed) = seed_session_mcp(&manager, &scope).await;
+
+        let mut names: Vec<String> = seed.iter().map(zeph_mcp::McpTool::qualified_name).collect();
+        names.sort();
+        assert_eq!(names, ["ide-1111:t", "static-a:t"]);
+        assert!(!rx.has_changed().unwrap(), "seeded value counts as seen");
+
+        manager
+            .inject_tools_for_testing("ide-9999", vec![mcp_tool("ide-9999", "new")])
+            .await;
+        assert_eq!(
+            scope.filter(manager.tool_snapshot().await),
+            seed,
+            "a foreign server change must not alter the session's scoped list"
+        );
+    }
     use serial_test::serial;
     use std::assert_matches;
     use std::fs;
@@ -5603,6 +5693,8 @@ mod tests {
             shell_policy_handle,
             mcp_tools: Vec::new(),
             mcp_registry: None,
+            mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+            mcp_tool_scope: zeph_core::agent::McpToolScope::AllServers,
             mcp_manager,
             mcp_config: zeph_core::config::McpConfig::default(),
             focus_config: zeph_core::config::FocusConfig::default(),

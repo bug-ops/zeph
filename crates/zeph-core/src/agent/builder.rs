@@ -1160,12 +1160,16 @@ impl<C: Channel> Agent<C> {
     /// Set the watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     ///
     /// The agent polls this receiver at the start of each turn to pick up refreshed tool lists.
+    /// Only tools of the servers admitted by `scope` are applied, and a refresh that leaves the
+    /// scoped list unchanged is a no-op (no index rebuild, no metrics update).
     #[must_use]
     pub fn with_mcp_tool_rx(
         mut self,
         rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
+        scope: super::McpToolScope,
     ) -> Self {
         self.services.mcp.tool_rx = Some(rx);
+        self.services.mcp.tool_scope = scope;
         self
     }
 

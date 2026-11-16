@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
+use zeph_common::types::McpServerId;
 
 use crate::client::{EnvPolicy, McpClient, StderrPolicy, ToolRefreshEvent};
 use crate::error::McpError;
@@ -166,7 +167,7 @@ pub(super) async fn connect_with_retry(
     allowed_commands: &[String],
     suppress_stderr: bool,
     tx: mpsc::Sender<ToolRefreshEvent>,
-    last_refresh: Arc<DashMap<String, Instant>>,
+    last_refresh: Arc<DashMap<McpServerId, Instant>>,
     handler_cfg: &crate::client::HandlerConfig,
     max_attempts: u8,
     retry_backoff_base_ms: u64,
@@ -206,7 +207,7 @@ pub(super) async fn connect_entry(
     allowed_commands: &[String],
     suppress_stderr: bool,
     tx: mpsc::Sender<ToolRefreshEvent>,
-    last_refresh: Arc<DashMap<String, Instant>>,
+    last_refresh: Arc<DashMap<McpServerId, Instant>>,
     handler_cfg: &crate::client::HandlerConfig,
 ) -> Result<McpClient, McpError> {
     match &entry.transport {
@@ -222,7 +223,7 @@ pub(super) async fn connect_entry(
                 EnvPolicy::InheritAll
             };
             McpClient::connect(
-                &entry.id,
+                entry.id.as_str(),
                 command,
                 args,
                 env,
@@ -239,7 +240,7 @@ pub(super) async fn connect_entry(
         McpTransport::Http { url, headers } => {
             if headers.is_empty() {
                 McpClient::connect_url(
-                    &entry.id,
+                    entry.id.as_str(),
                     url,
                     entry.timeout,
                     entry.trust_level,
@@ -250,7 +251,7 @@ pub(super) async fn connect_entry(
                 .await
             } else {
                 McpClient::connect_url_with_headers(
-                    &entry.id,
+                    entry.id.as_str(),
                     url,
                     headers,
                     entry.timeout,
@@ -265,7 +266,7 @@ pub(super) async fn connect_entry(
         McpTransport::OAuth { .. } => {
             // OAuth connections are handled separately in connect_oauth_deferred().
             Err(McpError::OAuthError {
-                server_id: entry.id.clone(),
+                server_id: entry.id.to_string(),
                 message: "OAuth transport cannot be used via connect_entry".into(),
             })
         }

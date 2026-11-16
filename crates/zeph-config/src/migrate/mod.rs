@@ -77,7 +77,7 @@ pub use memory::{
 pub use plugins::migrate_plugins_reputation_config;
 pub use serve::migrate_serve_config;
 pub use session::{
-    migrate_acp_auth_clients_config, migrate_acp_subagents_config,
+    migrate_acp_auth_clients_config, migrate_acp_ide_mcp_config, migrate_acp_subagents_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
@@ -785,11 +785,11 @@ pub trait Migration: Send + Sync {
 mod steps;
 use steps::{
     MigrateA2aCardTrustConfig, MigrateA2aServerRemoveInertFields, MigrateAcpAuthClientsConfig,
-    MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
-    MigrateAgentTimeReminder, MigrateAgentsDelegationMode, MigrateAgentsMaxSpawnsPerSession,
-    MigrateAgentsPeerMessagingConfig, MigrateAutodreamConfig, MigrateCavemanConfig,
-    MigrateClaudeCompactionTrigger, MigrateClaudeSpeed, MigrateCocoonProviderNotice,
-    MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
+    MigrateAcpIdeMcpConfig, MigrateAcpSubagentsConfig, MigrateAgentBudgetHint,
+    MigrateAgentRetryToToolsRetry, MigrateAgentTimeReminder, MigrateAgentsDelegationMode,
+    MigrateAgentsMaxSpawnsPerSession, MigrateAgentsPeerMessagingConfig, MigrateAutodreamConfig,
+    MigrateCavemanConfig, MigrateClaudeCompactionTrigger, MigrateClaudeSpeed,
+    MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
     MigrateCorrectionConfidenceCalibration, MigrateDatabaseUrl, MigrateDeepLinkConfig,
     MigrateDurableConfig, MigrateDurableHwmAdvisory, MigrateDurableKeyRotation,
     MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
@@ -1074,6 +1074,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 116 — add an advisory speed hint to Claude [[llm.providers]] entries
             // (spec 003-llm-providers, #7032)
             Box::new(MigrateClaudeSpeed),
+            // Step 117 — add a commented [acp.ide_mcp] grants and cap block (#7081, #7082)
+            Box::new(MigrateAcpIdeMcpConfig),
         ]
     });
 

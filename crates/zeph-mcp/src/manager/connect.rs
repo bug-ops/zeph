@@ -19,11 +19,13 @@ use crate::elicitation::ElicitationEvent;
 use crate::error::McpError;
 use crate::tool::{McpTool, ToolCollision, detect_collisions};
 
+use zeph_common::types::McpServerId;
+
 use super::ingest::{apply_injection_penalties, ingest_tools};
 use super::retry::connect_with_retry;
 use super::{
     ConnectOutput, IngestConfig, IngestLimits, McpManager, McpTransport, McpTrustLevel,
-    ServerConnectOutcome, ServerEntry, ServerTrust, StatusSender,
+    ServerConnectOutcome, ServerEntry, ServerTrust, StatusSender, tools_in_server_order,
 };
 
 impl McpManager {
@@ -73,12 +75,12 @@ impl McpManager {
         &self,
         entry: &ServerEntry,
     ) -> crate::client::HandlerConfig {
-        let roots = Arc::new(validate_roots(&entry.roots, &entry.id).await);
+        let roots = Arc::new(validate_roots(&entry.roots, entry.id.as_str()).await);
         crate::client::HandlerConfig {
             roots,
             max_description_bytes: self.max_description_bytes,
-            elicitation_tx: self.clone_elicitation_tx_for(&entry.id, entry.trust_level),
-            elicitation_timeout: self.elicitation_timeout_for(&entry.id),
+            elicitation_tx: self.clone_elicitation_tx_for(entry.id.as_str(), entry.trust_level),
+            elicitation_timeout: self.elicitation_timeout_for(entry.id.as_str()),
         }
     }
 
@@ -92,17 +94,16 @@ impl McpManager {
     /// participates in graceful shutdown via `shutdown_all()`. When `None` (test contexts),
     /// a raw `tokio::spawn` is used.
     ///
-    /// # Panics
-    ///
-    /// Panics if the refresh receiver has already been taken (i.e., this method is called twice).
+    /// Idempotent: the manager can be shared by several entry points (CLI runner, ACP, daemon),
+    /// and only the first call spawns the task; later calls are no-ops.
     pub fn spawn_refresh_task(&self, supervisor: Option<&zeph_common::TaskSupervisor>) {
-        let rx = self
-            .refresh_rx
-            .lock()
-            .take()
-            .expect("spawn_refresh_task must only be called once");
+        let Some(rx) = self.refresh_rx.lock().take() else {
+            tracing::debug!("MCP refresh task already spawned");
+            return;
+        };
 
         let server_tools = Arc::clone(&self.server_tools);
+        let configured_order = Arc::clone(&self.configured_order);
         let tools_watch_tx = self.tools_watch_tx.clone();
         let server_trust = Arc::clone(&self.server_trust);
         let server_fingerprints = Arc::clone(&self.server_fingerprints);
@@ -120,7 +121,7 @@ impl McpManager {
                 // MF-2: reject refresh for locked servers before any processing.
                 if lock_tool_list && tool_list_locked.contains_key(&event.server_id) {
                     tracing::warn!(
-                        server_id = event.server_id,
+                        server_id = %event.server_id,
                         "tools/list_changed rejected: tool list is locked after initial connect"
                     );
                     continue;
@@ -143,7 +144,7 @@ impl McpManager {
                     ingest_tools(
                         event.tools,
                         &IngestConfig {
-                            server_id: &event.server_id,
+                            server_id: event.server_id.as_str(),
                             trust_level,
                             allowlist: allowlist.as_deref(),
                             allow_untrusted_without_allowlist,
@@ -163,7 +164,7 @@ impl McpManager {
                 }
                 apply_injection_penalties(
                     trust_store.as_ref(),
-                    &event.server_id,
+                    event.server_id.as_str(),
                     &sanitize_result,
                     &server_trust,
                 )
@@ -171,10 +172,10 @@ impl McpManager {
                 let all_tools = {
                     let mut guard = server_tools.write().await;
                     guard.insert(event.server_id.clone(), filtered);
-                    guard.values().flatten().cloned().collect::<Vec<_>>()
+                    tools_in_server_order(&guard, &configured_order)
                 };
                 tracing::info!(
-                    server_id = event.server_id,
+                    server_id = %event.server_id,
                     total_tools = all_tools.len(),
                     "tools/list_changed: tool list refreshed"
                 );
@@ -228,8 +229,8 @@ impl McpManager {
     #[tracing::instrument(name = "mcp.manager.spawn_non_oauth_connections", skip_all)]
     async fn spawn_non_oauth_connections(
         &self,
-        last_refresh: &Arc<DashMap<String, Instant>>,
-    ) -> JoinSet<(String, Result<McpClient, McpError>)> {
+        last_refresh: &Arc<DashMap<McpServerId, Instant>>,
+    ) -> JoinSet<(McpServerId, Result<McpClient, McpError>)> {
         let allowed = self.allowed_commands.clone();
         let suppress = self.suppress_stderr;
         let cloned_status_tx = self.status_tx.clone();
@@ -282,7 +283,7 @@ impl McpManager {
     #[tracing::instrument(name = "mcp.manager.process_connect_results", skip_all)]
     async fn process_connect_results(
         &self,
-        raw: Vec<(String, Result<McpClient, McpError>)>,
+        raw: Vec<(McpServerId, Result<McpClient, McpError>)>,
         limits: IngestLimits,
     ) -> Vec<ConnectOutput> {
         let mut outputs = Vec::with_capacity(raw.len());
@@ -306,12 +307,19 @@ impl McpManager {
     ) -> (Vec<McpTool>, Vec<ServerConnectOutcome>, Vec<McpTool>) {
         // All async work is done. Collect into vecs first, then commit each lock
         // in its own guarded block — never hold one lock across another .await.
-        let mut pending_instructions: Vec<(String, String)> = Vec::new();
-        let mut pending_clients: Vec<(String, _)> = Vec::new();
-        let mut pending_tools: Vec<(String, _)> = Vec::new();
-        let mut pending_fingerprints: Vec<(String, _)> = Vec::new();
+        let mut pending_instructions: Vec<(McpServerId, String)> = Vec::new();
+        let mut pending_clients: Vec<(McpServerId, _)> = Vec::new();
+        let mut pending_tools: Vec<(McpServerId, _)> = Vec::new();
+        let mut pending_fingerprints: Vec<(McpServerId, _)> = Vec::new();
         let mut all_tools = Vec::new();
         let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
+        let mut outputs = outputs;
+        outputs.sort_by_key(|o| {
+            self.configured_order
+                .iter()
+                .position(|id| *id == o.outcome.id)
+                .unwrap_or(usize::MAX)
+        });
         for output in outputs {
             if let Some((sid, instr)) = output.instructions {
                 pending_instructions.push((sid, instr));
@@ -351,7 +359,7 @@ impl McpManager {
             for (sid, tools) in pending_tools {
                 g.insert(sid, tools);
             }
-            g.values().flatten().cloned().collect::<Vec<McpTool>>()
+            tools_in_server_order(&g, &self.configured_order)
         };
         (all_tools, outcomes, server_tools_snapshot)
     }
@@ -396,8 +404,8 @@ impl McpManager {
     #[tracing::instrument(name = "mcp.manager.spawn_oauth_connections", skip_all)]
     pub(super) async fn spawn_oauth_connections(
         &self,
-        last_refresh: &Arc<DashMap<String, Instant>>,
-    ) -> JoinSet<(String, Result<McpClient, String>)> {
+        last_refresh: &Arc<DashMap<McpServerId, Instant>>,
+    ) -> JoinSet<(McpServerId, Result<McpClient, String>)> {
         let oauth_configs: Vec<_> = self
             .configs
             .iter()
@@ -409,7 +417,7 @@ impl McpManager {
         // (initial connect + optional browser callback) and returns the connected
         // client or a pre-formatted error string. No &self reference crosses the
         // task boundary — only cloned/Arc values are captured.
-        let mut join_set: JoinSet<(String, Result<McpClient, String>)> = JoinSet::new();
+        let mut join_set: JoinSet<(McpServerId, Result<McpClient, String>)> = JoinSet::new();
 
         for config in oauth_configs {
             let McpTransport::OAuth {
@@ -424,7 +432,7 @@ impl McpManager {
 
             let Some(credential_store_ref) = self.oauth_credentials.get(&config.id) else {
                 tracing::warn!(
-                    server_id = config.id,
+                    server_id = %config.id,
                     "OAuth server has no credential store registered — skipping"
                 );
                 continue;
@@ -474,7 +482,7 @@ impl McpManager {
     #[tracing::instrument(name = "mcp.manager.process_oauth_results", skip_all)]
     async fn process_oauth_results(
         &self,
-        raw: Vec<(String, Result<McpClient, String>)>,
+        raw: Vec<(McpServerId, Result<McpClient, String>)>,
         limits: IngestLimits,
     ) -> Vec<ConnectOutput> {
         // Process each result through handle_connect_result (no locks held).
@@ -538,7 +546,7 @@ impl McpManager {
     #[tracing::instrument(name = "mcp.manager.handle_connect_result", skip_all, fields(server_id = %server_id))]
     async fn handle_connect_result(
         &self,
-        server_id: String,
+        server_id: McpServerId,
         connect_result: Result<McpClient, McpError>,
         limits: IngestLimits,
     ) -> ConnectOutput {
@@ -562,7 +570,7 @@ impl McpManager {
             Ok(client) => match client.list_tools().await {
                 Ok(raw_tools) => {
                     // Phase 1: run pre-connect probe if configured.
-                    if let Err(e) = self.run_probe(&server_id, &client).await {
+                    if let Err(e) = self.run_probe(server_id.as_str(), &client).await {
                         client.shutdown().await;
                         // Probe blocked — remove lock so the server is not left permanently locked.
                         self.tool_list_locked.remove(&server_id);
@@ -573,7 +581,7 @@ impl McpManager {
                     let instructions = client.server_instructions().as_ref().map(|instr| {
                         let truncated = crate::sanitize::truncate_instructions(
                             instr,
-                            &server_id,
+                            server_id.as_str(),
                             limits.instructions_bytes,
                         );
                         (server_id.clone(), truncated)
@@ -595,7 +603,7 @@ impl McpManager {
                     let (tools, sanitize_result, new_fingerprints) = ingest_tools(
                         raw_tools,
                         &IngestConfig {
-                            server_id: &server_id,
+                            server_id: server_id.as_str(),
                             trust_level,
                             allowlist: allowlist.as_deref(),
                             allow_untrusted_without_allowlist,
@@ -608,12 +616,12 @@ impl McpManager {
                     );
                     apply_injection_penalties(
                         self.trust_store.as_ref(),
-                        &server_id,
+                        server_id.as_str(),
                         &sanitize_result,
                         &self.server_trust,
                     )
                     .await;
-                    tracing::info!(server_id, tools = tools.len(), "connected to MCP server");
+                    tracing::info!(%server_id, tools = tools.len(), "connected to MCP server");
                     let tool_count = tools.len();
                     self.connected_server_ids.write().insert(server_id.clone());
                     ConnectOutput {
@@ -633,14 +641,14 @@ impl McpManager {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(server_id, "failed to list tools: {e:#}");
+                    tracing::warn!(%server_id, "failed to list tools: {e:#}");
                     // Connection failed — remove lock so the server is not left permanently locked.
                     self.tool_list_locked.remove(&server_id);
                     fail(format!("{e:#}"))
                 }
             },
             Err(e) => {
-                tracing::warn!(server_id, "MCP server connection failed: {e:#}");
+                tracing::warn!(%server_id, "MCP server connection failed: {e:#}");
                 // Connection failed — remove lock so the server is not left permanently locked.
                 self.tool_list_locked.remove(&server_id);
                 fail(format!("{e:#}"))
@@ -687,7 +695,7 @@ impl McpManager {
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(name = "mcp.manager.run_oauth_handshake", skip_all, fields(server_id = %server_id))]
 async fn run_oauth_handshake(
-    server_id: String,
+    server_id: McpServerId,
     url: String,
     scopes: Vec<String>,
     callback_port: u16,
@@ -695,13 +703,13 @@ async fn run_oauth_handshake(
     credential_store: Arc<dyn CredentialStore>,
     trust_level: McpTrustLevel,
     tx: mpsc::Sender<ToolRefreshEvent>,
-    last_refresh: Arc<DashMap<String, Instant>>,
+    last_refresh: Arc<DashMap<McpServerId, Instant>>,
     timeout: Duration,
     handler_cfg: crate::client::HandlerConfig,
     status_tx: Option<StatusSender>,
-) -> (String, Result<McpClient, String>) {
+) -> (McpServerId, Result<McpClient, String>) {
     let connect_result = McpClient::connect_url_oauth(
-        &server_id,
+        server_id.as_str(),
         &url,
         &scopes,
         callback_port,
@@ -720,7 +728,7 @@ async fn run_oauth_handshake(
         Ok(OAuthConnectResult::AuthorizationRequired(pending_box)) => {
             let mut pending = *pending_box;
             announce_oauth_url(
-                &server_id,
+                server_id.as_str(),
                 &pending.auth_url,
                 pending.actual_port,
                 status_tx.as_ref(),
@@ -734,7 +742,9 @@ async fn run_oauth_handshake(
                 .listener
                 .take()
                 .expect("listener always set by connect_url_oauth");
-            match crate::oauth::await_oauth_callback(listener, callback_timeout, &server_id).await {
+            match crate::oauth::await_oauth_callback(listener, callback_timeout, server_id.as_str())
+                .await
+            {
                 Ok((code, csrf_token)) => {
                     if let Some(ref stx) = status_tx {
                         let _ = stx.clear();
@@ -747,13 +757,13 @@ async fn run_oauth_handshake(
                     if let Some(ref stx) = status_tx {
                         let _ = stx.clear();
                     }
-                    tracing::warn!(server_id, "OAuth callback failed: {e:#}");
+                    tracing::warn!(%server_id, "OAuth callback failed: {e:#}");
                     Err(format!("OAuth callback failed: {e:#}"))
                 }
             }
         }
         Err(e) => {
-            tracing::warn!(server_id, "OAuth connection failed: {e:#}");
+            tracing::warn!(%server_id, "OAuth connection failed: {e:#}");
             Err(format!("{e:#}"))
         }
     };
@@ -790,8 +800,8 @@ pub(super) fn announce_oauth_url(
 
 #[tracing::instrument(name = "mcp.manager.drain_connect_results", skip_all)]
 async fn drain_connect_results(
-    mut join_set: JoinSet<(String, Result<McpClient, McpError>)>,
-) -> Vec<(String, Result<McpClient, McpError>)> {
+    mut join_set: JoinSet<(McpServerId, Result<McpClient, McpError>)>,
+) -> Vec<(McpServerId, Result<McpClient, McpError>)> {
     // Drain join_set without holding any locks, then process each result through
     // handle_connect_result — which also holds no locks. All async work (network
     // calls, probing, lock-free reads) happens here with zero contention on the
@@ -809,9 +819,9 @@ async fn drain_connect_results(
 
 #[tracing::instrument(name = "mcp.manager.drain_oauth_results", skip_all)]
 async fn drain_oauth_results(
-    mut join_set: JoinSet<(String, Result<McpClient, String>)>,
-) -> Vec<(String, Result<McpClient, String>)> {
-    let mut raw_results: Vec<(String, Result<McpClient, String>)> =
+    mut join_set: JoinSet<(McpServerId, Result<McpClient, String>)>,
+) -> Vec<(McpServerId, Result<McpClient, String>)> {
+    let mut raw_results: Vec<(McpServerId, Result<McpClient, String>)> =
         Vec::with_capacity(join_set.len());
     while let Some(res) = join_set.join_next().await {
         if let Ok(item) = res {
@@ -889,7 +899,7 @@ pub(super) async fn record_tool_diagnostics(
         .read()
         .await
         .iter()
-        .map(|(id, (tl, _, _, _))| (id.clone(), *tl))
+        .map(|(id, (tl, _, _, _))| (id.to_string(), *tl))
         .collect();
 
     let found = detect_collisions(tools, &trust_map);

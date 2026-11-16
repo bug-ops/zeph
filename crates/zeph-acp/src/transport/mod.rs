@@ -170,9 +170,15 @@ pub struct AcpServerConfig {
     /// Retained for config compatibility. `PromptRequest.message_id` was removed in acp 0.14.0.
     pub message_ids_enabled: bool,
     /// Per-request timeout configuration for elicitation, terminal, and MCP operations.
-    pub timeouts: zeph_config::AcpTimeoutsConfig,
+    ///
+    /// Shared by `Arc` so the config stays one pointer wide in the (large) connection futures.
+    pub timeouts: std::sync::Arc<zeph_config::AcpTimeoutsConfig>,
     /// Model-related configuration parameters (`[acp.model_config]`).
     pub model_config: zeph_config::AcpModelConfigConfig,
+    /// Operator grants and per-session cap for IDE-attached MCP servers (`[acp.ide_mcp]`).
+    ///
+    /// Shared by `Arc` so the config stays one pointer wide in the (large) connection futures.
+    pub ide_mcp: std::sync::Arc<zeph_config::AcpIdeMcpConfig>,
 }
 
 impl Clone for AcpServerConfig {
@@ -200,8 +206,9 @@ impl Clone for AcpServerConfig {
             additional_directories: self.additional_directories.clone(),
             auth_methods: self.auth_methods.clone(),
             message_ids_enabled: self.message_ids_enabled,
-            timeouts: self.timeouts.clone(),
+            timeouts: std::sync::Arc::clone(&self.timeouts),
             model_config: self.model_config.clone(),
+            ide_mcp: std::sync::Arc::clone(&self.ide_mcp),
         }
     }
 }
@@ -231,8 +238,9 @@ impl Default for AcpServerConfig {
             additional_directories: Vec::new(),
             auth_methods: vec![zeph_core::config::AcpAuthMethod::Agent],
             message_ids_enabled: true,
-            timeouts: zeph_config::AcpTimeoutsConfig::default(),
+            timeouts: std::sync::Arc::new(zeph_config::AcpTimeoutsConfig::default()),
             model_config: zeph_config::AcpModelConfigConfig::default(),
+            ide_mcp: std::sync::Arc::new(zeph_config::AcpIdeMcpConfig::default()),
         }
     }
 }

@@ -112,7 +112,7 @@ const MAX_TOOLS_PER_SERVER: usize = 100;
 ///
 /// Shared by the background `tools/list_changed` refresh path and the manual/initial
 /// `McpClient::list_tools` call so both stay byte-for-byte identical.
-fn rmcp_tool_to_mcp_tool(server_id: &str, tool: rmcp::model::Tool) -> McpTool {
+fn rmcp_tool_to_mcp_tool(server_id: &McpServerId, tool: rmcp::model::Tool) -> McpTool {
     let output_schema = tool.output_schema.as_ref().map(|s| {
         let val = serde_json::to_value(s.as_ref()).unwrap_or_default();
         tracing::debug!(
@@ -124,7 +124,7 @@ fn rmcp_tool_to_mcp_tool(server_id: &str, tool: rmcp::model::Tool) -> McpTool {
         val
     });
     McpTool {
-        server_id: McpServerId::from(server_id),
+        server_id: server_id.clone(),
         name: tool.name.to_string(),
         description: tool.description.map_or_else(String::new, |d| d.to_string()),
         input_schema: serde_json::to_value(&*tool.input_schema).unwrap_or_default(),
@@ -135,7 +135,7 @@ fn rmcp_tool_to_mcp_tool(server_id: &str, tool: rmcp::model::Tool) -> McpTool {
 
 /// Event sent from `ToolListChangedHandler` to `McpManager`'s refresh task.
 pub struct ToolRefreshEvent {
-    pub server_id: String,
+    pub server_id: McpServerId,
     pub tools: Vec<McpTool>,
 }
 
@@ -167,10 +167,10 @@ pub struct HandlerConfig {
 ///    already-queued event, which is equivalent or more recent.
 ///    `McpManager::ingest_tools` performs sanitization and trust-penalty application.
 pub struct ToolListChangedHandler {
-    server_id: String,
+    server_id: McpServerId,
     tx: Sender<ToolRefreshEvent>,
     /// Shared across all handler instances; tracks last successful refresh per server.
-    last_refresh: Arc<DashMap<String, Instant>>,
+    last_refresh: Arc<DashMap<McpServerId, Instant>>,
     /// Configured roots to expose to the MCP server via `roots/list`.
     #[allow(deprecated)]
     roots: Arc<Vec<rmcp::model::Root>>,
@@ -188,9 +188,9 @@ pub struct ToolListChangedHandler {
 impl ToolListChangedHandler {
     #[allow(deprecated)] // `roots: Arc<Vec<rmcp::model::Root>>` — see `crate::roots`.
     pub(crate) fn new(
-        server_id: impl Into<String>,
+        server_id: impl Into<McpServerId>,
         tx: Sender<ToolRefreshEvent>,
-        last_refresh: Arc<DashMap<String, Instant>>,
+        last_refresh: Arc<DashMap<McpServerId, Instant>>,
         roots: Arc<Vec<rmcp::model::Root>>,
         max_description_bytes: usize,
         elicitation_tx: Option<Sender<ElicitationEvent>>,
@@ -241,7 +241,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
 
             let (response_tx, response_rx) = oneshot::channel();
             let event = ElicitationEvent {
-                server_id: self.server_id.clone(),
+                server_id: self.server_id.to_string(),
                 request,
                 response_tx,
             };
@@ -250,14 +250,14 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
                 Ok(()) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     tracing::warn!(
-                        server_id = self.server_id,
+                        server_id = %self.server_id,
                         "elicitation queue full — auto-declining request from misbehaving server"
                     );
                     return Ok(decline);
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                     tracing::warn!(
-                        server_id = self.server_id,
+                        server_id = %self.server_id,
                         "elicitation channel closed — agent loop may have shut down"
                     );
                     return Ok(decline);
@@ -269,14 +269,14 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
                 Ok(Err(_)) => {
                     // oneshot sender dropped — agent loop cancelled the request
                     tracing::warn!(
-                        server_id = self.server_id,
+                        server_id = %self.server_id,
                         "elicitation response channel dropped"
                     );
                     Ok(decline)
                 }
                 Err(_elapsed) => {
                     tracing::warn!(
-                        server_id = self.server_id,
+                        server_id = %self.server_id,
                         timeout_secs = self.elicitation_timeout.as_secs(),
                         "elicitation timed out — declining"
                     );
@@ -314,7 +314,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
                 .is_some_and(|last| now.duration_since(*last) < MIN_REFRESH_INTERVAL)
             {
                 tracing::debug!(
-                    server_id = self.server_id,
+                    server_id = %self.server_id,
                     "tools/list_changed skipped: rate limited"
                 );
                 return;
@@ -326,7 +326,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
             Ok(tools) => tools,
             Err(e) => {
                 tracing::warn!(
-                    server_id = self.server_id,
+                    server_id = %self.server_id,
                     "tools/list_changed: list_all_tools() failed: {e:#}"
                 );
                 // Do NOT send stale/empty tools — old list remains valid.
@@ -337,7 +337,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
         // Cap tool count before sanitization (efficiency + resource exhaustion defense).
         let capped = if raw_tools.len() > MAX_TOOLS_PER_SERVER {
             tracing::warn!(
-                server_id = self.server_id,
+                server_id = %self.server_id,
                 count = raw_tools.len(),
                 cap = MAX_TOOLS_PER_SERVER,
                 "tools/list_changed: server returned more tools than cap — truncating"
@@ -370,13 +370,13 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
                 // The manager will process that event, which is equally or more recent.
                 // Dropping this notification is safe — latest-wins semantics.
                 tracing::debug!(
-                    server_id = self.server_id,
+                    server_id = %self.server_id,
                     "tools/list_changed: refresh channel full — dropping duplicate notification"
                 );
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 tracing::warn!(
-                    server_id = self.server_id,
+                    server_id = %self.server_id,
                     "tools/list_changed: refresh channel closed — manager may have shut down"
                 );
             }
@@ -398,7 +398,7 @@ pub enum OAuthConnectResult {
 ///
 /// Not `Clone`. Must be consumed in the same task via `McpClient::complete_oauth`.
 pub struct OAuthPending {
-    pub server_id: String,
+    pub server_id: McpServerId,
     pub auth_url: String,
     /// Pre-bound callback listener. Taken out by the caller before `complete_oauth`.
     pub listener: Option<tokio::net::TcpListener>,
@@ -419,7 +419,7 @@ pub struct OAuthPending {
     pub(crate) pinned: Option<PinnedTarget>,
     pub timeout: Duration,
     pub tx: Sender<ToolRefreshEvent>,
-    pub last_refresh: Arc<DashMap<String, Instant>>,
+    pub last_refresh: Arc<DashMap<McpServerId, Instant>>,
     #[allow(deprecated)] // see `crate::roots`
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
@@ -430,7 +430,7 @@ pub struct OAuthPending {
 type ClientService = RunningService<rmcp::RoleClient, ToolListChangedHandler>;
 
 pub struct McpClient {
-    server_id: String,
+    server_id: McpServerId,
     service: Arc<ClientService>,
     timeout: Duration,
 }
@@ -465,7 +465,7 @@ impl McpClient {
         stderr_policy: StderrPolicy,
         env_policy: EnvPolicy,
         tx: Sender<ToolRefreshEvent>,
-        last_refresh: Arc<DashMap<String, Instant>>,
+        last_refresh: Arc<DashMap<McpServerId, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
         crate::security::validate_command(command, allowed_commands)?;
@@ -534,7 +534,7 @@ impl McpClient {
         timeout: Duration,
         trust_level: McpTrustLevel,
         tx: Sender<ToolRefreshEvent>,
-        last_refresh: Arc<DashMap<String, Instant>>,
+        last_refresh: Arc<DashMap<McpServerId, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
         let trusted = matches!(trust_level, McpTrustLevel::Trusted);
@@ -578,7 +578,7 @@ impl McpClient {
         timeout: Duration,
         trust_level: McpTrustLevel,
         tx: Sender<ToolRefreshEvent>,
-        last_refresh: Arc<DashMap<String, Instant>>,
+        last_refresh: Arc<DashMap<McpServerId, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
         let trusted = matches!(trust_level, McpTrustLevel::Trusted);
@@ -649,7 +649,7 @@ impl McpClient {
         credential_store: Arc<dyn CredentialStore>,
         trust_level: McpTrustLevel,
         tx: Sender<ToolRefreshEvent>,
-        last_refresh: Arc<DashMap<String, Instant>>,
+        last_refresh: Arc<DashMap<McpServerId, Instant>>,
         timeout: Duration,
         handler_cfg: HandlerConfig,
     ) -> Result<OAuthConnectResult, McpError> {
@@ -804,7 +804,7 @@ impl McpClient {
             .handle_callback(code, csrf_token)
             .await
             .map_err(|e| McpError::OAuthError {
-                server_id: pending.server_id.clone(),
+                server_id: pending.server_id.to_string(),
                 message: format!("token exchange failed: {e}"),
             })?;
 
@@ -812,11 +812,11 @@ impl McpClient {
             .oauth_state
             .into_authorization_manager()
             .ok_or_else(|| McpError::OAuthError {
-                server_id: pending.server_id.clone(),
+                server_id: pending.server_id.to_string(),
                 message: "unexpected state after handle_callback".into(),
             })?;
 
-        let client = build_hardened_client(&pending.server_id, pending.pinned.as_ref())?;
+        let client = build_hardened_client(pending.server_id.as_str(), pending.pinned.as_ref())?;
         let auth_client: AuthClient<reqwest::Client> = AuthClient::new(client, manager);
         let config = StreamableHttpClientTransportConfig::with_uri(pending.url.as_str());
         let transport = StreamableHttpClientTransport::with_client(auth_client, config);
@@ -828,7 +828,7 @@ impl McpClient {
             elicitation_timeout: pending.elicitation_timeout,
         };
         let service = finish_connect(
-            &pending.server_id,
+            pending.server_id.as_str(),
             pending.timeout,
             transport,
             pending.tx,
@@ -858,12 +858,12 @@ impl McpClient {
         let tools = tokio::time::timeout(self.timeout, self.service.list_all_tools())
             .await
             .map_err(|_| McpError::Timeout {
-                server_id: self.server_id.clone(),
+                server_id: self.server_id.to_string(),
                 tool_name: "tools/list".into(),
                 timeout_secs: self.timeout.as_secs(),
             })?
             .map_err(|e| McpError::ToolCall {
-                server_id: self.server_id.clone(),
+                server_id: self.server_id.to_string(),
                 tool_name: "tools/list".into(),
                 message: e.to_string(),
                 code: crate::McpErrorCode::ServerError,
@@ -927,12 +927,12 @@ impl McpClient {
         let result = tokio::time::timeout(timeout, self.service.call_tool(params))
             .await
             .map_err(|_| McpError::Timeout {
-                server_id: self.server_id.clone(),
+                server_id: self.server_id.to_string(),
                 tool_name: name.into(),
                 timeout_secs: timeout.as_secs(),
             })?
             .map_err(|e| McpError::ToolCall {
-                server_id: self.server_id.clone(),
+                server_id: self.server_id.to_string(),
                 tool_name: name.into(),
                 message: e.to_string(),
                 code: crate::McpErrorCode::ServerError,
@@ -983,7 +983,7 @@ impl McpClient {
                 .collect(),
             Err(e) => {
                 tracing::debug!(
-                    server_id = self.server_id,
+                    server_id = %self.server_id,
                     "probe: failed to list resources: {e:#}"
                 );
                 Vec::new()
@@ -1009,7 +1009,7 @@ impl McpClient {
                 .collect(),
             Err(e) => {
                 tracing::debug!(
-                    server_id = self.server_id,
+                    server_id = %self.server_id,
                     "probe: failed to list prompts: {e:#}"
                 );
                 Vec::new()
@@ -1025,7 +1025,7 @@ impl McpClient {
     ///
     /// Only available in `#[cfg(test)]` contexts.
     #[cfg(test)]
-    pub(crate) fn new_disconnected_for_test(server_id: impl Into<String>) -> Self {
+    pub(crate) fn new_disconnected_for_test(server_id: impl Into<McpServerId>) -> Self {
         let (tx, _rx) = tokio::sync::mpsc::channel::<ToolRefreshEvent>(16);
         let handler = ToolListChangedHandler::new(
             "test",
@@ -1059,7 +1059,7 @@ impl McpClient {
             }
             Err(_arc) => {
                 tracing::warn!(
-                    server_id = self.server_id,
+                    server_id = %self.server_id,
                     "cannot shutdown: service has multiple references"
                 );
             }
@@ -1074,7 +1074,7 @@ async fn finish_connect<T, E, A>(
     timeout: Duration,
     transport: T,
     tx: Sender<ToolRefreshEvent>,
-    last_refresh: Arc<DashMap<String, Instant>>,
+    last_refresh: Arc<DashMap<McpServerId, Instant>>,
     handler_cfg: HandlerConfig,
 ) -> Result<ClientService, McpError>
 where
@@ -1443,7 +1443,7 @@ mod tests {
     /// are never touched when the call is expected to fail at that first check.
     fn connect_url_test_fixture() -> (
         Sender<ToolRefreshEvent>,
-        Arc<DashMap<String, Instant>>,
+        Arc<DashMap<McpServerId, Instant>>,
         HandlerConfig,
     ) {
         let (tx, _rx) = tokio::sync::mpsc::channel::<ToolRefreshEvent>(1);
@@ -1607,7 +1607,7 @@ mod tests {
     fn make_handler() -> (
         ToolListChangedHandler,
         tokio::sync::mpsc::Receiver<ToolRefreshEvent>,
-        Arc<DashMap<String, Instant>>,
+        Arc<DashMap<McpServerId, Instant>>,
     ) {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let last_refresh = Arc::new(DashMap::new());
@@ -1661,7 +1661,7 @@ mod tests {
     fn rate_limit_suppresses_second_refresh_within_interval() {
         let (_, _rx, last_refresh) = make_handler();
         // Manually set last refresh to now
-        last_refresh.insert("test-server".to_owned(), Instant::now());
+        last_refresh.insert("test-server".into(), Instant::now());
         // Should be rate-limited
         let now = Instant::now();
         let is_rate_limited = last_refresh
@@ -1677,7 +1677,7 @@ mod tests {
         let old = Instant::now()
             .checked_sub(MIN_REFRESH_INTERVAL + Duration::from_millis(100))
             .unwrap();
-        last_refresh.insert("test-server".to_owned(), old);
+        last_refresh.insert("test-server".into(), old);
         let now = Instant::now();
         let is_rate_limited = last_refresh
             .get("test-server")
@@ -2134,7 +2134,7 @@ mod tests {
         // Fill to capacity.
         for i in 0..CAPACITY {
             let result = tx.try_send(ToolRefreshEvent {
-                server_id: format!("srv-{i}"),
+                server_id: format!("srv-{i}").into(),
                 tools: vec![],
             });
             assert!(result.is_ok(), "send {i} within capacity must succeed");

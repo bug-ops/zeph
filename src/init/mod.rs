@@ -109,6 +109,8 @@ pub(crate) struct WizardState {
     pub(crate) acp_auth_clients: Vec<zeph_config::AcpAuthClient>,
     pub(crate) acp_auth_methods: Vec<zeph_config::AcpAuthMethod>,
     pub(crate) acp_message_ids_enabled: bool,
+    /// `[acp.ide_mcp].max_servers_per_session` (`0` disables IDE-attached MCP servers).
+    pub(crate) acp_ide_mcp_max_servers: usize,
     pub(crate) acp_subagents_enabled: bool,
     pub(crate) acp_default_temperature_preset: zeph_config::AcpTemperaturePreset,
     pub(crate) thinking: Option<ThinkingConfig>,
@@ -472,6 +474,8 @@ impl Default for WizardState {
             acp_auth_clients: Vec::new(),
             acp_auth_methods: vec![zeph_config::AcpAuthMethod::Agent],
             acp_message_ids_enabled: true,
+            acp_ide_mcp_max_servers: zeph_config::AcpIdeMcpConfig::default()
+                .max_servers_per_session,
             acp_subagents_enabled: false,
             acp_default_temperature_preset: zeph_config::AcpTemperaturePreset::default(),
             thinking: None,
@@ -1517,7 +1521,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         // Workspace roots and language server settings are written to .zeph/mcpls.toml
         // by write_mcpls_config() in step_review_and_write().
         config.mcp.servers.push(McpServerConfig {
-            id: "mcpls".to_owned(),
+            id: "mcpls".into(),
             command: Some("mcpls".to_owned()),
             args: vec!["--config".to_owned(), ".zeph/mcpls.toml".to_owned()],
             env: std::collections::HashMap::new(),
@@ -1653,6 +1657,10 @@ fn apply_acp_config(config: &mut Config, state: &WizardState) {
             },
             model_config: zeph_config::AcpModelConfigConfig {
                 default_temperature_preset: state.acp_default_temperature_preset,
+            },
+            ide_mcp: zeph_config::AcpIdeMcpConfig {
+                max_servers_per_session: state.acp_ide_mcp_max_servers,
+                ..zeph_config::AcpIdeMcpConfig::default()
             },
             ..AcpConfig::default()
         };
@@ -1802,6 +1810,23 @@ fn step_daemon(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Ask for `[acp.ide_mcp].max_servers_per_session` and print the hand-authored grant hint.
+fn prompt_acp_ide_mcp_cap(state: &mut WizardState) -> anyhow::Result<()> {
+    state.acp_ide_mcp_max_servers = Input::new()
+        .with_prompt(
+            "Maximum MCP servers an IDE may attach per ACP session \
+             (0 = disable IDE-attached MCP servers)",
+        )
+        .default(state.acp_ide_mcp_max_servers)
+        .interact_text()?;
+    println!(
+        "Note: IDE-attached MCP servers expose no tools until you grant them by hand in \
+         [acp.ide_mcp.servers.<name>] (exact command+args or url, env_keys, tools).\n\
+         Never list NODE_OPTIONS, JAVA_TOOL_OPTIONS, PERL5OPT or npm_config_* in env_keys.\n"
+    );
+    Ok(())
+}
+
 fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 8/10: ACP Server (IDE Embedding) ==\n");
 
@@ -1873,6 +1898,8 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
             .with_prompt("Echo PromptRequest.message_id in responses/chunks (IDE correlation)?")
             .default(true)
             .interact()?;
+
+        prompt_acp_ide_mcp_cap(state)?;
 
         state.acp_subagents_enabled = Confirm::new()
             .with_prompt(
@@ -2685,6 +2712,24 @@ mod tests {
     use super::*;
     use std::assert_matches;
 
+    #[test]
+    fn acp_ide_mcp_cap_from_wizard_reaches_config() {
+        let state = WizardState {
+            acp_enabled: true,
+            acp_ide_mcp_max_servers: 3,
+            ..WizardState::default()
+        };
+        let mut config = Config::default();
+
+        apply_acp_config(&mut config, &state);
+
+        assert_eq!(config.acp.ide_mcp.max_servers_per_session, 3);
+        assert!(
+            config.acp.ide_mcp.servers.is_empty(),
+            "grants are hand-authored"
+        );
+    }
+
     fn single_provider_state() -> WizardState {
         WizardState {
             provider: Some(ProviderKind::Claude),
@@ -2892,7 +2937,7 @@ mod tests {
         // `config.mcp.servers` unchanged (#6241).
         let state = WizardState {
             mcp_remote_servers: vec![McpServerConfig {
-                id: "vision-tool".to_owned(),
+                id: "vision-tool".into(),
                 command: None,
                 args: Vec::new(),
                 env: std::collections::HashMap::new(),
@@ -2930,7 +2975,7 @@ mod tests {
     fn build_config_mcp_remote_server_media_passthrough_defaults_false() {
         let state = WizardState {
             mcp_remote_servers: vec![McpServerConfig {
-                id: "text-tool".to_owned(),
+                id: "text-tool".into(),
                 command: None,
                 args: Vec::new(),
                 env: std::collections::HashMap::new(),

@@ -102,31 +102,6 @@ impl ParameterKind {
         Self::GroupStructured,
     ];
 
-    /// Compile-time reminder to extend [`Self::ALL`] when a variant is added.
-    ///
-    /// Evaluated once at compile time via the `_ASSERT_ALL_VARIANTS_HANDLED` const below
-    /// (never called at runtime). Its only purpose is that adding a `ParameterKind`
-    /// variant without a corresponding arm here fails the build with `E0004:
-    /// non-exhaustive patterns`, pointing the author at `ALL` immediately above. It does
-    /// not verify `ALL`'s *length* or *contents* match the enum, only that every variant
-    /// has been acknowledged somewhere in this match.
-    const fn _all_variants_exhaustive(kind: Self) {
-        match kind {
-            Self::Temperature
-            | Self::TopP
-            | Self::TopK
-            | Self::FrequencyPenalty
-            | Self::PresencePenalty
-            | Self::RetrievalTopK
-            | Self::SimilarityThreshold
-            | Self::TemporalDecay
-            | Self::GroupStructured => {}
-        }
-    }
-
-    /// Forces [`Self::_all_variants_exhaustive`] to be checked at compile time.
-    const _ASSERT_ALL_VARIANTS_HANDLED: () = Self::_all_variants_exhaustive(Self::Temperature);
-
     /// Return the canonical `snake_case` name of this parameter.
     ///
     /// The returned string matches the key used in config files and experiment
@@ -183,6 +158,25 @@ impl ParameterKind {
         }
     }
 }
+
+// Adding a `ParameterKind` variant without an arm here fails the build with E0004,
+// pointing the author at `ParameterKind::ALL`; it does not verify `ALL`'s contents.
+const _: () = {
+    const fn all_variants_exhaustive(kind: ParameterKind) {
+        match kind {
+            ParameterKind::Temperature
+            | ParameterKind::TopP
+            | ParameterKind::TopK
+            | ParameterKind::FrequencyPenalty
+            | ParameterKind::PresencePenalty
+            | ParameterKind::RetrievalTopK
+            | ParameterKind::SimilarityThreshold
+            | ParameterKind::TemporalDecay
+            | ParameterKind::GroupStructured => {}
+        }
+    }
+    all_variants_exhaustive(ParameterKind::Temperature);
+};
 
 impl std::fmt::Display for ParameterKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

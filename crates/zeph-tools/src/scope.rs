@@ -472,6 +472,10 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
         self.inner.execute_confirmed(response).await
     }
 
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        self.inner.mcp_dispatch_ids()
+    }
+
     /// Return the filtered tool definitions visible to the LLM under the active scope.
     ///
     /// Captures the active scope name into `scope_at_definition` for audit use.

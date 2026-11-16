@@ -1515,7 +1515,7 @@ pub fn oauth_vault_key(server_id: &str) -> String {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
-    pub id: String,
+    pub id: zeph_common::types::McpServerId,
     /// Stdio transport: command to spawn.
     pub command: Option<String>,
     #[serde(default)]

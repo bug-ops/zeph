@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-llm`: Claude `usage.speed` parsing, one-shot latch after a 400 rejecting `speed`, speed line in `/provider status` (#7078)
 - `zeph-subagent`, `zeph-tools`, `zeph-core`, `zeph`: sub-agent pre-dispatch blocks record the metric, security event and audit row; inherited trust floor is stored in the transcript sidecar and honored by `zeph knowledge import --source subagents` (#7078)
 - `ci`: clippy matrix entries for `zeph-skills/miner` and `test-utils` of zeph-db, zeph-memory, zeph-index and zeph-orchestration, plus a weekly stable-toolchain clippy workflow (#7078)
+- `zeph-config`, `zeph-acp`, `zeph`: `[acp.ide_mcp]` per-session cap (default 10) and operator grants pinned to exact command+args/url and env keys for IDE-attached MCP servers, with a wizard prompt and migration step (#7119)
 
 ### Changed
 
@@ -23,9 +24,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: background and ensemble usage is billed at the serving provider's speed, cache counters and model price (#7078)
 - `zeph-core`, `zeph-plugins`, `zeph`, `zeph-channels`: goal list surfaces store errors, one shared plugin overlay renderer, serve factory applies `[memory.store_routing]`, Telegram guest proxy body capped at 20 MiB (#7078)
 - workspace: `map_or_default` and `assert_matches!` replace remaining multi-line `map(..).unwrap_or_default()` and `assert!(matches!(..))` sites (#7078)
+- `zeph-acp`: server config shares IDE MCP and timeout settings by `Arc` (breaking: `AcpServerConfig.ide_mcp` is `Arc<AcpIdeMcpConfig>`, `AcpServerConfig.timeouts` is now `Arc<AcpTimeoutsConfig>`, `with_ide_mcp_config` takes an `Arc`) (#7119)
+- `zeph-config`, `zeph-mcp`, `zeph`: `McpServerId` carried through `McpServerConfig.id`, manager maps and outcomes (breaking: `McpServerConfig.id` is `McpServerId`) (#7119)
+- `zeph-mcp`, `zeph-tools`, `zeph-core`: sanitized ids and tool definitions cached at publish time, dispatch ids shared via `Arc`, and `publish_pruned` fails closed on tools missing from the published list, in release builds too (breaking: new `ToolExecutor::mcp_dispatch_ids` default method) (#7119)
+- `zeph-core`, `zeph-acp`, `zeph`: MCP tool-list refresh scoped per ACP session and skipped when unchanged, with sessions seeded from the live scope-filtered tool snapshot and the refresh task spawned for ACP and the daemon (breaking: `Agent::with_mcp_tool_rx` takes an `McpToolScope`; `McpManager::spawn_refresh_task` is idempotent) (#7119)
 
 ### Fixed
 
+- `zeph-channels`: Telegram guest proxy forwards file downloads to `/file/bot<T>/<path>` instead of a doubled upstream path and returns 404 for malformed paths (#7079)
+- `zeph-llm`: OpenAI 400 body embedded in `ModelCapabilityMismatch`/`InvalidInput` errors is scrubbed of secret shapes and control chars and capped at 500 chars (#7085)
+- `zeph-mcp`: tool and connect-outcome order follows configured server order, so the shadowed-id winner no longer flips after `tools/list_changed` (#7087)
+- `ci`: workspace is clean on rustc 1.100 (`used_underscore_items`, `needless_range_loop`, unused `zeph-tools`/`bytemuck` dependencies, redundant `homepage`) (#7084)
 - `zeph-common`: secret scrubber recognizes non-SGR CSI, colon SGR, quoted-printable `=3D` and tokens split by escape runs (#7078)
 - `ci`: release builds allow `build.warnings` (and pass it through to `cross`) so the `proc-macro-error2` future-incompat note no longer fails every target (#7077)
 

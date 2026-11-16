@@ -323,6 +323,10 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
         }))
     }
 
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        self.inner.mcp_dispatch_ids()
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDef> {
         self.inner.tool_definitions()
     }

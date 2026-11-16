@@ -111,6 +111,17 @@ impl ZephAcpAgentState {
         self
     }
 
+    /// Configure operator grants and the per-session cap for IDE-attached MCP servers
+    /// (`[acp.ide_mcp]`).
+    #[must_use]
+    pub fn with_ide_mcp_config(
+        mut self,
+        ide_mcp: std::sync::Arc<zeph_config::AcpIdeMcpConfig>,
+    ) -> Self {
+        self.ide_mcp = Arc::new(super::ide_mcp::IdeMcpRegistry::with_config(ide_mcp));
+        self
+    }
+
     /// Configure model-related configuration parameters (`[acp.model_config]`).
     #[must_use]
     pub fn with_model_config(mut self, model_config: zeph_config::AcpModelConfigConfig) -> Self {
