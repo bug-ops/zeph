@@ -22,8 +22,10 @@
   "platformCommit": "disabled",
   "platformAutomerge": true,
   "rebaseWhen": "conflicted",
-  "dependencyDashboardTitle": "Renovate Dependency Dashboard",
-  "dependencyDashboardOSVVulnerabilitySummary": "all",
+  "dependencyDashboard": {
+    "title": "Renovate Dependency Dashboard",
+    "osvVulnerabilitySummary": "all"
+  },
   "osvVulnerabilityAlerts": true,
   "constraintsFiltering": "strict",
   "ignorePaths": [
