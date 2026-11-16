@@ -72,7 +72,7 @@ pub(crate) fn check_refusal(
 /// Scrubs both before and after the control-character strip: the first pass sees terminal escape
 /// sequences as boundaries, the second catches a token that the strip reassembles
 /// (`s\x1bk-...`). The cap runs last so a secret is never cut before it is scrubbed.
-fn sanitize_provider_text(text: &str, max_chars: usize) -> String {
+pub(crate) fn sanitize_provider_text(text: &str, max_chars: usize) -> String {
     use zeph_common::secret_redact::scrub_secret_shapes;
 
     let stripped: String = scrub_secret_shapes(text)
