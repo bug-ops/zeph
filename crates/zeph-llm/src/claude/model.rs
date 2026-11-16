@@ -162,6 +162,14 @@ impl ModelCapabilities {
     };
 }
 
+/// Returns the documented replacement when `id` is in
+/// [`zeph_config::defaults::RETIRED_CLAUDE_MODELS`].
+pub(super) fn retired_model_replacement(id: &str) -> Option<&'static str> {
+    zeph_config::defaults::RETIRED_CLAUDE_MODELS
+        .iter()
+        .find_map(|&(retired, replacement)| (retired == id).then_some(replacement))
+}
+
 impl ClaudeModel {
     /// Classify a model id.
     ///

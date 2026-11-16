@@ -72,6 +72,10 @@ impl std::fmt::Debug for GetCurrentTimeExecutor {
 }
 
 impl ToolExecutor for GetCurrentTimeExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        crate::registry::McpToolIds::empty_shared()
+    }
+
     fn execute_tool_call(
         &self,
         call: &ToolCall,

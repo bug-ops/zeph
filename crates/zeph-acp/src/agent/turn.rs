@@ -21,14 +21,11 @@ use zeph_core::{ContentIsolationConfig, ContentSanitizer};
 use zeph_core::{ContentSource, ContentSourceKind, LoopbackEvent, StopHint};
 use zeph_tools::is_private_ip;
 
-#[cfg(not(feature = "unstable-session-usage"))]
 use super::build_prompt_response;
 use super::{
     DIAGNOSTICS_MIME_TYPE, ZephAcpAgentState, compute_stop_reason, format_diagnostics_block,
     is_acp_native_slash_command, loopback_event_to_updates, mime_to_ext, xml_escape,
 };
-#[cfg(feature = "unstable-session-usage")]
-use super::{TurnUsage, build_prompt_response};
 
 const MAX_PROMPT_BYTES: usize = 1_048_576; // 1 MiB
 const MAX_IMAGE_BASE64_BYTES: usize = 20 * 1_048_576; // 20 MiB base64-encoded
@@ -223,7 +220,7 @@ struct DrainResult {
     cancelled: bool,
     stop_hint: Option<StopHint>,
     #[cfg(feature = "unstable-session-usage")]
-    turn_usage: TurnUsage,
+    turn_usage: zeph_llm::provider::TokenUsage,
 }
 
 /// RAII guard owning a session's in-flight prompt receiver.
@@ -602,7 +599,7 @@ impl ZephAcpAgentState {
         let mut stop_hint: Option<StopHint> = None;
         // Per-turn token totals for PromptResponse.usage (separate from session accumulator).
         #[cfg(feature = "unstable-session-usage")]
-        let mut turn_usage = TurnUsage::default();
+        let mut turn_usage = zeph_llm::provider::TokenUsage::default();
         if let Some(ref signal) = cancel_signal {
             // Drain a stale permit left on the shared per-session `Notify` by a cancellation
             // that resolved after the *previous* prompt on this session had already finished
@@ -638,24 +635,19 @@ impl ZephAcpAgentState {
                 cost_cents,
             } = event
             {
-                turn_usage.input_tokens = turn_usage.input_tokens.saturating_add(input_tokens);
-                turn_usage.output_tokens = turn_usage.output_tokens.saturating_add(output_tokens);
-                turn_usage.cache_read_tokens = turn_usage
-                    .cache_read_tokens
-                    .saturating_add(cache_read_tokens);
-                turn_usage.cache_write_tokens = turn_usage
-                    .cache_write_tokens
-                    .saturating_add(cache_write_tokens);
+                let call_usage = zeph_llm::provider::TokenUsage {
+                    input: input_tokens,
+                    output: output_tokens,
+                    cache_read: cache_read_tokens,
+                    cache_write: cache_write_tokens,
+                };
+                turn_usage += call_usage;
                 // Update session-lifetime accumulator (cost/context_window: overwrite, tokens: sum).
                 if let Some(entry) = self.sessions.lock().get(session_id) {
-                    entry.usage_accumulator.lock().record(
-                        input_tokens,
-                        output_tokens,
-                        cache_read_tokens,
-                        cache_write_tokens,
-                        cost_cents,
-                        context_window,
-                    );
+                    entry
+                        .usage_accumulator
+                        .lock()
+                        .record(call_usage, cost_cents, context_window);
                 }
                 // Reconstruct the event so loopback_event_to_updates can forward it as
                 // a UsageUpdate notification (with cost and context window) to the IDE.

@@ -96,8 +96,6 @@ impl Drop for IdeMcpLease {
 
 /// Result of attaching a session's IDE servers.
 pub(crate) struct IdeMcpAttachment {
-    /// Tools the attached servers expose, to be added to the session's tool list.
-    pub(crate) tools: Vec<McpTool>,
     /// Guard that releases the servers; `None` when nothing was attached.
     pub(crate) lease: Option<IdeMcpLease>,
     /// Ids of the attached servers, including tool-less ones, so the session's tool scope admits
@@ -106,17 +104,15 @@ pub(crate) struct IdeMcpAttachment {
 }
 
 impl IdeMcpAttachment {
-    /// Hand the attached tools and server ids to the session's [`AcpContext`](crate::AcpContext)
+    /// Hand the attached server ids to the session's [`AcpContext`](crate::AcpContext)
     /// and return the lease that releases the servers when the session ends.
     pub(crate) fn install(self, ctx: &mut crate::AcpContext) -> Option<IdeMcpLease> {
-        ctx.ide_mcp_tools = self.tools;
         ctx.ide_mcp_servers = self.servers;
         self.lease
     }
 
     fn empty() -> Self {
         Self {
-            tools: Vec::new(),
             lease: None,
             servers: Vec::new(),
         }
@@ -167,14 +163,17 @@ impl IdeMcpRegistry {
     ) -> IdeMcpAttachment {
         let lease = LeaseId(self.next_lease.fetch_add(1, Ordering::Relaxed));
         let mut owners = self.owners.lock().await;
-        let mut tools = Vec::new();
         let mut attached = Vec::new();
         for entry in entries {
             let server_id = entry.id.clone();
             let may_recover = owners.insert(server_id.clone(), lease).is_some();
             match add_with_recovery(manager, &entry, may_recover).await {
                 Ok(server_tools) => {
-                    tools.extend(server_tools);
+                    tracing::debug!(
+                        server_id = %server_id,
+                        tools = server_tools.len(),
+                        "IDE MCP server attached"
+                    );
                     attached.push(server_id);
                 }
                 Err(e) => {
@@ -190,11 +189,7 @@ impl IdeMcpRegistry {
             servers: attached,
             release_tx: self.release_tx.clone(),
         });
-        IdeMcpAttachment {
-            tools,
-            lease,
-            servers,
-        }
+        IdeMcpAttachment { lease, servers }
     }
 
     /// Release `leases` now instead of through the drain queue, used when the connection closes.
@@ -298,7 +293,7 @@ fn granted_allowlist(
 
     let name = entry.id.as_str();
     let grant = grants.servers.get(name)?;
-    let matches = match (&grant.target, &entry.transport) {
+    let matches = match (grant.target(), &entry.transport) {
         (
             AcpIdeMcpTarget::Stdio {
                 command,
@@ -319,7 +314,7 @@ fn granted_allowlist(
         _ => false,
     };
     if matches {
-        Some(grant.tools.clone())
+        Some(grant.tools().to_vec())
     } else {
         tracing::warn!(
             server = %name,
@@ -600,13 +595,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attach_returns_tools_and_owns_the_ids() {
+    async fn attach_owns_the_ids() {
         let registry = IdeMcpRegistry::new();
         let host = FakeHost::default();
         let attachment = registry
             .attach(&host, vec![entry("a-1"), entry("b-1")])
             .await;
-        assert_eq!(attachment.tools.len(), 2);
+        assert_eq!(attachment.servers.len(), 2);
         let lease = attachment.lease.expect("servers were attached");
         assert_eq!(owner_of(&registry, "a-1").await, Some(lease.id));
         assert_eq!(owner_of(&registry, "b-1").await, Some(lease.id));
@@ -633,7 +628,7 @@ mod tests {
         let host = FakeHost::default();
         host.failing.lock().insert("bad-1".to_owned());
         let attachment = registry.attach(&host, vec![entry("bad-1")]).await;
-        assert!(attachment.tools.is_empty());
+        assert_eq!(attachment.servers, Vec::<McpServerId>::new());
         assert!(attachment.lease.is_none());
         assert_eq!(owner_of(&registry, "bad-1").await, None);
     }
@@ -648,7 +643,7 @@ mod tests {
 
         let attachment = registry.attach(&host, vec![entry("ide-1")]).await;
 
-        assert_eq!(attachment.tools.len(), 1, "re-registration must succeed");
+        assert_eq!(attachment.servers.len(), 1, "re-registration must succeed");
         assert_eq!(*host.removed.lock(), ["ide-1"]);
         assert!(host.is_connected("ide-1"));
         let lease = attachment.lease.expect("the new lease owns the id");

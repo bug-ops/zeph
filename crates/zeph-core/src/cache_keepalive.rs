@@ -33,7 +33,8 @@ use tokio::time::Instant;
 use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
-    KeepaliveOutcome, KeepaliveRequest, LlmProvider as _, ResponseUsage, keepalive_output_cap,
+    KeepaliveOutcome, KeepaliveRequest, LlmProvider as _, ResponseUsage, TokenUsage,
+    keepalive_output_cap,
 };
 
 use crate::cost::CostTracker;
@@ -495,8 +496,23 @@ impl ServiceDeps {
         let model = backend.effective_model_identifier();
         let prefix = estimate_prefix_tokens(request);
         let output = u64::from(keepalive_output_cap(backend.current_thinking_budget()));
-        let worst_ping = tracker.price_of(model, 0, prefix, 0, output, speed);
-        let avoided_write = tracker.price_of(model, 0, 0, prefix, 0, speed);
+        let worst_ping = tracker.price_of(
+            model,
+            TokenUsage {
+                cache_read: prefix,
+                output,
+                ..TokenUsage::default()
+            },
+            speed,
+        );
+        let avoided_write = tracker.price_of(
+            model,
+            TokenUsage {
+                cache_write: prefix,
+                ..TokenUsage::default()
+            },
+            speed,
+        );
         let total = spent_cents + worst_ping;
         (total > 0.0 && total >= avoided_write).then_some(StopReason::BudgetExhausted)
     }
@@ -613,7 +629,7 @@ mod tests {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::claude::ClaudeProvider;
     use zeph_llm::mock::MockProvider;
-    use zeph_llm::provider::{CacheUsage, Message, PrefixCache, Role};
+    use zeph_llm::provider::{CacheUsage, Message, PrefixCache, Role, TokenUsage};
 
     use super::*;
     use crate::cost::ModelPricing;
@@ -726,10 +742,10 @@ mod tests {
             "p",
             "cloud",
             "m",
-            10_000,
-            0,
-            0,
-            0,
+            TokenUsage {
+                input: 10_000,
+                ..TokenUsage::default()
+            },
             zeph_config::ServiceSpeed::default(),
         );
         let req = request_with(priced_mock("m"), &"x".repeat(40_000));

@@ -391,6 +391,8 @@ where
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
     mcp_tool_rx: watch::Receiver<Vec<zeph_mcp::McpTool>>,
+    /// Daemon supervisor, so the agent's background tasks are listed and drained with it (#7126).
+    task_supervisor: std::sync::Arc<zeph_common::TaskSupervisor>,
     provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
     /// #5975: shared with `SkillInvokeExecutor` — see `run_daemon`'s construction site.
     trust_snapshot: std::sync::Arc<
@@ -446,6 +448,7 @@ where
         config.memory.summarization_threshold,
     )
     .with_shutdown(deps.shutdown_rx)
+    .with_task_supervisor(deps.task_supervisor)
     .with_config_reload(deps.config_path, deps.config_reload_rx)
     .with_plugins_dir(crate::bootstrap::plugins_dir(), {
         let mut blocked = config.tools.shell.blocked_commands.clone();
@@ -787,11 +790,11 @@ pub(crate) async fn run_daemon(
     } else {
         mcp_manager.connect_all().await
     };
-    // Subscribe before spawning the refresh task so no `tools/list_changed` event is missed.
-    let mcp_tool_rx = mcp_manager.subscribe_tool_changes();
-    if !config.cli.safe_mode {
-        mcp_manager.spawn_refresh_task(Some(&task_supervisor));
-    }
+    let mcp_tool_rx = crate::agent_setup::start_mcp_tool_refresh(
+        &mcp_manager,
+        Some(&task_supervisor),
+        !config.cli.safe_mode,
+    );
     // Retain a reference for explicit pre-shutdown so child processes are killed while the
     // tokio runtime is still live (fixes #2693: ChildWithCleanup::drop races with shutdown).
     let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
@@ -1141,6 +1144,7 @@ pub(crate) async fn run_daemon(
         mcp_tools,
         mcp_registry,
         mcp_tool_rx,
+        task_supervisor: std::sync::Arc::new(task_supervisor.clone()),
         mcp_manager,
         provider_config_snapshot,
         trust_snapshot,
@@ -1490,6 +1494,80 @@ mod tests {
         Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
     }
 
+    /// #7111/#7126: `build_daemon_agent` must subscribe the agent to MCP tool-list changes for
+    /// every server and run its background tasks on the daemon supervisor.
+    #[tokio::test]
+    async fn build_daemon_agent_wires_mcp_tool_refresh_and_task_supervisor() {
+        let memory = make_daemon_test_memory().await;
+        let conversation_id = memory.sqlite().create_conversation().await.unwrap();
+        let config = Config::default();
+        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mcp_manager = std::sync::Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
+            &config, false, None,
+        ));
+        let supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        let deps = BuildDaemonAgentDeps {
+            config: &config,
+            provider: mock_provider(),
+            embedding_provider: mock_provider(),
+            registry: std::sync::Arc::new(RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
+                zeph_tools::SetCwdExecutor::new(vec![]),
+            )),
+            session_config: zeph_core::AgentSessionConfig::from_config(&config, 4096),
+            skill_paths: Vec::new(),
+            reload_rx,
+            plugin_dirs_supplier: || Vec::<PathBuf>::new(),
+            memory,
+            conversation_id,
+            shutdown_rx,
+            config_path: PathBuf::new(),
+            config_reload_rx,
+            shell_policy_handle:
+                zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle(),
+            mcp_tools: Vec::new(),
+            mcp_registry: None,
+            mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+            task_supervisor: std::sync::Arc::clone(&supervisor),
+            mcp_manager: std::sync::Arc::clone(&mcp_manager),
+            provider_config_snapshot: crate::agent_setup::build_provider_config_snapshot(&config),
+            trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
+            clock: std::sync::Arc::new(zeph_common::SystemClock),
+        };
+        let (channel, handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = Box::pin(build_daemon_agent(deps, channel)).await;
+
+        mcp_manager.publish_tools_for_testing(vec![zeph_mcp::McpTool {
+            server_id: "srv".into(),
+            name: "published_tool".to_owned(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: zeph_mcp::ToolSecurityMeta::default(),
+        }]);
+        let count = Box::pin(crate::agent_setup::mcp_tool_count_after_turn(agent, handle)).await;
+
+        assert_eq!(count, 1, "daemon agent must pick up published MCP tools");
+        assert!(
+            supervisor
+                .snapshot()
+                .iter()
+                .any(|t| &*t.name == "agent.lifecycle.cancel_bridge"),
+            "agent background tasks must be registered on the daemon supervisor"
+        );
+    }
+
     /// #5819 regression: `build_daemon_agent` must call `Agent::with_skill_matching_config` so
     /// `config.skills.confusability_threshold` reaches the real, constructed `Agent` via the
     /// same `AgentBuilder` chain `run_daemon()` actually uses at startup — the daemon-path
@@ -1558,6 +1636,9 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+            task_supervisor: std::sync::Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
             mcp_manager,
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
@@ -1629,6 +1710,9 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+            task_supervisor: std::sync::Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
             mcp_manager,
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
@@ -1716,6 +1800,9 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+            task_supervisor: std::sync::Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
             mcp_manager,
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
@@ -1798,6 +1885,9 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_tool_rx: mcp_manager.subscribe_tool_changes(),
+            task_supervisor: std::sync::Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
             mcp_manager,
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(

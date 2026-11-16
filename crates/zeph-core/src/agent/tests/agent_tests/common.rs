@@ -298,18 +298,15 @@ impl Channel for MockChannel {
     #[allow(clippy::unused_async_trait_impl)]
     async fn send_usage(
         &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
+        usage: zeph_llm::provider::TokenUsage,
         _context_window: u64,
-        cache_read_tokens: u64,
-        cache_write_tokens: u64,
         _cost_cents: f64,
     ) -> Result<(), crate::channel::ChannelError> {
         self.usage_events.lock().unwrap().push(UsageEvent {
-            input: input_tokens,
-            output: output_tokens,
-            cache_read: cache_read_tokens,
-            cache_write: cache_write_tokens,
+            input: usage.input,
+            output: usage.output,
+            cache_read: usage.cache_read,
+            cache_write: usage.cache_write,
         });
         Ok(())
     }

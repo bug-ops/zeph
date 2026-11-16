@@ -1184,7 +1184,7 @@ session_idle_timeout_secs = 1800
 broadcast_capacity = 256
 # Whether to serve the /.well-known/acp.json agent discovery manifest (HTTP/both only)
 discovery_enabled = true
-# LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-4-5", "ollama:llama3"]
+# LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-5-5", "ollama:llama3"]
 available_models = []
 # Allowlist of workspace directories ACP clients may reference beyond session cwd.
 # Paths with `..`, /proc, /sys, ~/.ssh, ~/.gnupg, ~/.aws are rejected at config load.
@@ -1447,7 +1447,7 @@ max_files = 7
 # # SLM recommended: prefer gpt-4o-mini or claude-haiku-4-5 for this narrow structured-output task.
 # # Do NOT use 8B local models (qwen3:8b, llama3.1:8b) without constrained decoding —
 # # they frequently produce malformed JSON and miss implicit entities (see #2192).
-# extract_model = "claude-sonnet-4-5-20250929"
+# extract_model = "claude-sonnet-5-5"
 # # Named provider from [[llm.providers]] used for graph extraction.
 # # When set, bypasses the quality_gate that fires on JSON-structured tasks (#3601).
 # # Set to match the provider used by extract_model (e.g. "fast" for a gpt-4o-mini provider).

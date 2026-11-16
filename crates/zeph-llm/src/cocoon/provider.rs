@@ -311,7 +311,7 @@ impl LlmProvider for CocoonProvider {
                 )
                 .await?;
             let status = response.status();
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let text = crate::http::read_body(response).await?;
 
             if !status.is_success() {
                 let truncated: String = text.chars().take(256).collect();
@@ -358,7 +358,7 @@ impl LlmProvider for CocoonProvider {
                 .await?;
             let status = response.status();
             if !status.is_success() {
-                let text = response.text().await.map_err(LlmError::Http)?;
+                let text = crate::http::read_body(response).await?;
                 let truncated: String = text.chars().take(256).collect();
                 crate::http::log_api_error_body("cocoon", status, &truncated);
                 return Err(crate::http::map_error_response(status, &text, "cocoon"));
@@ -397,7 +397,7 @@ impl LlmProvider for CocoonProvider {
                 )
                 .await?;
             let status = response.status();
-            let body_text = response.text().await.map_err(LlmError::Http)?;
+            let body_text = crate::http::read_body(response).await?;
 
             if status == reqwest::StatusCode::NOT_FOUND {
                 return Err(LlmError::EmbedUnsupported {
@@ -459,7 +459,7 @@ impl LlmProvider for CocoonProvider {
                 )
                 .await?;
             let status = response.status();
-            let body_text = response.text().await.map_err(LlmError::Http)?;
+            let body_text = crate::http::read_body(response).await?;
 
             if status == reqwest::StatusCode::NOT_FOUND {
                 return Err(LlmError::EmbedUnsupported {
@@ -514,18 +514,10 @@ impl LlmProvider for CocoonProvider {
                 )
                 .await?;
             let status = response.status();
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let text = crate::http::read_body(response).await?;
 
             if status == reqwest::StatusCode::BAD_REQUEST {
-                let truncated: String = text.chars().take(256).collect();
-                tracing::warn!("cocoon tool chat 400 bad request: {truncated}");
-                if crate::error::body_is_context_length_error(&text) {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::InvalidInput {
-                    provider: "cocoon".into(),
-                    message: text.chars().take(512).collect(),
-                });
+                return Err(crate::http::map_bad_request("cocoon", &text));
             }
 
             if !status.is_success() {
@@ -562,18 +554,10 @@ impl LlmProvider for CocoonProvider {
                 )
                 .await?;
             let status = response.status();
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let text = crate::http::read_body(response).await?;
 
             if status == reqwest::StatusCode::BAD_REQUEST {
-                let truncated: String = text.chars().take(256).collect();
-                tracing::warn!("cocoon chat_typed 400 bad request: {truncated}");
-                if crate::error::body_is_context_length_error(&text) {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::InvalidInput {
-                    provider: "cocoon".into(),
-                    message: text.chars().take(512).collect(),
-                });
+                return Err(crate::http::map_bad_request("cocoon", &text));
             }
 
             if !status.is_success() {

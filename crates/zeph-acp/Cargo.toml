@@ -73,6 +73,7 @@ axum = { workspace = true, features = ["ws"] }
 tempfile.workspace = true
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 tower = { workspace = true, features = ["util"] }
+tracing-test.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]

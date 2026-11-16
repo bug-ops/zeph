@@ -91,6 +91,10 @@ impl SkillLoaderExecutor {
 }
 
 impl ToolExecutor for SkillLoaderExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<zeph_tools::McpToolIds> {
+        zeph_tools::McpToolIds::empty_shared()
+    }
+
     fn execute(
         &self,
         _response: &str,
@@ -151,6 +155,16 @@ mod tests {
     use zeph_common::SkillTrustLevel;
 
     use super::*;
+
+    #[test]
+    fn dispatch_ids_are_the_shared_empty_registry() {
+        let registry = Arc::new(RwLock::new(SkillRegistry::empty()));
+        let executor = SkillLoaderExecutor::new(registry, Arc::new(RwLock::new(HashMap::new())));
+        assert!(Arc::ptr_eq(
+            &executor.mcp_dispatch_ids(),
+            &zeph_tools::McpToolIds::empty_shared()
+        ));
+    }
 
     fn make_registry_with_skill(dir: &Path, name: &str, body: &str) -> SkillRegistry {
         let skill_dir = dir.join(name);

@@ -71,7 +71,7 @@ impl Clone for UsageTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{AuxiliaryUsage, CacheUsage};
+    use crate::provider::{CacheUsage, TokenUsage};
 
     #[test]
     fn last_ttft_ms_initially_none() {
@@ -109,7 +109,7 @@ mod tests {
                 read: 4,
             }),
             reasoning: Some(5),
-            auxiliary: Some(AuxiliaryUsage::default()),
+            auxiliary: Some(TokenUsage::default()),
             speed: zeph_config::ServiceSpeed::Standard,
         }));
         tracker.record(Some(ResponseUsage {

@@ -87,6 +87,17 @@ impl McpManager {
             .insert(server_id.into(), tools);
     }
 
+    /// Publish `tools` on the tool-change watch as the refresh task would after a
+    /// `tools/list_changed` event, without a connected server.
+    ///
+    /// Test support for wiring tests in other crates; gated like
+    /// [`inject_tools_for_testing`](Self::inject_tools_for_testing).
+    #[cfg(any(test, feature = "mock"))]
+    #[doc(hidden)]
+    pub fn publish_tools_for_testing(&self, tools: Vec<McpTool>) {
+        self.tools_watch_tx.send_replace(tools);
+    }
+
     /// Returns the number of configured servers (connected or not).
     #[must_use]
     pub fn configured_server_count(&self) -> usize {

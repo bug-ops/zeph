@@ -44,7 +44,7 @@ embedding_model = "qwen3-embedding"
 
 [llm.cloud]
 # Claude API model (used when provider = "claude")
-model = "claude-sonnet-4-5-20250929"
+model = "claude-sonnet-5-5"
 # Maximum tokens for Claude responses
 max_tokens = 4096
 # Enable Claude server-side context compaction (compact-2026-01-12 beta).
@@ -103,7 +103,7 @@ max_tokens = 4096
 # embedding_model = "qwen3-embedding"  # optional: override embedding model
 # [llm.orchestrator.providers.claude]
 # type = "claude"
-# model = "claude-sonnet-4-5-20250929"  # optional: override [llm.cloud].model
+# model = "claude-sonnet-5-5"  # optional: override [llm.cloud].model
 # [llm.orchestrator.providers.candle]
 # type = "candle"
 # filename = "model.gguf"       # optional: GGUF filename
@@ -143,7 +143,7 @@ max_tokens = 4096
 # embedding_model = "qwen3-embedding"      # used by ollama sub-provider for embeddings
 #
 # [llm.cloud]
-# model = "claude-sonnet-4-5-20250929"
+# model = "claude-sonnet-5-5"
 # max_tokens = 4096
 #
 # [llm.stt]
@@ -162,7 +162,7 @@ max_tokens = 4096
 #
 # [llm.orchestrator.providers.claude]
 # type = "claude"
-# model = "claude-sonnet-4-5-20250929"     # optional: overrides [llm.cloud].model
+# model = "claude-sonnet-5-5"     # optional: overrides [llm.cloud].model
 #
 # [llm.orchestrator.routes]
 # chat = ["ollama", "claude"]              # fallback chain: try ollama first, then claude
@@ -707,7 +707,7 @@ session_idle_timeout_secs = 1800
 broadcast_capacity = 256
 # Whether to serve the /.well-known/acp.json agent discovery manifest (HTTP/both only)
 discovery_enabled = true
-# LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-4-5", "ollama:llama3"]
+# LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-5-5", "ollama:llama3"]
 available_models = []
 
 [acp.ide_mcp]
@@ -832,7 +832,7 @@ max_files = 7
 # [memory.graph]
 # enabled = false
 # # LLM model used for entity/relation extraction (required when enabled)
-# extract_model = "claude-sonnet-4-5-20250929"
+# extract_model = "claude-sonnet-5-5"
 # # Maximum entities extracted per message
 # max_entities_per_message = 10
 # # Maximum edges (relations) extracted per message

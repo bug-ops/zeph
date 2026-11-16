@@ -67,14 +67,25 @@ pub struct DiscordMessage {
     pub id: String,
 }
 
+/// Discord `allowed_mentions` object with an empty `parse` list, so model-authored
+/// `@everyone` / `<@id>` text never pings anyone.
+#[derive(Serialize, Clone, Copy)]
+struct AllowedMentions {
+    parse: [&'static str; 0],
+}
+
+const NO_MENTIONS: AllowedMentions = AllowedMentions { parse: [] };
+
 #[derive(Serialize)]
 struct CreateMessage<'a> {
     content: &'a str,
+    allowed_mentions: AllowedMentions,
 }
 
 #[derive(Serialize)]
 struct EditMessage<'a> {
     content: &'a str,
+    allowed_mentions: AllowedMentions,
 }
 
 impl RestClient {
@@ -121,7 +132,10 @@ impl RestClient {
                 .post(&url)
                 .header("Authorization", &auth)
                 .timeout(REQUEST_TIMEOUT)
-                .json(&CreateMessage { content })
+                .json(&CreateMessage {
+                    content,
+                    allowed_mentions: NO_MENTIONS,
+                })
         })
         .await?;
         resp.json().await
@@ -150,7 +164,10 @@ impl RestClient {
                 .patch(&url)
                 .header("Authorization", &auth)
                 .timeout(REQUEST_TIMEOUT)
-                .json(&EditMessage { content })
+                .json(&EditMessage {
+                    content,
+                    allowed_mentions: NO_MENTIONS,
+                })
         })
         .await?;
         Ok(())
@@ -224,7 +241,7 @@ impl RestClient {
 
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -321,5 +338,35 @@ mod tests {
 
         let client = RestClient::with_base_url(server.uri(), "test-token".into());
         client.trigger_typing("123").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_and_edit_message_disable_all_mention_parsing() {
+        let server = MockServer::start().await;
+        let expected = serde_json::json!({"allowed_mentions": {"parse": []}});
+
+        Mock::given(method("POST"))
+            .and(path("/channels/123/messages"))
+            .and(body_partial_json(expected.clone()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "msg-1"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/channels/123/messages/456"))
+            .and(body_partial_json(expected))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = RestClient::with_base_url(server.uri(), "test-token".into());
+        client.send_message("123", "@everyone").await.unwrap();
+        client
+            .edit_message("123", "456", "@everyone")
+            .await
+            .unwrap();
     }
 }

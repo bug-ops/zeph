@@ -14,6 +14,14 @@ pub const DEFAULT_DEBUG_DIR: &str = ".zeph/debug";
 /// Legacy project-relative log file path (pre-XDG migration).
 pub const DEFAULT_LOG_FILE: &str = ".zeph/logs/zeph.log";
 
+/// Claude model ids Anthropic has retired (or scheduled for retirement), each paired with its
+/// documented replacement.
+///
+/// Single source for the `--migrate-config` rewrite, the startup warning in `zeph-llm` and the
+/// guards that keep shipped defaults off retired models. Add a pair here when a model retires.
+pub const RETIRED_CLAUDE_MODELS: &[(&str, &str)] =
+    &[("claude-sonnet-4-5-20250929", "claude-sonnet-5-5")];
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const PLATFORM_APP_DIR_NAME: &str = "Zeph";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

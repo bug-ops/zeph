@@ -8,7 +8,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
-use crate::provider::AuxiliaryUsage;
+use crate::provider::TokenUsage;
 
 const MESSAGE_START: &str = r#"{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5","usage":{"input_tokens":100,"cache_creation_input_tokens":10,"cache_read_input_tokens":50,"output_tokens":1}}}"#;
 
@@ -74,10 +74,10 @@ fn assert_final_usage(provider: &ClaudeProvider) {
     );
     assert_eq!(
         provider.last_response_usage().and_then(|u| u.auxiliary),
-        Some(AuxiliaryUsage {
+        Some(TokenUsage {
             input: 7000,
             output: 400,
-            cache_creation: 3,
+            cache_write: 3,
             cache_read: 4,
         })
     );

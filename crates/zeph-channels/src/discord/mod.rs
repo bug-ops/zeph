@@ -8,21 +8,22 @@ pub mod rest;
 
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 use zeph_common::TaskSupervisor;
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StatusText,
 };
 
 use self::gateway::IncomingMessage;
+use crate::confirm::Inbox;
 use crate::streaming::{StreamingBuffer, StreamingSend};
+use tokio::sync::mpsc;
 
 const MAX_MESSAGE_LEN: usize = 2000;
 const EDIT_THROTTLE: Duration = Duration::from_millis(1500);
 
 /// Discord channel adapter implementing edit-in-place streaming.
 pub struct DiscordChannel {
-    rx: mpsc::Receiver<IncomingMessage>,
+    rx: Inbox<IncomingMessage>,
     rest: rest::RestClient,
     /// Gateway WebSocket listener handle. `None` when the gateway is supervised by
     /// a [`TaskSupervisor`] (lifecycle is owned by the supervisor in that case).
@@ -81,7 +82,7 @@ impl DiscordChannel {
         let (gateway_handle, rx) = gateway::spawn_gateway(token, supervisor);
         Self::register_slash_commands(rest.clone(), supervisor);
         Ok(Self {
-            rx,
+            rx: rx.into(),
             rest,
             _gateway_handle: gateway_handle,
             channel_id: None,
@@ -230,7 +231,11 @@ impl crate::confirm::ConfirmLoop for DiscordChannel {
     }
 
     fn confirm_receiver(&mut self) -> &mut mpsc::Receiver<IncomingMessage> {
-        &mut self.rx
+        self.rx.receiver_mut()
+    }
+
+    fn confirm_defer(&mut self, incoming: IncomingMessage) {
+        self.rx.defer([incoming]);
     }
 
     fn confirm_accepts(&self, incoming: &IncomingMessage) -> bool {
@@ -260,7 +265,7 @@ impl Channel for DiscordChannel {
 
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         loop {
-            let incoming = self.rx.try_recv().ok()?;
+            let incoming = self.rx.try_recv()?;
             if !self.is_authorized(&incoming) {
                 tracing::warn!(
                     "rejected discord message from unauthorized user: {}",
@@ -409,12 +414,13 @@ mod tests {
     use super::*;
     use std::assert_matches;
     use std::time::Duration;
+    use tokio::sync::mpsc;
 
     fn make_channel() -> DiscordChannel {
         let (_tx, rx) = mpsc::channel(16);
         let rest = rest::RestClient::new("test-token".into());
         DiscordChannel {
-            rx,
+            rx: rx.into(),
             rest,
             _gateway_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
@@ -583,7 +589,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let rest = rest::RestClient::new("test-token".into());
         let mut ch = DiscordChannel {
-            rx,
+            rx: rx.into(),
             rest,
             _gateway_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
@@ -615,7 +621,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let rest = rest::RestClient::new("test-token".into());
         let mut ch = DiscordChannel {
-            rx,
+            rx: rx.into(),
             rest,
             _gateway_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
@@ -680,7 +686,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let rest = rest::RestClient::new("test-token".into());
         let mut ch = DiscordChannel {
-            rx,
+            rx: rx.into(),
             rest,
             _gateway_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: Some("ch1".into()),
@@ -738,5 +744,32 @@ mod tests {
             None,
         );
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn reply_defers_message_from_other_channel() {
+        use crate::confirm::{ConfirmLoop, ReplyOutcome};
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "m1"})))
+            .mount(&server)
+            .await;
+        let (tx, rx) = mpsc::channel(4);
+        let mut ch = make_channel();
+        ch.rx = rx.into();
+        ch.rest = rest::RestClient::with_base_url(server.uri(), "test-token".into());
+        ch.channel_id = Some("ch1".into());
+        tx.try_send(make_incoming("u", "ch2", vec![])).unwrap();
+        let mut reply = make_incoming("u", "ch1", vec![]);
+        reply.content = "yes".into();
+        tx.try_send(reply).unwrap();
+
+        let outcome = ch.run_reply("Q?").await.unwrap();
+        assert_eq!(outcome, ReplyOutcome::Text("yes".into()));
+        assert_eq!(ch.try_recv().unwrap().text, "hello");
+        assert_eq!(ch.channel_id.as_deref(), Some("ch2"));
     }
 }

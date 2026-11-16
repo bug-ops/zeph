@@ -8,6 +8,13 @@
 //! - **Inter-divergence** — normalised `(1-cosine)/2` between primary and secondary embeddings.
 //!
 //! When either signal crosses its threshold, `CoE` escalates to the secondary provider.
+//!
+//! # Scope
+//!
+//! `CoE` wraps only the router's plain `chat()` calls (auxiliary completions such as skill
+//! matching and JSON retries). The main agent turn goes through `chat_with_tools` /
+//! `chat_stream`, which neither request `logprobs` nor escalate, so the user-visible answer of
+//! a tool-using turn is not entropy-checked (#7096).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

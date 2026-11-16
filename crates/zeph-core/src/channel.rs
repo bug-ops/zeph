@@ -4,6 +4,7 @@
 /// Validated status text accepted by [`Channel::send_status`] and the typed status update
 /// carried by [`LoopbackEvent::Status`], re-exported so channel adapters need no direct
 /// `zeph-llm` dependency.
+pub use zeph_llm::provider::TokenUsage;
 pub use zeph_llm::status::{StatusText, StatusUpdate};
 
 mod ask_user;
@@ -565,11 +566,8 @@ pub trait Channel: Send {
     /// Returns an error if the underlying I/O fails.
     fn send_usage(
         &mut self,
-        _input_tokens: u64,
-        _output_tokens: u64,
+        _usage: TokenUsage,
         _context_window: u64,
-        _cache_read_tokens: u64,
-        _cache_write_tokens: u64,
         _cost_cents: f64,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
@@ -1058,20 +1056,17 @@ impl Channel for LoopbackChannel {
 
     async fn send_usage(
         &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
+        usage: TokenUsage,
         context_window: u64,
-        cache_read_tokens: u64,
-        cache_write_tokens: u64,
         cost_cents: f64,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::Usage {
-                input_tokens,
-                output_tokens,
+                input_tokens: usage.input,
+                output_tokens: usage.output,
                 context_window,
-                cache_read_tokens,
-                cache_write_tokens,
+                cache_read_tokens: usage.cache_read,
+                cache_write_tokens: usage.cache_write,
                 cost_cents,
             })
             .await
@@ -1648,7 +1643,16 @@ mod tests {
     async fn loopback_send_usage_produces_usage_event() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel
-            .send_usage(100, 50, 200_000, 10, 5, 1.5)
+            .send_usage(
+                TokenUsage {
+                    input: 100,
+                    output: 50,
+                    cache_read: 10,
+                    cache_write: 5,
+                },
+                200_000,
+                1.5,
+            )
             .await
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
@@ -1676,7 +1680,17 @@ mod tests {
     async fn loopback_send_usage_error_when_closed() {
         let (mut channel, handle) = LoopbackChannel::pair(8);
         drop(handle);
-        let result = channel.send_usage(1, 2, 3, 0, 0, 0.0).await;
+        let result = channel
+            .send_usage(
+                TokenUsage {
+                    input: 1,
+                    output: 2,
+                    ..TokenUsage::default()
+                },
+                3,
+                0.0,
+            )
+            .await;
         assert_matches!(result, Err(ChannelError::ChannelClosed));
     }
 

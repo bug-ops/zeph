@@ -808,14 +808,78 @@ impl Default for AcpIdeMcpConfig {
 /// One operator grant for an IDE-provided MCP server.
 ///
 /// Parsed from `[acp.ide_mcp.servers.<name>]`: exactly one of `command` / `url`, with `args` and
-/// `env_keys` allowed only next to `command`.
+/// `env_keys` allowed only next to `command`. Fields are private so a grant can only be obtained
+/// through [`AcpIdeMcpGrant::new`] or deserialization, both of which enforce a non-empty tool list
+/// and a non-empty transport pin.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::{AcpIdeMcpGrant, AcpIdeMcpTarget};
+///
+/// let target = AcpIdeMcpTarget::Http { url: "https://mcp.example.com/mcp".to_owned() };
+/// let grant = AcpIdeMcpGrant::new(target, vec!["search".to_owned()]).unwrap();
+/// assert_eq!(grant.tools(), ["search"]);
+///
+/// let no_tools = AcpIdeMcpTarget::Http { url: "https://mcp.example.com/mcp".to_owned() };
+/// assert!(AcpIdeMcpGrant::new(no_tools, Vec::new()).is_err());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "AcpIdeMcpGrantRaw", into = "AcpIdeMcpGrantRaw")]
 pub struct AcpIdeMcpGrant {
+    target: AcpIdeMcpTarget,
+    tools: Vec<String>,
+}
+
+/// Reason an [`AcpIdeMcpGrant`] failed validation.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AcpIdeMcpGrantError {
+    /// The grant lists no tools.
+    #[error("grant must list at least one tool in `tools`")]
+    NoTools,
+    /// The pinned `command` or `url` is empty.
+    #[error("grant must set exactly one non-empty `command` or `url`")]
+    EmptyTarget,
+    /// Both `command` and `url` were given.
+    #[error("grant must set exactly one of `command` or `url`, not both")]
+    BothTransports,
+    /// `args` or `env_keys` were given next to `url`.
+    #[error("`args` and `env_keys` apply only to `command` grants")]
+    StdioFieldsOnHttp,
+}
+
+impl AcpIdeMcpGrant {
+    /// Build a grant pinned to `target` that allows `tools`.
+    ///
+    /// # Errors
+    ///
+    /// [`AcpIdeMcpGrantError::NoTools`] when `tools` is empty and
+    /// [`AcpIdeMcpGrantError::EmptyTarget`] when the target's `command` or `url` is empty.
+    pub fn new(target: AcpIdeMcpTarget, tools: Vec<String>) -> Result<Self, AcpIdeMcpGrantError> {
+        if tools.is_empty() {
+            return Err(AcpIdeMcpGrantError::NoTools);
+        }
+        let pinned_empty = match &target {
+            AcpIdeMcpTarget::Stdio { command, .. } => command.is_empty(),
+            AcpIdeMcpTarget::Http { url } => url.is_empty(),
+        };
+        if pinned_empty {
+            return Err(AcpIdeMcpGrantError::EmptyTarget);
+        }
+        Ok(Self { target, tools })
+    }
+
     /// Exact transport the grant is pinned to.
-    pub target: AcpIdeMcpTarget,
-    /// Tool names the server may expose.
-    pub tools: Vec<String>,
+    #[must_use]
+    pub fn target(&self) -> &AcpIdeMcpTarget {
+        &self.target
+    }
+
+    /// Tool names the server may expose; never empty.
+    #[must_use]
+    pub fn tools(&self) -> &[String] {
+        &self.tools
+    }
 }
 
 /// Transport pin of an [`AcpIdeMcpGrant`].
@@ -854,35 +918,25 @@ struct AcpIdeMcpGrantRaw {
 }
 
 impl TryFrom<AcpIdeMcpGrantRaw> for AcpIdeMcpGrant {
-    type Error = String;
+    type Error = AcpIdeMcpGrantError;
 
     fn try_from(raw: AcpIdeMcpGrantRaw) -> Result<Self, Self::Error> {
-        if raw.tools.is_empty() {
-            return Err("grant must list at least one tool in `tools`".to_owned());
-        }
         let target = match (raw.command, raw.url) {
-            (Some(command), None) if !command.is_empty() => AcpIdeMcpTarget::Stdio {
+            (Some(command), None) => AcpIdeMcpTarget::Stdio {
                 command,
                 args: raw.args,
                 env_keys: raw.env_keys,
             },
-            (None, Some(url)) if !url.is_empty() => {
+            (None, Some(url)) => {
                 if !raw.args.is_empty() || !raw.env_keys.is_empty() {
-                    return Err("`args` and `env_keys` apply only to `command` grants".to_owned());
+                    return Err(AcpIdeMcpGrantError::StdioFieldsOnHttp);
                 }
                 AcpIdeMcpTarget::Http { url }
             }
-            (Some(_), Some(_)) => {
-                return Err("grant must set exactly one of `command` or `url`, not both".to_owned());
-            }
-            _ => {
-                return Err("grant must set exactly one non-empty `command` or `url`".to_owned());
-            }
+            (Some(_), Some(_)) => return Err(AcpIdeMcpGrantError::BothTransports),
+            (None, None) => return Err(AcpIdeMcpGrantError::EmptyTarget),
         };
-        Ok(Self {
-            target,
-            tools: raw.tools,
-        })
+        Self::new(target, raw.tools)
     }
 }
 

@@ -336,17 +336,6 @@ impl ErasedToolExecutor for PlanModeExecutor {
 
 // ── Network egress denial ─────────────────────────────────────────────────────
 
-/// Tool IDs that are pure network-egress tools — any call is blocked outright, no command
-/// inspection needed (unlike `bash`, which is dual-use).
-///
-/// `web_scrape`/`fetch` are the native `WebScrapeExecutor` tool IDs (see `zeph-tools`
-/// `scrape.rs`) — the tool an LLM reaches for by default to retrieve a URL, and therefore
-/// the highest-likelihood egress vector for a `Deny`-scoped task (#6030 critic finding S2).
-/// `web_search` is the native `WebSearchExecutor` tool ID (spec 006-1-web-search, #6358) —
-/// added alongside them since it is also a pure network-egress tool with no non-network
-/// purpose.
-const NETWORK_ONLY_TOOL_IDS: &[&str] = &["web_scrape", "fetch", "web_search"];
-
 /// Blocks network-egress tool calls for a single sub-agent spawn.
 ///
 /// Wraps an [`ErasedToolExecutor`] and rejects two classes of call with
@@ -394,7 +383,7 @@ impl NetworkDenyToolExecutor {
     fn check_call(&self, call: &ToolCall) -> Result<(), ToolError> {
         let tool_id = normalize_tool_id(call.tool_id.as_str());
 
-        if NETWORK_ONLY_TOOL_IDS.contains(&tool_id.as_str()) {
+        if zeph_common::native_tools::is_web_egress_tool(tool_id.as_str()) {
             tracing::warn!(
                 tool_id = %tool_id,
                 "network egress denied for sub-agent task (NetworkScope::Deny)"
@@ -1425,6 +1414,15 @@ mod tests {
             .execute_tool_call_erased(&tool_call("web_search"))
             .await;
         assert_matches!(res, Err(ToolError::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn network_deny_blocks_every_native_web_egress_tool() {
+        for tool in zeph_common::native_tools::WebEgressTool::ALL {
+            let exec = NetworkDenyToolExecutor::new(stub_box(&[tool.id()]));
+            let res = exec.execute_tool_call_erased(&tool_call(tool.id())).await;
+            assert_matches!(res, Err(ToolError::Blocked { .. }), "{}", tool.id());
+        }
     }
 
     // ── #1184: PlanModeExecutor + disallowed_tools catalog test ───────────

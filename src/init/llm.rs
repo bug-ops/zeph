@@ -8,6 +8,8 @@ use zeroize::Zeroizing;
 
 use super::WizardState;
 
+const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-5-5";
+
 pub(super) fn supports_embeddings(provider_type: &str) -> bool {
     !matches!(provider_type, "claude" | "candle")
 }
@@ -188,7 +190,7 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
             state.model = Some(
                 Input::new()
                     .with_prompt("Model name")
-                    .default("claude-sonnet-4-5-20250929".into())
+                    .default(DEFAULT_CLAUDE_MODEL.into())
                     .interact_text()?,
             );
             let thinking_mode = Select::new()
@@ -708,6 +710,15 @@ mod tests {
     fn resolve_probe_url_none_when_provider_is_none() {
         let s = WizardState::default();
         assert!(resolve_probe_url(&s).is_none());
+    }
+
+    #[test]
+    fn wizard_default_claude_model_is_not_retired() {
+        assert!(
+            zeph_config::defaults::RETIRED_CLAUDE_MODELS
+                .iter()
+                .all(|(retired, _)| *retired != DEFAULT_CLAUDE_MODEL)
+        );
     }
 
     #[test]

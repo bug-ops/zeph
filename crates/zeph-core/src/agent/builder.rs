@@ -1088,6 +1088,7 @@ impl<C: Channel> Agent<C> {
         mcp_config: &crate::config::McpConfig,
     ) -> Self {
         self.services.mcp.set_tools(tools);
+        self.refresh_native_tool_shadows();
         self.services.mcp.registry = registry;
         self.services.mcp.manager = manager;
         self.services

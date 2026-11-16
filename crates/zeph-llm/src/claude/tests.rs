@@ -84,6 +84,23 @@ fn stale_model_suggestion_non_claude_or_alias_fails_open() {
 }
 
 #[test]
+fn new_warns_once_with_replacement_for_retired_model() {
+    let logs = crate::testing::LogCapture::start();
+    let _ = ClaudeProvider::new("k".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+    let out = logs.contents();
+    assert_eq!(out.matches("WARN").count(), 1, "{out}");
+    assert!(out.contains("claude-sonnet-4-5-20250929"), "{out}");
+    assert!(out.contains("switch to claude-sonnet-5-5"), "{out}");
+}
+
+#[test]
+fn new_does_not_warn_for_current_model() {
+    let logs = crate::testing::LogCapture::start();
+    let _ = ClaudeProvider::new("k".into(), "claude-sonnet-5-5".into(), 1024);
+    assert!(!logs.contents().contains("WARN"));
+}
+
+#[test]
 fn name_defaults_to_claude() {
     let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-5-20250929".into(), 1024);
     assert_eq!(provider.name(), "claude");
@@ -4124,7 +4141,7 @@ fn usage_iterations_sum_only_compaction_and_leave_top_level_alone() {
     let usage: ApiUsage = serde_json::from_str(json).unwrap();
     let aux = usage.auxiliary().expect("compaction iteration is billed");
     assert_eq!(
-        (aux.input, aux.output, aux.cache_creation, aux.cache_read),
+        (aux.input, aux.output, aux.cache_write, aux.cache_read),
         (100, 40, 7, 9)
     );
 

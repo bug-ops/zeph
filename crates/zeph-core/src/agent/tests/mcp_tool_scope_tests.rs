@@ -113,3 +113,37 @@ async fn check_tool_refresh_all_servers_scope_applies_every_update_as_before() {
     assert_eq!(names(&agent), ["a:x", "b:y"]);
     assert_eq!(metrics.borrow().mcp_tool_count, 2);
 }
+
+#[tokio::test]
+async fn check_tool_refresh_scoped_agent_clears_tools_when_its_servers_drop_to_zero() {
+    let (mut agent, tx, _metrics) = agent_with(scope(&["a"]), vec![tool("a", "x")]);
+
+    tx.send(vec![tool("b", "y")]).unwrap();
+    agent.check_tool_refresh().await;
+
+    assert_eq!(
+        names(&agent),
+        Vec::<String>::new(),
+        "stale tool must be dropped"
+    );
+}
+
+#[tokio::test]
+async fn check_tool_refresh_real_empty_refresh_clears_unscoped_tools() {
+    let (mut agent, tx, _metrics) = agent_with(McpToolScope::AllServers, vec![tool("a", "x")]);
+
+    tx.send(vec![]).unwrap();
+    agent.check_tool_refresh().await;
+
+    assert_eq!(names(&agent), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn check_tool_refresh_unseen_initial_value_does_no_work() {
+    let (mut agent, _tx, metrics) = agent_with(McpToolScope::AllServers, vec![tool("a", "x")]);
+
+    agent.check_tool_refresh().await;
+
+    assert_eq!(names(&agent), ["a:x"]);
+    assert_eq!(metrics.borrow().mcp_tool_count, 0, "no refresh, no metrics");
+}

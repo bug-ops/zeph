@@ -342,7 +342,7 @@ impl GeminiProvider {
         .await?;
 
         let status = response.status();
-        let body = response.text().await.map_err(LlmError::Http)?;
+        let body = crate::http::read_body(response).await?;
 
         if !status.is_success() {
             return Err(parse_gemini_error(&body, status));
@@ -413,7 +413,7 @@ impl GeminiProvider {
         .await?;
 
         let status = response.status();
-        let body = response.text().await.map_err(LlmError::Http)?;
+        let body = crate::http::read_body(response).await?;
 
         if !status.is_success() {
             return Err(parse_gemini_error(&body, status));
@@ -462,7 +462,7 @@ impl GeminiProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.map_err(LlmError::Http)?;
+            let body = crate::http::read_body(response).await?;
             return Err(parse_gemini_error(&body, status));
         }
 
@@ -500,7 +500,7 @@ impl GeminiProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = crate::http::read_body(response).await.unwrap_or_default();
             tracing::debug!(status = %status, body = %body, "Gemini list_models_remote error");
             return Err(LlmError::api_error("gemini", status.as_u16(), &body));
         }
@@ -1434,16 +1434,13 @@ impl LlmProvider for GeminiProvider {
         .await?;
 
         let status = response.status();
-        let body_text = response.text().await.map_err(LlmError::Http)?;
+        let body_text = crate::http::read_body(response).await?;
 
         if !status.is_success() {
             // Check for 400 before delegating to parse_gemini_error; a 400 means the
             // input itself is invalid and retrying on another provider would fail identically.
             if status == reqwest::StatusCode::BAD_REQUEST {
-                return Err(LlmError::InvalidInput {
-                    provider: "gemini".into(),
-                    message: body_text,
-                });
+                return Err(LlmError::invalid_input_from_body("gemini", &body_text));
             }
             return Err(parse_gemini_error(&body_text, status));
         }

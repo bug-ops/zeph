@@ -120,7 +120,7 @@ async fn live_executor_definition_alone_classifies_error_text_as_external() {
     let executor =
         MockToolExecutor::new(vec![failure()]).with_definitions(vec![mcp_tool_def(&id, "github")]);
     let mut agent = agent_with(executor);
-    assert!(agent.services.mcp.tools().is_empty());
+    assert_eq!(agent.services.mcp.tools(), [] as [zeph_mcp::McpTool; 0]);
     let result = run_turn(&mut agent, &id).await;
     assert_external(&agent, &result);
 }

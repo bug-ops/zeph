@@ -127,7 +127,7 @@ impl CocoonClient {
                 LlmError::Unavailable
             })?;
 
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let text = crate::http::read_body(response).await?;
             let health: CocoonHealth = serde_json::from_str(&text)?;
             tracing::debug!(
                 proxy_connected = health.proxy_connected,
@@ -157,7 +157,7 @@ impl CocoonClient {
                 .await
                 .map_err(|_| LlmError::Unavailable)?;
 
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let text = crate::http::read_body(response).await?;
             let parsed: ModelsResponse = serde_json::from_str(&text)?;
             Ok(parsed.data.into_iter().map(|m| m.id).collect())
         }

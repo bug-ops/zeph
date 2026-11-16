@@ -137,7 +137,7 @@ impl RouterState {
         };
         let snapshot = served.snapshot.get_or_insert_with(Default::default);
         let mut aux = snapshot.auxiliary.unwrap_or_default();
-        aux.add(crate::provider::AuxiliaryUsage::from(shadow));
+        aux += crate::provider::TokenUsage::from(shadow);
         snapshot.auxiliary = Some(aux);
     }
 

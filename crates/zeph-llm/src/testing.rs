@@ -9,7 +9,64 @@
 //! compatible-endpoint provider.
 
 use std::fmt::Write as _;
+use std::sync::{Arc, Mutex};
 use wiremock::ResponseTemplate;
+
+/// Captures `tracing` output (all levels up to DEBUG) emitted on the current thread.
+///
+/// Use with `#[tokio::test(flavor = "current_thread")]` so awaited provider code logs on the
+/// capturing thread. Dropping the value uninstalls the subscriber.
+pub struct LogCapture {
+    buf: Arc<Mutex<Vec<u8>>>,
+    _guard: tracing::subscriber::DefaultGuard,
+}
+
+#[derive(Clone)]
+struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedBuf {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuf {
+    type Writer = SharedBuf;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+impl LogCapture {
+    /// Install a capturing subscriber for the current thread.
+    #[must_use]
+    pub fn start() -> Self {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(SharedBuf(Arc::clone(&buf)))
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        Self {
+            buf,
+            _guard: tracing::subscriber::set_default(subscriber),
+        }
+    }
+
+    /// Everything logged so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the buffer lock was poisoned by a panicking writer.
+    #[must_use]
+    pub fn contents(&self) -> String {
+        String::from_utf8_lossy(&self.buf.lock().unwrap()).into_owned()
+    }
+}
 
 /// Syntactically-valid current Claude model ID for tests that need *some*
 /// model string but do not assert on model freshness. Update in one place.

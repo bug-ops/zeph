@@ -241,6 +241,8 @@ pub(crate) struct McpState {
     /// across `.await`). The rebuild is deferred to `check_tool_refresh`, which runs at the
     /// start of each turn without the `Box<dyn Future + Send>` constraint.
     pub(crate) pending_semantic_rebuild: bool,
+    /// MCP tools unreachable because their sanitized id equals a native tool id.
+    pub(crate) native_shadows: Vec<zeph_mcp::tool::NativeToolShadow>,
 }
 
 pub(crate) struct IndexState {
@@ -1327,7 +1329,12 @@ impl McpState {
                 shadowed_tools: collisions
                     .iter()
                     .filter(|c| c.server_b.as_str() == o.id.as_str())
-                    .count(),
+                    .count()
+                    + self
+                        .native_shadows
+                        .iter()
+                        .filter(|s| s.server_id.as_str() == o.id.as_str())
+                        .count(),
             })
             .collect()
     }
@@ -1523,6 +1530,7 @@ impl Default for McpState {
             discovery_provider: None,
             elicitation_warn_sensitive_fields: true,
             pending_semantic_rebuild: false,
+            native_shadows: Vec::new(),
         }
     }
 }

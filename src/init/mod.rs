@@ -2745,7 +2745,7 @@ mod tests {
     fn single_provider_state() -> WizardState {
         WizardState {
             provider: Some(ProviderKind::Claude),
-            model: Some("claude-sonnet-4-5-20250929".into()),
+            model: Some("claude-sonnet-5-5".into()),
             embedding_model: Some("qwen3-embedding".into()),
             api_key: Some("key-abc".into()),
             vault_backend: "env".into(),
@@ -2762,7 +2762,7 @@ mod tests {
         assert_eq!(config.llm.providers[0].provider_type, ProviderKind::Claude);
         assert_eq!(
             config.llm.providers[0].model.as_deref(),
-            Some("claude-sonnet-4-5-20250929")
+            Some("claude-sonnet-5-5")
         );
     }
 
@@ -3022,7 +3022,7 @@ mod tests {
     fn build_config_claude_skips_embedding_model() {
         let state = WizardState {
             provider: Some(ProviderKind::Claude),
-            model: Some("claude-sonnet-4-5-20250929".into()),
+            model: Some("claude-sonnet-5-5".into()),
             embedding_model: Some("qwen3-embedding".into()),
             vault_backend: "env".into(),
             ..WizardState::default()

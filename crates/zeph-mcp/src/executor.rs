@@ -535,6 +535,50 @@ mod tests {
         McpToolExecutor::new(mgr, tools).with_media(sanitizer, 4)
     }
 
+    fn colliding_tool(server: &str, name: &str) -> McpTool {
+        McpTool {
+            server_id: server.into(),
+            name: name.to_owned(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: crate::tool::ToolSecurityMeta::default(),
+        }
+    }
+
+    /// #7104: two servers share the sanitized id `a_b_c`; the registry names `a`.
+    #[tokio::test]
+    async fn colliding_id_dispatches_to_the_registered_server_even_after_pruning() {
+        let (executor, writer) = make_executor_with_writer();
+        let first = colliding_tool("a", "b_c");
+        let second = colliding_tool("a_b", "c");
+        writer.publish_full(&[first.clone(), second.clone()]);
+        let call = ToolCall {
+            tool_id: zeph_tools::ToolName::new("a_b_c"),
+            ..ToolCall::default()
+        };
+
+        let attributed = writer.ids_handle().snapshot();
+        assert_eq!(
+            attributed.server_id("a_b_c").map(McpServerId::as_str),
+            Some("a")
+        );
+
+        let err = executor
+            .execute_tool_call(&call)
+            .await
+            .expect_err("no live server: the call must reach the registered server");
+        let msg = err.to_string();
+        assert!(msg.contains('a') && !msg.contains("a_b"), "{msg}");
+
+        writer.publish_pruned(vec![first]);
+        let err = executor.execute_tool_call(&call).await.unwrap_err();
+        assert!(!err.to_string().contains("a_b"), "{err}");
+
+        writer.publish_pruned(vec![second]);
+        assert!(executor.execute_tool_call(&call).await.unwrap().is_none());
+    }
+
     #[test]
     fn tool_status_maps_is_error_flag() {
         use rmcp::model::{CallToolResult, ContentBlock};

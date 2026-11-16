@@ -199,6 +199,13 @@ pub enum LlmError {
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// The response body exceeded the size cap before it was fully read.
+    #[error("response body exceeded the {limit}-byte limit")]
+    ResponseTooLarge {
+        /// The cap that was exceeded, in bytes.
+        limit: usize,
+    },
+
     /// The API returned a response that could not be decoded as valid JSON.
     #[error("JSON parse failed: {0}")]
     Json(#[from] serde_json::Error),
@@ -336,6 +343,18 @@ impl LlmError {
             provider: provider.into(),
             status,
             detail: ApiErrorDetail::from_body(body),
+        }
+    }
+
+    /// Build an [`LlmError::InvalidInput`] from an upstream HTTP 400 body.
+    ///
+    /// The body is server-controlled: it is scrubbed of secret shapes, stripped of control
+    /// characters and capped, exactly like [`LlmError::ApiError`] details.
+    #[must_use]
+    pub fn invalid_input_from_body(provider: impl Into<String>, body: &str) -> Self {
+        Self::InvalidInput {
+            provider: provider.into(),
+            message: sanitize_provider_text(body, ApiErrorDetail::MAX_MESSAGE_CHARS),
         }
     }
 

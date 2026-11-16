@@ -364,7 +364,7 @@ mod tests {
             Box::pin(async { Err(zeph_llm::LlmError::Other("no qdrant".into())) })
         };
         let results = registry.search("test query", 5, embed_fn).await;
-        assert!(results.is_empty());
+        assert_eq!(results.as_slice(), [] as [McpTool; 0]);
     }
 
     #[tokio::test]
@@ -378,7 +378,7 @@ mod tests {
             })
         };
         let results = registry.search("search query", 10, embed_fn).await;
-        assert!(results.is_empty());
+        assert_eq!(results.as_slice(), [] as [McpTool; 0]);
     }
 
     #[tokio::test]
@@ -386,7 +386,7 @@ mod tests {
         let registry = make_registry("http://localhost:6334");
         let embed_fn = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![0.1, 0.2, 0.3]) }) };
         let results = registry.search("query", 0, embed_fn).await;
-        assert!(results.is_empty());
+        assert_eq!(results.as_slice(), [] as [McpTool; 0]);
     }
 
     #[tokio::test]

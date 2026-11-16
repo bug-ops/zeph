@@ -42,7 +42,7 @@ use zeph_sanitizer::IpiFilter;
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, EgressEvent, chrono_now};
 use crate::config::{EgressConfig, ScrapeConfig, SearchConfig};
 use crate::executor::{
-    ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
+    CallAttribution, ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
 use crate::net::{check_domain_policy, validate_url};
 
@@ -50,7 +50,7 @@ use crate::net::{check_domain_policy, validate_url};
 /// dispatch key, `ToolOutput::tool_name`, `AuditEntry::tool`, and `EgressEvent::tool`.
 /// The sanitizer trust bridge (`zeph-core::agent::tool_execution::sanitize`) matches this
 /// exact string (INVARIANT-1, spec 006-1-web-search §4).
-const TOOL_ID: &str = "web_search";
+const TOOL_ID: &str = zeph_common::native_tools::WEB_SEARCH_ID;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct WebSearchParams {
@@ -218,8 +218,7 @@ impl WebSearchExecutor {
         &self,
         host: &str,
         correlation_id: &str,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
         block_reason: &'static str,
     ) -> EgressEvent {
         EgressEvent {
@@ -235,8 +234,8 @@ impl WebSearchExecutor {
             response_bytes: 0,
             blocked: true,
             block_reason: Some(block_reason),
-            caller_id,
-            skill_name,
+            caller_id: attribution.caller_id.clone(),
+            skill_name: attribution.skill_name.clone(),
             hop: 0,
         }
     }
@@ -248,8 +247,7 @@ impl WebSearchExecutor {
         result: AuditResult,
         duration_ms: u64,
         error: Option<&ToolError>,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
         correlation_id: Option<String>,
     ) {
         if let Some(ref logger) = self.audit_logger {
@@ -281,8 +279,8 @@ impl WebSearchExecutor {
                 adversarial_policy_decision: None,
                 exit_code: None,
                 truncated: false,
-                caller_id,
-                skill_name,
+                caller_id: attribution.caller_id.clone(),
+                skill_name: attribution.skill_name.clone(),
                 policy_match: None,
                 correlation_id,
                 vigil_risk: None,
@@ -376,8 +374,7 @@ impl WebSearchExecutor {
         &self,
         params: &WebSearchParams,
         correlation_id: &str,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
     ) -> Result<(String, serde_json::Value), ToolError> {
         let endpoint = self.backend.endpoint();
         let parsed = validate_url(endpoint.as_str());
@@ -387,13 +384,8 @@ impl WebSearchExecutor {
 
         if let Err(e) = parsed {
             if self.egress_config.enabled && self.egress_config.log_blocked {
-                let event = self.make_blocked_event(
-                    &host_str,
-                    correlation_id,
-                    caller_id.clone(),
-                    skill_name.clone(),
-                    "scheme",
-                );
+                let event =
+                    self.make_blocked_event(&host_str, correlation_id, attribution, "scheme");
                 self.log_egress_event(&event).await;
             }
             return Err(e);
@@ -408,8 +400,7 @@ impl WebSearchExecutor {
                 let event = self.make_blocked_event(
                     parsed.host_str().unwrap_or(""),
                     correlation_id,
-                    caller_id.clone(),
-                    skill_name.clone(),
+                    attribution,
                     "blocklist",
                 );
                 self.log_egress_event(&event).await;
@@ -424,8 +415,7 @@ impl WebSearchExecutor {
                     let event = self.make_blocked_event(
                         parsed.host_str().unwrap_or(""),
                         correlation_id,
-                        caller_id.clone(),
-                        skill_name.clone(),
+                        attribution,
                         "ssrf",
                     );
                     self.log_egress_event(&event).await;
@@ -434,7 +424,7 @@ impl WebSearchExecutor {
             }
         };
 
-        self.issue_search(host, &addrs, params, correlation_id, caller_id, skill_name)
+        self.issue_search(host, &addrs, params, correlation_id, attribution)
             .await
     }
 
@@ -446,15 +436,14 @@ impl WebSearchExecutor {
     /// against a local mock server — mirroring `WebScrapeExecutor::fetch_html`, which takes
     /// pre-resolved `(host, addrs)` for the same reason.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // mirrors scrape.rs's fetch_html: one exit-point-per-EgressEvent flow
-    #[tracing::instrument(name = "tools.search.issue_request", skip(self, addrs, params, caller_id, skill_name), fields(host = %host))]
+    #[tracing::instrument(name = "tools.search.issue_request", skip(self, addrs, params, attribution), fields(host = %host))]
     async fn issue_search(
         &self,
         host: String,
         addrs: &[SocketAddr],
         params: &WebSearchParams,
         correlation_id: &str,
-        caller_id: Option<String>,
-        skill_name: Option<Vec<String>>,
+        attribution: &CallAttribution,
     ) -> Result<(String, serde_json::Value), ToolError> {
         let endpoint = self.backend.endpoint();
         // INVARIANT-2: the resolved addresses are pinned into the request client via
@@ -492,8 +481,8 @@ impl WebSearchExecutor {
                         response_bytes: 0,
                         blocked: false,
                         block_reason: None,
-                        caller_id: caller_id.clone(),
-                        skill_name: skill_name.clone(),
+                        caller_id: attribution.caller_id.clone(),
+                        skill_name: attribution.skill_name.clone(),
                         hop: 0,
                     };
                     self.log_egress_event(&event).await;
@@ -527,8 +516,8 @@ impl WebSearchExecutor {
                         response_bytes: 0,
                         blocked,
                         block_reason,
-                        caller_id: caller_id.clone(),
-                        skill_name: skill_name.clone(),
+                        caller_id: attribution.caller_id.clone(),
+                        skill_name: attribution.skill_name.clone(),
                         hop: 0,
                     };
                     self.log_egress_event(&event).await;
@@ -551,8 +540,8 @@ impl WebSearchExecutor {
                 response_bytes: 0,
                 blocked: false,
                 block_reason: None,
-                caller_id: caller_id.clone(),
-                skill_name: skill_name.clone(),
+                caller_id: attribution.caller_id.clone(),
+                skill_name: attribution.skill_name.clone(),
                 hop: 0,
             };
             self.log_egress_event(&event).await;
@@ -625,6 +614,10 @@ fn map_search_error(e: SearchError) -> ToolError {
 }
 
 impl ToolExecutor for WebSearchExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<crate::registry::McpToolIds> {
+        crate::registry::McpToolIds::empty_shared()
+    }
+
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
         use crate::registry::{InvocationHint, ToolDef};
         vec![ToolDef {
@@ -676,12 +669,7 @@ impl ToolExecutor for WebSearchExecutor {
         let correlation_id = EgressEvent::new_correlation_id();
         let start = Instant::now();
         let result = self
-            .handle_search(
-                &params,
-                &correlation_id,
-                call.caller_id.clone(),
-                call.skill_name.clone(),
-            )
+            .handle_search(&params, &correlation_id, &call.attribution())
             .await;
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -693,8 +681,7 @@ impl ToolExecutor for WebSearchExecutor {
                     AuditResult::Success,
                     duration_ms,
                     None,
-                    call.caller_id.clone(),
-                    call.skill_name.clone(),
+                    &call.attribution(),
                     Some(correlation_id),
                 )
                 .await;
@@ -727,8 +714,7 @@ impl ToolExecutor for WebSearchExecutor {
                     audit_result,
                     duration_ms,
                     Some(&e),
-                    call.caller_id.clone(),
-                    call.skill_name.clone(),
+                    &call.attribution(),
                     Some(correlation_id),
                 )
                 .await;
@@ -1024,7 +1010,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let executor = executor.with_egress_tx(tx, Arc::new(AtomicU64::new(0)));
         let err = executor
-            .handle_search(&search_params("test"), "cid-1", None, None)
+            .handle_search(&search_params("test"), "cid-1", &CallAttribution::default())
             .await
             .unwrap_err();
         assert_matches!(err, ToolError::Blocked { .. });
@@ -1042,7 +1028,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let executor = executor.with_egress_tx(tx, Arc::new(AtomicU64::new(0)));
         let err = executor
-            .handle_search(&search_params("test"), "cid-2", None, None)
+            .handle_search(&search_params("test"), "cid-2", &CallAttribution::default())
             .await
             .unwrap_err();
         assert_matches!(err, ToolError::Blocked { .. });
@@ -1059,7 +1045,7 @@ mod tests {
         // SSRF/scheme, never "blocklist" or "allowlist".
         let executor = executor_with_endpoint("https://127.0.0.1/api", vec![]);
         let err = executor
-            .handle_search(&search_params("test"), "cid-3", None, None)
+            .handle_search(&search_params("test"), "cid-3", &CallAttribution::default())
             .await
             .unwrap_err();
         if let ToolError::Blocked { command } = err {
@@ -1126,8 +1112,7 @@ mod tests {
                 &addrs,
                 &search_params("rust"),
                 "cid-golden",
-                None,
-                None,
+                &CallAttribution::default(),
             )
             .await
             .unwrap();
@@ -1160,7 +1145,13 @@ mod tests {
         let (host, addrs) = server_host_and_addr(&server);
 
         let err = executor
-            .issue_search(host, &addrs, &search_params("test"), "cid-429", None, None)
+            .issue_search(
+                host,
+                &addrs,
+                &search_params("test"),
+                "cid-429",
+                &CallAttribution::default(),
+            )
             .await
             .unwrap_err();
         assert_matches!(err, ToolError::Blocked { .. });
@@ -1195,8 +1186,7 @@ mod tests {
                 &addrs,
                 &search_params("nothing"),
                 "cid-zero",
-                None,
-                None,
+                &CallAttribution::default(),
             )
             .await
             .unwrap();
@@ -1220,7 +1210,13 @@ mod tests {
         let executor = mock_search_executor(&server, 10);
         let (host, addrs) = server_host_and_addr(&server);
         let (summary, _raw) = executor
-            .issue_search(host, &addrs, &search_params("evil"), "cid-ipi", None, None)
+            .issue_search(
+                host,
+                &addrs,
+                &search_params("evil"),
+                "cid-ipi",
+                &CallAttribution::default(),
+            )
             .await
             .unwrap();
         assert!(summary.starts_with("[IPI WARNING"));

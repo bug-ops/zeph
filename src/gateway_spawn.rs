@@ -155,22 +155,12 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
 
     async fn send_usage(
         &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
+        usage: zeph_core::channel::TokenUsage,
         context_window: u64,
-        cache_read_tokens: u64,
-        cache_write_tokens: u64,
         cost_cents: f64,
     ) -> Result<(), zeph_core::channel::ChannelError> {
         self.inner
-            .send_usage(
-                input_tokens,
-                output_tokens,
-                context_window,
-                cache_read_tokens,
-                cache_write_tokens,
-                cost_cents,
-            )
+            .send_usage(usage, context_window, cost_cents)
             .await
     }
 

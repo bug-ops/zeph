@@ -57,7 +57,7 @@ tokio-stream.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
-zeph-common.workspace = true
+zeph-common = { workspace = true, features = ["http"] }
 zeph-config.workspace = true
 zeroize = { workspace = true, optional = true }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)

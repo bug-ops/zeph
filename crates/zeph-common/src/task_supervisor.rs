@@ -406,6 +406,9 @@ struct Inner {
 #[derive(Clone)]
 pub struct TaskSupervisor {
     inner: Arc<Inner>,
+    /// Suffix appended to the names of [`spawn_oneshot`](Self::spawn_oneshot) and
+    /// [`spawn_blocking`](Self::spawn_blocking) tasks; see [`scoped`](Self::scoped).
+    scope: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for TaskSupervisor {
@@ -453,7 +456,52 @@ impl TaskSupervisor {
             Self::start_reap_driver(Arc::clone(&inner), completion_rx, cancel);
         }
 
-        Self { inner }
+        Self { inner, scope: None }
+    }
+
+    /// Return a view of this supervisor that appends `.{scope}` to the name of every task
+    /// spawned through [`spawn_oneshot`](Self::spawn_oneshot),
+    /// [`spawn_blocking`](Self::spawn_blocking) and their classified variants.
+    ///
+    /// The view shares the registry, cancellation token, snapshots and shutdown with `self`, so
+    /// the tasks of several sessions are observable in one place. Because a same-name spawn
+    /// replaces the earlier task, sessions that share a supervisor need distinct scopes to keep
+    /// fixed task names such as `agent.lifecycle.cancel_bridge` from aborting each other.
+    /// [`spawn`](Self::spawn) takes a `&'static str` name and is deliberately left unscoped:
+    /// tasks spawned that way are shared services that rely on same-name replacement.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::sync::Arc;
+    /// use tokio_util::sync::CancellationToken;
+    /// use zeph_common::task_supervisor::TaskSupervisor;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let sup = TaskSupervisor::new(CancellationToken::new());
+    /// let session = sup.scoped("session-1");
+    /// let _h = session.spawn_oneshot(Arc::from("bridge"), || async {});
+    /// assert!(sup.snapshot().iter().all(|t| &*t.name == "bridge.session-1"));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn scoped(&self, scope: &str) -> Self {
+        let scope: Arc<str> = match &self.scope {
+            Some(outer) => Arc::from(format!("{outer}.{scope}")),
+            None => Arc::from(scope),
+        };
+        Self {
+            inner: Arc::clone(&self.inner),
+            scope: Some(scope),
+        }
+    }
+
+    fn scoped_name(&self, name: Arc<str>) -> Arc<str> {
+        match &self.scope {
+            Some(scope) => Arc::from(format!("{name}.{scope}")),
+            None => name,
+        }
     }
 
     /// Spawn a named, supervised async task.
@@ -646,6 +694,7 @@ impl TaskSupervisor {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
+        let name = self.scoped_name(name);
         let (tx, rx) = oneshot::channel::<Result<R, BlockingError>>();
         let span = tracing::info_span!(
             "supervised_blocking_task",
@@ -805,6 +854,7 @@ impl TaskSupervisor {
         Fut: Future<Output = R> + Send + 'static,
         R: Send + 'static,
     {
+        let name = self.scoped_name(name);
         let (tx, rx) = oneshot::channel::<Result<R, BlockingError>>();
         let cancel = self.inner.cancel.clone();
         let span = tracing::info_span!("supervised_task", task.name = %name);
@@ -1346,6 +1396,36 @@ mod tests {
         let cancel = CancellationToken::new();
         let sup = TaskSupervisor::new(cancel.clone());
         (sup, cancel)
+    }
+
+    #[tokio::test]
+    async fn scoped_views_keep_same_named_oneshots_apart() {
+        let (sup, _cancel) = make_supervisor();
+        let first = sup.scoped("s1");
+        let second = sup.scoped("s2");
+
+        let a = first.spawn_oneshot(Arc::from("agent.bridge"), || async {
+            std::future::pending::<()>().await;
+        });
+        let b = second.spawn_oneshot(Arc::from("agent.bridge"), || async {
+            std::future::pending::<()>().await;
+        });
+
+        let mut names: Vec<String> = sup.snapshot().iter().map(|t| t.name.to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["agent.bridge.s1", "agent.bridge.s2"]);
+        assert!(!a.is_finished(), "second spawn must not replace the first");
+        assert!(!b.is_finished());
+    }
+
+    #[tokio::test]
+    async fn unscoped_supervisor_keeps_names_verbatim() {
+        let (sup, _cancel) = make_supervisor();
+        let _h = sup.spawn_oneshot(Arc::from("plain"), || async {
+            std::future::pending::<()>().await;
+        });
+        let names: Vec<String> = sup.snapshot().iter().map(|t| t.name.to_string()).collect();
+        assert_eq!(names, ["plain"]);
     }
 
     #[tokio::test]

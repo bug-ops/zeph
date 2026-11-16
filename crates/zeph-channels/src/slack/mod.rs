@@ -15,7 +15,6 @@ pub mod events;
 
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 use zeph_common::TaskSupervisor;
 use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationRequest,
@@ -23,13 +22,15 @@ use zeph_core::channel::{
 };
 
 use self::events::IncomingMessage;
+use crate::confirm::Inbox;
 use crate::streaming::{StreamingBuffer, StreamingSend};
+use tokio::sync::mpsc;
 
 const EDIT_THROTTLE: Duration = Duration::from_secs(2);
 
 /// Slack channel adapter implementing edit-in-place streaming.
 pub struct SlackChannel {
-    rx: mpsc::Receiver<IncomingMessage>,
+    rx: Inbox<IncomingMessage>,
     api: api::SlackApi,
     /// Webhook server task handle. `None` when the server is supervised by a
     /// [`TaskSupervisor`] (lifecycle is owned by the supervisor in that case).
@@ -130,7 +131,7 @@ impl SlackChannel {
             supervisor,
         );
         Ok(Self {
-            rx,
+            rx: rx.into(),
             api,
             _server_handle: server_handle,
             channel_id: None,
@@ -236,7 +237,11 @@ impl crate::confirm::ConfirmLoop for SlackChannel {
     }
 
     fn confirm_receiver(&mut self) -> &mut mpsc::Receiver<IncomingMessage> {
-        &mut self.rx
+        self.rx.receiver_mut()
+    }
+
+    fn confirm_defer(&mut self, incoming: IncomingMessage) {
+        self.rx.defer([incoming]);
     }
 
     fn confirm_accepts(&self, incoming: &IncomingMessage) -> bool {
@@ -265,7 +270,7 @@ impl Channel for SlackChannel {
     }
 
     fn try_recv(&mut self) -> Option<ChannelMessage> {
-        let incoming = self.rx.try_recv().ok()?;
+        let incoming = self.rx.try_recv()?;
         self.channel_id = Some(incoming.channel_id);
         Some(ChannelMessage {
             text: incoming.text,
@@ -390,12 +395,13 @@ mod tests {
     use super::*;
     use std::assert_matches;
     use std::time::Duration;
+    use tokio::sync::mpsc;
 
     fn make_channel() -> SlackChannel {
         let (_tx, rx) = mpsc::channel(16);
         let api = api::SlackApi::new("xoxb-test".into());
         SlackChannel {
-            rx,
+            rx: rx.into(),
             api,
             _server_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
@@ -535,7 +541,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let api = api::SlackApi::new("xoxb-test".into());
         let mut ch = SlackChannel {
-            rx,
+            rx: rx.into(),
             api,
             _server_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: Some("C1".into()),
@@ -587,7 +593,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let api = api::SlackApi::new("xoxb-test".into());
         let mut ch = SlackChannel {
-            rx,
+            rx: rx.into(),
             api,
             _server_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
@@ -679,5 +685,35 @@ mod tests {
         )
         .await;
         assert_matches!(result, Err(ChannelError::Other(_)));
+    }
+
+    #[tokio::test]
+    async fn reply_defers_message_from_other_channel() {
+        use crate::confirm::{ConfirmLoop, ReplyOutcome};
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "1.2"})),
+            )
+            .mount(&server)
+            .await;
+        let (tx, rx) = mpsc::channel(4);
+        let mut ch = make_channel();
+        ch.rx = rx.into();
+        ch.api = api::SlackApi::with_base_url(server.uri(), "xoxb-test".into());
+        ch.channel_id = Some("C1".into());
+        tx.try_send(make_incoming("U1", "C2")).unwrap();
+        let mut reply = make_incoming("U1", "C1");
+        reply.text = "yes".into();
+        tx.try_send(reply).unwrap();
+
+        let outcome = ch.run_reply("Q?").await.unwrap();
+        assert_eq!(outcome, ReplyOutcome::Text("yes".into()));
+        assert_eq!(ch.try_recv().unwrap().text, "hello");
+        assert_eq!(ch.channel_id.as_deref(), Some("C2"));
     }
 }

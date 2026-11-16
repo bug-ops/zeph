@@ -34,16 +34,9 @@ impl<C: Channel> Agent<C> {
                     count = url_events.len(),
                     "exfiltration guard: suspicious URLs in tool arguments (flag-only, not blocked)"
                 );
-                self.update_metrics(|m| {
-                    m.exfiltration_tool_urls_flagged += url_events.len() as u64;
-                });
-                self.push_security_event(
-                    zeph_common::SecurityEventCategory::ExfiltrationBlock,
-                    tc.name.as_str(),
-                    format!(
-                        "{} suspicious URL(s) flagged in tool args",
-                        url_events.len()
-                    ),
+                self.pre_dispatch_block_recorder().note_exfil_flags(
+                    &zeph_common::ToolName::new(tc.name.as_str()),
+                    url_events.len(),
                 );
             }
         }

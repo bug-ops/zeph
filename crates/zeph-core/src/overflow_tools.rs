@@ -38,6 +38,10 @@ impl OverflowToolExecutor {
 }
 
 impl ToolExecutor for OverflowToolExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<zeph_tools::McpToolIds> {
+        zeph_tools::McpToolIds::empty_shared()
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDef> {
         vec![ToolDef {
             id: Self::TOOL_NAME.into(),
@@ -132,6 +136,16 @@ mod tests {
             .await
             .expect("create_conversation");
         (Arc::new(store), cid)
+    }
+
+    #[tokio::test]
+    async fn dispatch_ids_are_the_shared_empty_registry() {
+        let (store, _cid) = make_store_with_conv().await;
+        let executor = OverflowToolExecutor::new(store);
+        assert!(Arc::ptr_eq(
+            &executor.mcp_dispatch_ids(),
+            &zeph_tools::McpToolIds::empty_shared()
+        ));
     }
 
     fn make_call(id: &str) -> ToolCall {

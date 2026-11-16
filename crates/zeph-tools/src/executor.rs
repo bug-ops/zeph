@@ -70,6 +70,40 @@ pub struct ToolCall {
     pub skill_name: Option<Vec<String>>,
 }
 
+/// Caller attribution of one tool call: who issued it and which skills were active.
+///
+/// Bundles the two attribution fields of [`ToolCall`] so executor helpers take one value instead
+/// of a positional `caller_id` / `skill_name` pair that can be swapped or forgotten.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_tools::{CallAttribution, ToolCall};
+///
+/// let call = ToolCall { caller_id: Some("user-1".into()), ..ToolCall::default() };
+/// let attribution = call.attribution();
+/// assert_eq!(attribution.caller_id.as_deref(), Some("user-1"));
+/// assert_eq!(CallAttribution::default().skill_name, None);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallAttribution {
+    /// See [`ToolCall::caller_id`].
+    pub caller_id: Option<String>,
+    /// See [`ToolCall::skill_name`].
+    pub skill_name: Option<Vec<String>>,
+}
+
+impl ToolCall {
+    /// The attribution of this call, for passing to executor helpers and audit rows.
+    #[must_use]
+    pub fn attribution(&self) -> CallAttribution {
+        CallAttribution {
+            caller_id: self.caller_id.clone(),
+            skill_name: self.skill_name.clone(),
+        }
+    }
+}
+
 /// Cumulative filter statistics for a single tool execution.
 ///
 /// Populated by [`ShellExecutor`](crate::ShellExecutor) when output filters are configured.

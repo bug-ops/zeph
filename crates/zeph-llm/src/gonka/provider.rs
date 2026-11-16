@@ -405,7 +405,7 @@ impl LlmProvider for GonkaProvider {
             .await?;
 
         let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+        let text = crate::http::read_body(response).await?;
 
         if !status.is_success() {
             crate::http::log_api_error_body("gonka", status, &text);
@@ -441,7 +441,7 @@ impl LlmProvider for GonkaProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let text = crate::http::read_body(response).await?;
             crate::http::log_api_error_body("gonka", status, &text);
             return Err(crate::http::map_error_response(status, &text, "gonka"));
         }
@@ -469,7 +469,7 @@ impl LlmProvider for GonkaProvider {
         let response = self.signed_request("/embeddings", &body_bytes).await?;
 
         let status = response.status();
-        let body_text = response.text().await.map_err(LlmError::Http)?;
+        let body_text = crate::http::read_body(response).await?;
 
         if !status.is_success() {
             crate::http::log_api_error_body("gonka", status, &body_text);
@@ -510,7 +510,7 @@ impl LlmProvider for GonkaProvider {
         let response = self.signed_request("/embeddings", &body_bytes).await?;
 
         let status = response.status();
-        let body_text = response.text().await.map_err(LlmError::Http)?;
+        let body_text = crate::http::read_body(response).await?;
 
         if !status.is_success() {
             crate::http::log_api_error_body("gonka", status, &body_text);
@@ -551,18 +551,10 @@ impl LlmProvider for GonkaProvider {
         let response = self.signed_request("/chat/completions", &body).await?;
 
         let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+        let text = crate::http::read_body(response).await?;
 
         if status == reqwest::StatusCode::BAD_REQUEST {
-            let truncated: String = text.chars().take(256).collect();
-            tracing::warn!("gonka tool chat 400 bad request: {truncated}");
-            if crate::error::body_is_context_length_error(&text) {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::InvalidInput {
-                provider: "gonka".into(),
-                message: text.chars().take(512).collect(),
-            });
+            return Err(crate::http::map_bad_request("gonka", &text));
         }
 
         if !status.is_success() {
@@ -596,18 +588,10 @@ impl LlmProvider for GonkaProvider {
             .await?;
 
         let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+        let text = crate::http::read_body(response).await?;
 
         if status == reqwest::StatusCode::BAD_REQUEST {
-            let truncated: String = text.chars().take(256).collect();
-            tracing::warn!("gonka chat_typed 400 bad request: {truncated}");
-            if crate::error::body_is_context_length_error(&text) {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::InvalidInput {
-                provider: "gonka".into(),
-                message: text.chars().take(512).collect(),
-            });
+            return Err(crate::http::map_bad_request("gonka", &text));
         }
 
         if !status.is_success() {

@@ -486,8 +486,9 @@ impl OllamaProvider {
     /// connection reset) that never reach `send_with_retry`'s status inspection. See
     /// [`ollama_http_client`] for why this bypasses `ollama-rs`'s own `send_chat_messages`.
     ///
-    /// `error_context` is prefixed to the error message on a non-2xx, non-context-length
-    /// response, to distinguish the calling method (`chat` vs `chat_with_tools`) in logs.
+    /// `error_context` is prefixed to transport-failure messages to distinguish the calling
+    /// method (`chat` vs `chat_with_tools`). Non-2xx responses map through
+    /// [`crate::http::map_error_response`] (typed status, sanitized body).
     async fn send_chat_request(
         &self,
         request: &ChatMessageRequest,
@@ -518,11 +519,8 @@ impl OllamaProvider {
             }
         }
         if !status.is_success() {
-            return Err(if crate::error::body_is_context_length_error(&text) {
-                LlmError::ContextLengthExceeded
-            } else {
-                LlmError::Other(format!("{error_context} failed ({status}): {text}"))
-            });
+            crate::http::log_api_error_body(self.name(), status, &text);
+            return Err(crate::http::map_error_response(status, &text, self.name()));
         }
 
         serde_json::from_str(&text).map_err(LlmError::Json)
@@ -540,7 +538,7 @@ impl OllamaProvider {
         .await
         .map_err(|e| wrap_transport_error(e, error_context))?;
         let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+        let text = crate::http::read_body(response).await?;
         Ok((status, text))
     }
 
@@ -662,14 +660,9 @@ impl LlmProvider for OllamaProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let text = response.text().await.map_err(LlmError::Http)?;
-            return Err(if crate::error::body_is_context_length_error(&text) {
-                LlmError::ContextLengthExceeded
-            } else {
-                LlmError::Other(format!(
-                    "Ollama streaming request failed ({status}): {text}"
-                ))
-            });
+            let text = crate::http::read_body(response).await?;
+            crate::http::log_api_error_body(self.name(), status, &text);
+            return Err(crate::http::map_error_response(status, &text, self.name()));
         }
 
         Ok(ollama_ndjson_stream(response.bytes_stream()))
@@ -1426,6 +1419,60 @@ mod tests {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }]
+    }
+
+    #[tokio::test]
+    async fn chat_non_2xx_maps_to_sanitized_typed_api_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(
+                serde_json::json!({ "error": format!("bad key {secret} {}", "x".repeat(5000)) }),
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+        let err = provider
+            .chat(&chat_test_messages())
+            .await
+            .expect_err("400 must be an error");
+        let LlmError::ApiError { status, detail, .. } = &err else {
+            panic!("expected ApiError, got {err:?}");
+        };
+        assert_eq!(*status, 400);
+        let detail = detail.as_ref().expect("body parsed into detail");
+        assert!(!detail.message().contains(secret));
+        assert!(detail.message().contains("[REDACTED]"));
+        assert!(!err.to_string().contains(secret));
+        assert!(err.to_string().chars().count() < 1000);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_stream_non_2xx_is_sanitized_in_error_and_logs() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+        let logs = crate::testing::LogCapture::start();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(format!("bad key {secret}")))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+        let Err(err) = provider.chat_stream(&chat_test_messages()).await else {
+            panic!("400 must be an error");
+        };
+        assert_matches!(err, LlmError::ApiError { status: 400, .. });
+        assert!(!err.to_string().contains(secret));
+        assert!(!logs.contents().contains(secret), "{}", logs.contents());
     }
 
     #[tokio::test]

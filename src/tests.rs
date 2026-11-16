@@ -439,7 +439,7 @@ fn build_config_claude_provider() {
 
     let state = WizardState {
         provider: Some(ProviderKind::Claude),
-        model: Some("claude-sonnet-4-5-20250929".into()),
+        model: Some("claude-sonnet-5-5".into()),
         api_key: Some("sk-test".into()),
         ..WizardState::default()
     };

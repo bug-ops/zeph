@@ -58,7 +58,7 @@ pub use llm::{
     migrate_cocoon_show_balance, migrate_embed_provider_rename, migrate_eval_model_to_provider,
     migrate_llm_stream_limits, migrate_llm_to_providers,
     migrate_orchestration_orchestrator_provider, migrate_planner_model_to_provider,
-    migrate_provider_max_concurrent, migrate_stt_to_provider,
+    migrate_provider_max_concurrent, migrate_retired_claude_sonnet_model, migrate_stt_to_provider,
 };
 pub use mcp::{
     migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts, migrate_mcp_media_config,
@@ -813,8 +813,8 @@ use steps::{
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePluginsReputationConfig, MigratePolicyProviderAndUtilityWindow,
     MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
-    MigrateQualityConfig, MigrateRateLimitAdvisory, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSearchConfig,
+    MigrateQualityConfig, MigrateRateLimitAdvisory, MigrateRetiredClaudeSonnetModel,
+    MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSearchConfig,
     MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
     MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
     MigrateSessionResumeConfig, MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig,
@@ -1081,6 +1081,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 118 — add advisory [tools.ask_user] and [llm.cache_keepalive] blocks
             // (specs 090 / 091)
             Box::new(MigrateInteractionConfig),
+            // Step 119 — rewrite the retired claude-sonnet-4-5-20250929 model id (#7094)
+            Box::new(MigrateRetiredClaudeSonnetModel),
         ]
     });
 

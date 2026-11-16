@@ -28,6 +28,17 @@ impl std::fmt::Debug for SlackApi {
     }
 }
 
+/// Defuses Slack mention/broadcast constructs (`<@…>`, `<!…>`, `<#…>`) so model-authored text
+/// cannot ping anyone; other `<…>` forms such as links pass through.
+///
+/// `&` is left alone on purpose: `ask_user` prompts arrive already escaped by
+/// `ask_user::escape_slack`, and escaping again would show literal `&lt;`.
+fn defuse_slack_mentions(text: &str) -> String {
+    text.replace("<@", "&lt;@")
+        .replace("<!", "&lt;!")
+        .replace("<#", "&lt;#")
+}
+
 #[derive(Deserialize)]
 struct SlackResponse {
     ok: bool,
@@ -121,7 +132,11 @@ impl SlackApi {
         text: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("{}/chat.postMessage", self.base_url);
-        let body = PostMessage { channel, text };
+        let text = defuse_slack_mentions(text);
+        let body = PostMessage {
+            channel,
+            text: &text,
+        };
         let resp: SlackResponse = crate::common::http_retry::send_with_retry("slack", || {
             self.client
                 .post(&url)
@@ -159,7 +174,12 @@ impl SlackApi {
         text: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("{}/chat.update", self.base_url);
-        let body = UpdateMessage { channel, ts, text };
+        let text = defuse_slack_mentions(text);
+        let body = UpdateMessage {
+            channel,
+            ts,
+            text: &text,
+        };
         let resp: SlackResponse = crate::common::http_retry::send_with_retry("slack", || {
             self.client
                 .post(&url)
@@ -224,7 +244,7 @@ impl SlackApi {
 
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -267,6 +287,50 @@ mod tests {
         let api = SlackApi::with_base_url(server.uri(), "xoxb-test".into());
         let ts = api.post_message("C123", "hello").await.unwrap();
         assert_eq!(ts, "1234.5678");
+    }
+
+    #[test]
+    fn defuse_slack_mentions_neutralizes_mentions_and_keeps_links() {
+        assert_eq!(
+            defuse_slack_mentions("<!channel> <!here> <!everyone> <@U1> <#C1> a & b"),
+            "&lt;!channel> &lt;!here> &lt;!everyone> &lt;@U1> &lt;#C1> a & b"
+        );
+        assert_eq!(
+            defuse_slack_mentions("<https://x.example|label>"),
+            "<https://x.example|label>"
+        );
+        assert_eq!(
+            defuse_slack_mentions("&lt;!channel&gt;"),
+            "&lt;!channel&gt;"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_and_update_message_escape_mentions_on_the_wire() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat.postMessage"))
+            .and(body_partial_json(
+                serde_json::json!({"text": "&lt;!channel> hi"}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "1.2"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat.update"))
+            .and(body_partial_json(serde_json::json!({"text": "&lt;!here>"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = SlackApi::with_base_url(server.uri(), "xoxb-test".into());
+        api.post_message("C1", "<!channel> hi").await.unwrap();
+        api.update_message("C1", "1.2", "<!here>").await.unwrap();
     }
 
     // Regression coverage for the SSRF-style host guard in `download_file`:

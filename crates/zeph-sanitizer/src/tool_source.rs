@@ -51,8 +51,8 @@ pub fn tool_output_source(tool_name: &str, provenance: ToolProvenance) -> Conten
 #[must_use]
 pub fn native_kind(tool_name: &str) -> NativeToolKind {
     match tool_name {
-        "web-scrape" | "web_scrape" | "fetch" | "web_search" => NativeToolKind::Web,
         "memory_search" => NativeToolKind::Memory,
+        id if zeph_common::native_tools::is_web_egress_output(id) => NativeToolKind::Web,
         _ => NativeToolKind::Local,
     }
 }
@@ -135,6 +135,13 @@ mod tests {
                 ContentSourceKind::ToolResult,
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn every_native_web_egress_tool_classifies_as_web() {
+        for tool in zeph_common::native_tools::WebEgressTool::ALL {
+            assert_eq!(native_kind(tool.id()), NativeToolKind::Web, "{}", tool.id());
         }
     }
 

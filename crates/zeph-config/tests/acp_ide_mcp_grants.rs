@@ -37,8 +37,8 @@ fn acp_config_ide_mcp_stdio_grant_parses_with_env_keys() {
     .expect("valid stdio grant");
     assert_eq!(cfg.ide_mcp.max_servers_per_session, 2);
     let grant = &cfg.ide_mcp.servers["filesystem"];
-    assert_eq!(grant.tools, ["read_file"]);
-    match &grant.target {
+    assert_eq!(grant.tools(), ["read_file"]);
+    match grant.target() {
         AcpIdeMcpTarget::Stdio {
             command,
             args,
@@ -62,7 +62,7 @@ fn acp_config_ide_mcp_http_grant_parses() {
         "#,
     )
     .expect("valid http grant");
-    match &cfg.ide_mcp.servers["docs"].target {
+    match cfg.ide_mcp.servers["docs"].target() {
         AcpIdeMcpTarget::Http { url } => assert_eq!(url, "https://mcp.example.com/mcp"),
         other @ AcpIdeMcpTarget::Stdio { .. } => panic!("expected Http, got {other:?}"),
     }
@@ -78,7 +78,7 @@ fn acp_config_ide_mcp_stdio_grant_without_env_keys_means_empty_set() {
         "#,
     )
     .expect("valid grant");
-    match &cfg.ide_mcp.servers["fs"].target {
+    match cfg.ide_mcp.servers["fs"].target() {
         AcpIdeMcpTarget::Stdio { env_keys, args, .. } => {
             assert!(env_keys.is_empty());
             assert_eq!(args.as_slice(), [] as [String; 0]);
@@ -135,6 +135,25 @@ fn acp_config_ide_mcp_grant_with_url_and_env_keys_is_rejected() {
         "#,
     );
     assert!(err.is_err());
+}
+
+#[test]
+fn acp_ide_mcp_grant_constructor_rejects_empty_tools_and_empty_target() {
+    use zeph_config::{AcpIdeMcpGrant, AcpIdeMcpGrantError};
+
+    let http = || AcpIdeMcpTarget::Http {
+        url: "https://mcp.example.com/mcp".to_owned(),
+    };
+    assert_eq!(
+        AcpIdeMcpGrant::new(http(), Vec::new()),
+        Err(AcpIdeMcpGrantError::NoTools)
+    );
+    let empty_url = AcpIdeMcpTarget::Http { url: String::new() };
+    assert_eq!(
+        AcpIdeMcpGrant::new(empty_url, vec!["t".to_owned()]),
+        Err(AcpIdeMcpGrantError::EmptyTarget)
+    );
+    assert!(AcpIdeMcpGrant::new(http(), vec!["t".to_owned()]).is_ok());
 }
 
 #[test]

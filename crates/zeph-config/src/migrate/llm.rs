@@ -1382,3 +1382,64 @@ pub fn migrate_claude_speed(toml_src: &str) -> Result<MigrationResult, MigrateEr
         sections_changed: vec!["llm.providers".to_owned()],
     })
 }
+
+/// Step 119: rewrite the retired `claude-sonnet-4-5-20250929` model id in Claude
+/// `[[llm.providers]]` entries to its documented replacement `claude-sonnet-5-5`.
+///
+/// Only the `model` key of entries with `type = "claude"` is rewritten. The step is
+/// idempotent: after the rewrite no entry names the retired id.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_retired_claude_sonnet_model(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    let unchanged = || MigrationResult {
+        output: toml_src.to_owned(),
+        changed_count: 0,
+        sections_changed: Vec::new(),
+    };
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let Some(providers) = doc
+        .get_mut("llm")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|llm| llm.get_mut("providers"))
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+    else {
+        return Ok(unchanged());
+    };
+
+    let mut changed_count = 0;
+    for entry in providers.iter_mut() {
+        if entry.get("type").and_then(toml_edit::Item::as_str) != Some("claude") {
+            continue;
+        }
+        let Some(value) = entry
+            .get_mut("model")
+            .and_then(toml_edit::Item::as_value_mut)
+        else {
+            continue;
+        };
+        let Some(&(_, replacement_id)) = crate::defaults::RETIRED_CLAUDE_MODELS
+            .iter()
+            .find(|(retired, _)| value.as_str() == Some(*retired))
+        else {
+            continue;
+        };
+        let decor = value.decor().clone();
+        let mut replacement = toml_edit::Value::from(replacement_id);
+        *replacement.decor_mut() = decor;
+        *value = replacement;
+        changed_count += 1;
+    }
+
+    if changed_count == 0 {
+        return Ok(unchanged());
+    }
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        changed_count,
+        sections_changed: vec!["llm.providers".to_owned()],
+    })
+}

@@ -83,6 +83,28 @@ impl McpToolIds {
         ids
     }
 
+    /// The shared empty registry, for executors that can never serve an MCP tool.
+    ///
+    /// Returns a clone of one process-wide `Arc`, so a native executor answers
+    /// [`ToolExecutor::mcp_dispatch_ids`](crate::ToolExecutor::mcp_dispatch_ids) without building
+    /// its tool definitions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use zeph_tools::McpToolIds;
+    ///
+    /// assert!(Arc::ptr_eq(&McpToolIds::empty_shared(), &McpToolIds::empty_shared()));
+    /// assert!(!McpToolIds::empty_shared().contains("bash"));
+    /// ```
+    #[must_use]
+    pub fn empty_shared() -> Arc<Self> {
+        static EMPTY: std::sync::LazyLock<Arc<McpToolIds>> =
+            std::sync::LazyLock::new(|| Arc::new(McpToolIds::default()));
+        Arc::clone(&EMPTY)
+    }
+
     /// Register an MCP tool id with its serving server.
     ///
     /// The first server registered for an id wins, matching dispatch (the first registered tool

@@ -332,6 +332,10 @@ impl MemoryToolExecutor {
 }
 
 impl ToolExecutor for MemoryToolExecutor {
+    fn mcp_dispatch_ids(&self) -> std::sync::Arc<zeph_tools::McpToolIds> {
+        zeph_tools::McpToolIds::empty_shared()
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDef> {
         vec![
             ToolDef {
@@ -531,6 +535,15 @@ mod tests {
 
     fn make_executor(memory: SemanticMemory) -> MemoryToolExecutor {
         MemoryToolExecutor::new(Arc::new(memory), ConversationId(1))
+    }
+
+    #[tokio::test]
+    async fn dispatch_ids_are_the_shared_empty_registry() {
+        let executor = make_executor(make_memory().await);
+        assert!(Arc::ptr_eq(
+            &executor.mcp_dispatch_ids(),
+            &zeph_tools::McpToolIds::empty_shared()
+        ));
     }
 
     #[tokio::test]
