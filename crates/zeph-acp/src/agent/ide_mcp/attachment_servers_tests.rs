@@ -70,7 +70,7 @@ async fn attach_reports_toolless_servers_in_servers() {
     let attachment = registry
         .attach(&host, vec![entry("a-1"), entry("b-1")])
         .await;
-    assert!(attachment.tools.is_empty());
+    assert_eq!(attachment.tools.as_slice(), [] as [McpTool; 0]);
     let ids: Vec<&str> = attachment.servers.iter().map(McpServerId::as_str).collect();
     assert_eq!(ids, ["a-1", "b-1"]);
 }

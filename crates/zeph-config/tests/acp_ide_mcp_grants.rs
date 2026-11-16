@@ -81,7 +81,7 @@ fn acp_config_ide_mcp_stdio_grant_without_env_keys_means_empty_set() {
     match &cfg.ide_mcp.servers["fs"].target {
         AcpIdeMcpTarget::Stdio { env_keys, args, .. } => {
             assert!(env_keys.is_empty());
-            assert!(args.is_empty());
+            assert_eq!(args.as_slice(), [] as [String; 0]);
         }
         other @ AcpIdeMcpTarget::Http { .. } => panic!("expected Stdio, got {other:?}"),
     }

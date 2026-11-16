@@ -56,5 +56,8 @@ fn publish_pruned_with_only_foreign_tools_exposes_nothing() {
 
     writer.publish_pruned(vec![tool("b", "x", "")]);
 
-    assert!(reader.snapshot().tools.is_empty());
+    assert_eq!(
+        reader.snapshot().tools.as_slice(),
+        [] as [crate::tool::McpTool; 0]
+    );
 }
