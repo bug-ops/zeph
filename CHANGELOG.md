@@ -38,7 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Dependencies
 
-- `zeph-acp`: migrated to `agent-client-protocol` 5.x (breaking: JSON-RPC batch requests to the HTTP `/acp` transport are rejected with one `-32600` error, and a sub-agent client surfaces prompt errors as `AcpClientError::Sdk`) (#PR)
+- `zeph-acp`: migrated to `agent-client-protocol` 5.x (breaking: JSON-RPC batch requests to the HTTP `/acp` transport are rejected with one `-32600` error, and a sub-agent client surfaces prompt errors as `AcpClientError::Sdk`) (#7149)
 - workspace: `agent-client-protocol` 5.3.0 and `agent-client-protocol-schema` 1.18.0, `rmcp` 3.10.0, `nix` 0.32.0, `prometheus-client` 0.26.0, `rubato` 5.1.0, and patch bumps of `arc-swap`, `notify`, `rand`, `sysinfo`, `tree-sitter-sequel` and `uuid`
 
 ### Fixed
