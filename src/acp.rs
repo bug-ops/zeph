@@ -891,6 +891,11 @@ async fn build_acp_deps(
     } else {
         mcp_manager.connect_all().await
     };
+    // Without the refresh task nothing feeds `tools_watch_tx`, so per-session
+    // `with_mcp_tool_rx` subscriptions would never fire. Idempotent when the manager is shared.
+    if !config.cli.safe_mode {
+        mcp_manager.spawn_refresh_task(Some(&acp_mem_supervisor));
+    }
     let mcp_media = if config.cli.no_mcp_media {
         tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
         None

@@ -94,15 +94,13 @@ impl McpManager {
     /// participates in graceful shutdown via `shutdown_all()`. When `None` (test contexts),
     /// a raw `tokio::spawn` is used.
     ///
-    /// # Panics
-    ///
-    /// Panics if the refresh receiver has already been taken (i.e., this method is called twice).
+    /// Idempotent: the manager can be shared by several entry points (CLI runner, ACP, daemon),
+    /// and only the first call spawns the task; later calls are no-ops.
     pub fn spawn_refresh_task(&self, supervisor: Option<&zeph_common::TaskSupervisor>) {
-        let rx = self
-            .refresh_rx
-            .lock()
-            .take()
-            .expect("spawn_refresh_task must only be called once");
+        let Some(rx) = self.refresh_rx.lock().take() else {
+            tracing::debug!("MCP refresh task already spawned");
+            return;
+        };
 
         let server_tools = Arc::clone(&self.server_tools);
         let configured_order = Arc::clone(&self.configured_order);

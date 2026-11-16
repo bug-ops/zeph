@@ -2324,6 +2324,27 @@ fn startup_retry_backoff_ms_default_is_1000() {
 }
 
 #[tokio::test]
+async fn spawn_refresh_task_second_call_is_a_noop() {
+    let cancel = CancellationToken::new();
+    let supervisor = zeph_common::TaskSupervisor::new(cancel);
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+
+    mgr.spawn_refresh_task(Some(&supervisor));
+    mgr.spawn_refresh_task(Some(&supervisor));
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let tasks = supervisor
+        .snapshot()
+        .into_iter()
+        .filter(|s| s.name.as_ref() == "mcp.refresh_task")
+        .count();
+    assert_eq!(
+        tasks, 1,
+        "a shared manager must run exactly one refresh task"
+    );
+}
+
+#[tokio::test]
 async fn spawn_refresh_task_with_supervisor_registers_task() {
     let cancel = CancellationToken::new();
     let supervisor = zeph_common::TaskSupervisor::new(cancel.clone());

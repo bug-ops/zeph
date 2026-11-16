@@ -42,13 +42,13 @@ fn http_grant(url: &str, tools: &[&str]) -> AcpIdeMcpGrant {
 }
 
 fn config(cap: usize, grants: Vec<(&str, AcpIdeMcpGrant)>) -> AcpIdeMcpConfig {
-    let mut cfg = AcpIdeMcpConfig::default();
-    cfg.max_servers_per_session = cap;
-    cfg.servers = grants
-        .into_iter()
-        .map(|(name, grant)| (name.to_owned(), grant))
-        .collect::<BTreeMap<_, _>>();
-    cfg
+    AcpIdeMcpConfig {
+        max_servers_per_session: cap,
+        servers: grants
+            .into_iter()
+            .map(|(name, grant)| (name.to_owned(), grant))
+            .collect::<BTreeMap<_, _>>(),
+    }
 }
 
 fn stdio_server(name: &str, command: &str, args: &[&str], env: &[(&str, &str)]) -> McpServer {
