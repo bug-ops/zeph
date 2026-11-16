@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 publish.workspace = true
@@ -32,7 +31,6 @@ walkdir = { workspace = true }
 zeph-common = { workspace = true, features = ["http"] }
 zeph-config.workspace = true
 zeph-skills.workspace = true
-zeph-tools.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -40,19 +38,16 @@ tracing-test.workspace = true
 wiremock.workspace = true
 
 [features]
-# `zeph-skills`/`zeph-tools` (and transitively `zeph-db`) require a backend to compile;
+# `zeph-skills` (and transitively `zeph-db`) requires a backend to compile;
 # default to `sqlite` so this crate builds in isolation, and expose `postgres` for
 # PostgreSQL deployments (#4956).
 default = ["sqlite"]
-sqlite = ["zeph-skills/sqlite", "zeph-tools/sqlite"]
-postgres = ["zeph-skills/postgres", "zeph-tools/postgres"]
+sqlite = ["zeph-skills/sqlite"]
+postgres = ["zeph-skills/postgres"]
 # Exposes `marketplace::mock::MockRegistryClient` outside `#[cfg(test)]` so downstream crates
 # (the `zeph` binary) can drive it from their own `dev-dependencies`. Mirrors `zeph-vault`'s
 # `mock` feature.
 mock = []
-
-[package.metadata.cargo-machete]
-ignored = ["zeph-tools"]
 
 [lints]
 workspace = true

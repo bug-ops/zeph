@@ -520,18 +520,18 @@ fn prune_stale_tool_outputs_clears_old() {
     assert_eq!(rx.borrow().tool_output_prunes, 1);
 
     // Messages 1..3 should be pruned (boundary = 7-4=3)
-    for i in 1..3 {
+    for (i, message) in agent.msg.messages.iter().enumerate().take(3).skip(1) {
         if let MessagePart::ToolOutput {
             body, compacted_at, ..
-        } = &agent.msg.messages[i].parts[0]
+        } = &message.parts[0]
         {
             assert!(body.is_empty(), "message {i} should be pruned");
             assert!(compacted_at.is_some());
         }
     }
     // Messages 3..6 should be untouched
-    for i in 3..7 {
-        if let MessagePart::ToolOutput { body, .. } = &agent.msg.messages[i].parts[0] {
+    for (i, message) in agent.msg.messages.iter().enumerate().take(7).skip(3) {
+        if let MessagePart::ToolOutput { body, .. } = &message.parts[0] {
             assert!(!body.is_empty(), "message {i} should be kept");
         }
     }

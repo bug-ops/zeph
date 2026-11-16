@@ -11347,7 +11347,6 @@ dependencies = [
  "zeph-common",
  "zeph-config",
  "zeph-skills",
- "zeph-tools",
 ]
 
 [[package]]
