@@ -173,6 +173,8 @@ pub struct AcpServerConfig {
     pub timeouts: zeph_config::AcpTimeoutsConfig,
     /// Model-related configuration parameters (`[acp.model_config]`).
     pub model_config: zeph_config::AcpModelConfigConfig,
+    /// Operator grants and per-session cap for IDE-attached MCP servers (`[acp.ide_mcp]`).
+    pub ide_mcp: zeph_config::AcpIdeMcpConfig,
 }
 
 impl Clone for AcpServerConfig {
@@ -202,6 +204,7 @@ impl Clone for AcpServerConfig {
             message_ids_enabled: self.message_ids_enabled,
             timeouts: self.timeouts.clone(),
             model_config: self.model_config.clone(),
+            ide_mcp: self.ide_mcp.clone(),
         }
     }
 }
@@ -233,6 +236,7 @@ impl Default for AcpServerConfig {
             message_ids_enabled: true,
             timeouts: zeph_config::AcpTimeoutsConfig::default(),
             model_config: zeph_config::AcpModelConfigConfig::default(),
+            ide_mcp: zeph_config::AcpIdeMcpConfig::default(),
         }
     }
 }

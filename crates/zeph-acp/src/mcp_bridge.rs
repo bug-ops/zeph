@@ -43,6 +43,10 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// Dangerous environment variables are stripped from `Stdio` server configs.
 /// See module-level documentation for the full blocklist.
 ///
+/// The returned entries are `Untrusted` with no tool allowlist, so they expose zero tools. Tools
+/// come only from an operator grant in `[acp.ide_mcp.servers.<name>]`, applied by the session
+/// attach path after this conversion; nothing the IDE sends (including `_meta`) grants tools.
+///
 /// # Examples
 ///
 /// ```

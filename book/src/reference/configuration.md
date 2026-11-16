@@ -744,6 +744,12 @@ message_ids_enabled = true         # Echo PromptRequest.message_id onto response
 [acp.model_config]
 default_temperature_preset = "balanced"  # Default sampling-temperature: "precise" (0.2), "balanced" (0.7), or "creative" (1.0) (default: "balanced")
 
+[acp.ide_mcp]
+max_servers_per_session = 10       # Max IDE-attached MCP servers per session, 0 disables them (default: 10)
+# Grants are required for an IDE server to expose tools: [acp.ide_mcp.servers.<name>] with exactly
+# one of `command` (+ optional `args`, `env_keys`) or `url`, and a non-empty `tools` list.
+# Never list NODE_OPTIONS, JAVA_TOOL_OPTIONS, PERL5OPT or npm_config_* in env_keys. See the ACP chapter.
+
 [acp.lsp]
 enabled = true                     # Enable LSP extension when IDE advertises meta["lsp"] (default: true)
 auto_diagnostics_on_save = true    # Fetch diagnostics on lsp/didSave notification (default: true)

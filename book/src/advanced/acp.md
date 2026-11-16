@@ -208,7 +208,40 @@ When an IDE passes MCP server definitions to Zeph via the ACP `McpServer` field,
 
 Unknown transport variants are skipped with a `WARN` log line and do not cause the session to fail.
 
-No configuration is needed beyond what the IDE sends. Zeph reads the server list from each `new_session` request and registers the servers with the shared `McpManager` for the duration of the session.
+Zeph reads the server list from each `new_session`, `load_session`, `fork_session` and `resume_session` request and registers the servers with the shared `McpManager` for the duration of the session, under ids scoped to the session.
+
+### Granting tools to IDE-attached servers
+
+IDE-attached servers are always `Untrusted`, and an untrusted server without a tool allowlist exposes **zero tools**. The only way to expose tools is an operator grant in `[acp.ide_mcp.servers.<name>]`, where `<name>` is the server name the IDE sends:
+
+```toml
+[acp.ide_mcp]
+max_servers_per_session = 10   # 0 disables IDE-attached MCP servers
+
+[acp.ide_mcp.servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/repo"]
+env_keys = []                  # env keys the IDE may send; empty = none
+tools = ["read_file"]
+
+[acp.ide_mcp.servers.docs]
+url = "https://mcp.example.com/mcp"
+tools = ["search"]
+```
+
+A grant applies only when **all** of these match; any mismatch logs a `WARN` and the server exposes zero tools:
+
+- the server name the IDE sent;
+- the transport: the stdio `command` string and `args` list, or the HTTP/SSE `url`;
+- for stdio, the environment keys the IDE sent (after Zeph's built-in blocklist strips dangerous ones such as `LD_PRELOAD` or `PATH`) must be a subset of `env_keys`.
+
+Each grant sets exactly one of `command` or `url`; `args` and `env_keys` are only valid with `command`, and `tools` must not be empty. Violations are config load errors. `_meta` sent by the IDE never grants anything, and there is no "allow all tools" mode.
+
+> **Warning:** environment *values* are not pinned. Never list interpreter or package-manager control keys such as `NODE_OPTIONS`, `JAVA_TOOL_OPTIONS`, `PERL5OPT` or `npm_config_*` in `env_keys`: an IDE could use them to change what the pinned command executes.
+
+> **Note:** IDE servers go through the same SSRF policy as other untrusted servers, so an HTTP grant for a loopback or private address (for example `http://localhost:...`) is accepted by the config but can never connect.
+
+The per-session cap keeps the first `max_servers_per_session` servers of a request (after removing duplicate names) and logs a `WARN` with the number ignored. `zeph --init` asks for the cap; grants are hand-authored. `--migrate-config` adds a commented `[acp.ide_mcp]` block.
 
 ## Session Management and Reporting
 

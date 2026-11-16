@@ -450,6 +450,8 @@ pub struct ZephAcpAgentState {
     pub(crate) timeouts: zeph_config::AcpTimeoutsConfig,
     /// Model-related configuration parameters (from `[acp.model_config]`).
     pub(crate) model_config: zeph_config::AcpModelConfigConfig,
+    /// Operator grants and per-session cap for IDE-attached MCP servers (`[acp.ide_mcp]`).
+    pub(crate) ide_mcp_config: zeph_config::AcpIdeMcpConfig,
     /// Injection-detection-only sanitizer for advisory scanning of inbound ACP prompts.
     ///
     /// Spotlight wrapping is explicitly disabled: operator-typed prompts must not be

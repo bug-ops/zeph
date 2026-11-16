@@ -275,25 +275,91 @@ fn scoped_server_id(ide_id: &str, session_id: &str) -> McpServerId {
     McpServerId::from(format!("{ide_id}-{suffix}"))
 }
 
-/// Convert, de-duplicate by IDE id (first wins) and scope the servers of one request.
+/// Tools the operator allows for `entry`, or `None` (zero tools) when no grant applies.
+///
+/// A grant applies only when the raw IDE name has one **and** the transport matches it exactly:
+/// the stdio `command` and `args`, or the HTTP/SSE `url`. For stdio the env keys left after the
+/// bridge's blocklist must be a subset of the grant's `env_keys` (values are not pinned). Any
+/// mismatch fails closed with a WARN. Grants never come from IDE-supplied `_meta`.
+fn granted_allowlist(
+    entry: &ServerEntry,
+    grants: &zeph_config::AcpIdeMcpConfig,
+) -> Option<Vec<String>> {
+    use zeph_config::AcpIdeMcpTarget;
+    use zeph_mcp::McpTransport;
+
+    let name = entry.id.as_str();
+    let grant = grants.servers.get(name)?;
+    let matches = match (&grant.target, &entry.transport) {
+        (
+            AcpIdeMcpTarget::Stdio {
+                command,
+                args,
+                env_keys,
+            },
+            McpTransport::Stdio {
+                command: ide_command,
+                args: ide_args,
+                env,
+            },
+        ) => {
+            command == ide_command
+                && args == ide_args
+                && env.keys().all(|key| env_keys.contains(key))
+        }
+        (AcpIdeMcpTarget::Http { url }, McpTransport::Http { url: ide_url, .. }) => url == ide_url,
+        _ => false,
+    };
+    if matches {
+        Some(grant.tools.clone())
+    } else {
+        tracing::warn!(
+            server = %name,
+            "IDE MCP server does not match its operator grant (transport, args or env keys); \
+             exposing zero tools"
+        );
+        None
+    }
+}
+
+/// Convert, de-duplicate by IDE id (first wins), apply grants and the per-session cap, and scope
+/// the servers of one request.
+///
+/// Servers stay `Untrusted` and `allow_untrusted_without_allowlist` stays `false`, so a server
+/// without a matching grant exposes zero tools.
 fn scoped_entries(
     servers: &[acp::schema::v1::McpServer],
     session_id: &str,
     elicitation_default_timeout_secs: u64,
-    _grants: &zeph_config::AcpIdeMcpConfig,
+    grants: &zeph_config::AcpIdeMcpConfig,
 ) -> Vec<ServerEntry> {
     let mut seen = HashSet::new();
-    acp_mcp_servers_to_entries(servers, elicitation_default_timeout_secs)
-        .into_iter()
-        .filter_map(|mut entry| {
-            if !seen.insert(entry.id.clone()) {
-                tracing::warn!(server_id = %entry.id, "duplicate IDE MCP server id in request ignored");
-                return None;
-            }
-            entry.id = scoped_server_id(entry.id.as_str(), session_id);
-            Some(entry)
-        })
-        .collect()
+    let mut entries: Vec<ServerEntry> = acp_mcp_servers_to_entries(
+        servers,
+        elicitation_default_timeout_secs,
+    )
+    .into_iter()
+    .filter_map(|mut entry| {
+        if !seen.insert(entry.id.clone()) {
+            tracing::warn!(server_id = %entry.id, "duplicate IDE MCP server id in request ignored");
+            return None;
+        }
+        entry.tool_allowlist = granted_allowlist(&entry, grants);
+        entry.id = scoped_server_id(entry.id.as_str(), session_id);
+        Some(entry)
+    })
+    .collect();
+    let cap = grants.max_servers_per_session;
+    if entries.len() > cap {
+        tracing::warn!(
+            requested = entries.len(),
+            cap,
+            dropped = entries.len() - cap,
+            "IDE MCP servers exceed [acp.ide_mcp].max_servers_per_session; extra servers ignored"
+        );
+        entries.truncate(cap);
+    }
+    entries
 }
 
 impl ZephAcpAgentState {
@@ -315,7 +381,7 @@ impl ZephAcpAgentState {
             servers,
             &session_id.to_string(),
             self.timeouts.elicitation_secs,
-            &zeph_config::AcpIdeMcpConfig::default(),
+            &self.ide_mcp_config,
         );
         if entries.is_empty() {
             return IdeMcpAttachment::empty();

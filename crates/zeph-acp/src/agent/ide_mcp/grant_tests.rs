@@ -122,7 +122,7 @@ fn scoped_entries_empty_env_keys_allow_no_env_at_all() {
         vec![("fs", stdio_grant("mcp-fs", &[], &[], &["read_file"]))],
     );
     let none = [stdio_server("fs", "mcp-fs", &[], &[])];
-    let with_env = [stdio_server("fs", "mcp-fs", &[], &[("HTTP_PROXY", "x")])];
+    let with_env = [stdio_server("fs", "mcp-fs", &[], &[("SOME_KEY", "x")])];
     assert!(allowlist_of(&none, &cfg).is_some());
     assert_eq!(allowlist_of(&with_env, &cfg), None);
 }
