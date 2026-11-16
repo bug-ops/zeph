@@ -141,6 +141,13 @@ impl SlackChannel {
         })
     }
 
+    /// A reply only counts when it arrives in the channel the prompt was posted to.
+    fn is_current_channel(&self, msg: &IncomingMessage) -> bool {
+        self.channel_id
+            .as_deref()
+            .is_none_or(|current| current == msg.channel_id)
+    }
+
     fn is_authorized(&self, msg: &IncomingMessage) -> bool {
         if !self.allowed_channel_ids.is_empty()
             && !self.allowed_channel_ids.contains(&msg.channel_id)
@@ -216,6 +223,11 @@ impl StreamingSend for SlackChannel {
     }
 }
 
+/// Escapes an `ask_user` prompt for this platform's markup.
+fn ask_user_sanitizer(text: &str) -> String {
+    crate::ask_user::escape_slack(text)
+}
+
 impl crate::confirm::ConfirmLoop for SlackChannel {
     type Incoming = IncomingMessage;
 
@@ -228,7 +240,7 @@ impl crate::confirm::ConfirmLoop for SlackChannel {
     }
 
     fn confirm_accepts(&self, incoming: &IncomingMessage) -> bool {
-        self.is_authorized(incoming)
+        self.is_authorized(incoming) && self.is_current_channel(incoming)
     }
 
     fn confirm_reply_text<'a>(&self, incoming: &'a IncomingMessage) -> &'a str {
@@ -354,6 +366,13 @@ impl Channel for SlackChannel {
         crate::confirm::ConfirmLoop::run_confirm(self, prompt).await
     }
 
+    async fn ask_user(
+        &mut self,
+        request: zeph_core::channel::AskUserRequest,
+    ) -> Result<zeph_core::channel::AskUserOutcome, ChannelError> {
+        crate::ask_user::run_ask_user(self, request, ask_user_sanitizer, |_| false).await
+    }
+
     fn elicit(
         &mut self,
         request: ElicitationRequest,
@@ -477,6 +496,21 @@ mod tests {
         ch.allowed_channel_ids = vec!["C1".into()];
         let msg = make_incoming("U1", "C1");
         assert!(ch.is_authorized(&msg));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_reply_must_come_from_the_channel_of_the_question() {
+        use crate::confirm::ConfirmLoop as _;
+        let mut ch = make_channel();
+        ch.channel_id = Some("C1".into());
+        assert!(ch.confirm_accepts(&make_incoming("U1", "C1")));
+        assert!(!ch.confirm_accepts(&make_incoming("U1", "C2")));
+    }
+
+    #[test]
+    fn ask_user_prompt_escapes_slack_control_characters() {
+        let out = ask_user_sanitizer("<!channel> <https://evil|click>");
+        assert!(!out.contains('<') && !out.contains('>'));
     }
 
     #[tokio::test(flavor = "current_thread")]

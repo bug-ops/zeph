@@ -556,6 +556,8 @@ pub(crate) struct SharedAgentDeps {
     trajectory_config: zeph_core::config::TrajectoryConfig,
     category_config: zeph_core::config::CategoryConfig,
     tool_filter_config: zeph_core::config::ToolFilterConfig,
+    /// `[tools.ask_user]` and `[llm.cache_keepalive]`; no `Default`, so every literal sets it.
+    interaction: zeph_core::InteractionConfig,
 
     hooks_config: zeph_core::config::HooksConfig,
     /// Safe-mode gate (#6031): when `true`, `spawn_acp_agent` skips `with_hooks_config` for
@@ -1331,6 +1333,7 @@ async fn build_acp_deps(
         trajectory_config: config.memory.trajectory.clone(),
         category_config: config.memory.category.clone(),
         tool_filter_config: config.agent.tool_filter.clone(),
+        interaction: zeph_core::InteractionConfig::from_config(config),
         acp_agent_name: config.acp.agent_name.clone(),
         acp_agent_version: config.acp.agent_version.clone(),
         acp_max_sessions: config.acp.max_sessions,
@@ -1536,6 +1539,7 @@ where
     cwd_allowed_paths: Vec<PathBuf>,
     tools_enabled: bool,
     tool_filter_config: zeph_core::config::ToolFilterConfig,
+    interaction: zeph_core::InteractionConfig,
 }
 
 /// Build the `Agent` from the `AgentBuilder` construction chain used by `spawn_acp_agent`,
@@ -1626,6 +1630,7 @@ where
     .with_clock(deps.clock)
     .with_allowed_paths(deps.cwd_allowed_paths)
     .with_tools_enabled(deps.tools_enabled)
+    .with_interaction_config(deps.interaction)
     .maybe_init_tool_schema_filter(deps.tool_filter_config, deps.provider)
     .await
 }
@@ -1667,6 +1672,15 @@ async fn spawn_acp_agent(
     session_ctx: zeph_acp::SessionContext,
 ) {
     use std::sync::Arc;
+
+    // Questions of the `ask_user` tool go to the IDE's elicitation form; without the IDE
+    // capability the channel keeps declining them.
+    if let Some(responder) = acp_ctx
+        .as_ref()
+        .and_then(|ctx| ctx.ask_user_responder(&session_ctx.session_id))
+    {
+        channel = channel.with_ask_user_responder(responder);
+    }
 
     let provider = d.provider.clone();
     let registry = Arc::clone(&d.registry);
@@ -1756,6 +1770,7 @@ async fn spawn_acp_agent(
     let cwd_allowed_paths = d.cwd_allowed_paths.clone();
     let tools_enabled = d.tools_enabled;
     let tool_filter_config = d.tool_filter_config.clone();
+    let interaction = d.interaction.clone();
 
     // Cloned before `acp_ctx` is destructured into individual per-session executors below
     // (the tool-executor setup consumes `ctx` by value), so it survives to the session
@@ -2242,6 +2257,7 @@ async fn spawn_acp_agent(
         cwd_allowed_paths,
         tools_enabled,
         tool_filter_config,
+        interaction,
     };
     let mut agent = Box::pin(build_acp_agent(build_params, channel)).await;
 
@@ -5394,11 +5410,20 @@ mod tests {
         config.session.persist_provider_overrides = true;
         config.index.enabled = true;
         config.index.mcp_enabled = true;
+        config.tools.ask_user.enabled = true;
+        config.llm.cache_keepalive.enabled = true;
+        let expected_interaction = zeph_core::InteractionConfig::from_config(&config);
 
         let app = crate::bootstrap::AppBuilder::for_test(config);
         let (deps, _keepalive) = Box::pin(build_acp_deps(&app, None, None))
             .await
             .expect("build_acp_deps must succeed against a mock-provider AppBuilder");
+
+        assert_eq!(
+            deps.interaction, expected_interaction,
+            "[tools.ask_user] and [llm.cache_keepalive] must flow into SharedAgentDeps"
+        );
+        assert!(deps.interaction.ask_user.enabled && deps.interaction.cache_keepalive.enabled);
 
         assert!(
             deps.shutdown_summary,
@@ -5715,6 +5740,12 @@ mod tests {
             cwd_allowed_paths: Vec::new(),
             tools_enabled: true,
             tool_filter_config: zeph_core::config::ToolFilterConfig::default(),
+            interaction: {
+                let mut enabled = zeph_core::config::Config::default();
+                enabled.tools.ask_user.enabled = true;
+                enabled.llm.cache_keepalive.enabled = true;
+                zeph_core::InteractionConfig::from_config(&enabled)
+            },
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
@@ -5729,6 +5760,11 @@ mod tests {
             "config.skills.confusability_threshold = 0.42 must reach the built Agent's \
              ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
              swapped SkillConfigParams field); got: {output}"
+        );
+        let interaction = agent.interaction_config();
+        assert!(
+            interaction.ask_user.enabled && interaction.cache_keepalive.enabled,
+            "BuildAcpAgentParams.interaction must reach the built Agent"
         );
     }
 }

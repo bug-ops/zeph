@@ -316,6 +316,7 @@ where
             .collect(),
     )
     .with_tools_enabled(config.tools.enabled)
+    .with_interaction_config(zeph_core::InteractionConfig::from_config(config))
     .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), deps.embedding_provider)
     .await
 }
@@ -1416,6 +1417,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     }
     if let Some(strategy) = cli.pruning_strategy {
         app.config_mut().memory.compression.pruning_strategy = strategy;
+    }
+    if cli.ask_user {
+        app.config_mut().tools.ask_user.enabled = true;
+    }
+    if cli.cache_keepalive {
+        app.config_mut().llm.cache_keepalive.enabled = true;
     }
 
     // M4 fix (#2022): SideQuest eviction and Subgoal pruning are mutually exclusive.
@@ -5212,6 +5219,73 @@ mod tests {
             "config.skills.group_structured/support_similarity_threshold/min_injection_score \
              must reach the built Agent exactly via with_skill_group_config; got: {output}"
         );
+    }
+
+    /// Spec 090/091 wiring: `[tools.ask_user]` and `[llm.cache_keepalive]` parsed from TOML must
+    /// reach the `Agent` built by the same `build_agent` chain `run()` uses.
+    #[tokio::test]
+    async fn build_agent_wires_interaction_config_from_toml() {
+        let memory = make_test_memory().await;
+        let conversation_id = memory.sqlite().create_conversation().await.unwrap();
+        let mut config = Config::default();
+        config.tools.ask_user.enabled = true;
+        config.tools.ask_user.timeout_secs = std::num::NonZeroU64::new(17).unwrap();
+        config.llm.cache_keepalive.enabled = true;
+        config.llm.cache_keepalive.max_consecutive_pings = std::num::NonZeroU32::new(2).unwrap();
+
+        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let shell_policy_handle =
+            zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let deps = BuildAgentDeps {
+            config: &config,
+            provider: LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: std::sync::Arc::new(RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
+                zeph_tools::SetCwdExecutor::new(vec![]),
+            )),
+            clock: std::sync::Arc::new(zeph_common::SystemClock),
+            session_config,
+            active_provider_name: "test".to_owned(),
+            skill_paths: Vec::new(),
+            reload_rx,
+            plugin_dirs_supplier: || Vec::<std::path::PathBuf>::new(),
+            trust_snapshot: std::sync::Arc::new(RwLock::new(std::collections::HashMap::new())),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
+            memory: std::sync::Arc::clone(&memory),
+            conversation_id,
+            session_sink: None,
+            shutdown_rx,
+            config_path: std::path::PathBuf::new(),
+            config_reload_rx,
+            startup_shell_overlay: zeph_core::ShellOverlaySnapshot {
+                blocked: Vec::new(),
+                allowed: Vec::new(),
+            },
+            shell_policy_handle,
+            shell_executor_handle: None,
+            background_completion_rx: None,
+            logging_config: zeph_core::config::LoggingConfig::default(),
+            tiered_retrieval_classifier_provider: None,
+            tiered_retrieval_validator_provider: None,
+            bare_mode: false,
+            safe_mode: false,
+        };
+
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = Box::pin(build_agent(deps, channel)).await;
+        assert_eq!(
+            agent.interaction_config(),
+            zeph_core::InteractionConfig::from_config(&config)
+        );
+        assert!(agent.interaction_config().ask_user.enabled);
+        assert!(agent.interaction_config().cache_keepalive.enabled);
     }
 
     #[test]

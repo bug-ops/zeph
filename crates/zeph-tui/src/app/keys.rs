@@ -546,6 +546,14 @@ impl App {
             self.metrics.cache_read_tokens,
             self.metrics.cache_creation_tokens,
         );
+        if self.metrics.cache_keepalive_pings > 0 {
+            let _ = write!(
+                out,
+                "\n  Cache keepalive: {} pings, ${:.4} (included in Spent)",
+                self.metrics.cache_keepalive_pings,
+                self.metrics.cache_keepalive_cost_cents / 100.0,
+            );
+        }
         if !self.metrics.provider_cost_breakdown.is_empty() {
             let _ = write!(out, "\n\nPer-provider breakdown:");
             let _ = write!(
@@ -1306,6 +1314,18 @@ mod tests {
 
     fn ctrl_c() -> KeyEvent {
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn cost_stats_show_keepalive_pings_only_when_some_were_sent() {
+        let (mut app, _rx, _tx) = make_app();
+        assert!(!app.format_cost_stats().contains("keepalive"));
+        app.metrics.cache_keepalive_pings = 2;
+        app.metrics.cache_keepalive_cost_cents = 5.0;
+        assert!(
+            app.format_cost_stats()
+                .contains("Cache keepalive: 2 pings, $0.0500")
+        );
     }
 
     #[test]

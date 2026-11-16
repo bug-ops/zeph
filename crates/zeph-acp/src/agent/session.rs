@@ -218,6 +218,31 @@ impl ZephAcpAgentState {
         resp
     }
 
+    /// Start the per-session elicitation bridge when the IDE advertised the capability.
+    ///
+    /// The bridge carries both MCP elicitation and `ask_user` questions, so every session entry
+    /// point (new, load, fork, resume) starts one.
+    #[cfg(feature = "unstable-elicitation")]
+    fn start_elicitation_bridge(
+        &self,
+        cx: &acp::ConnectionTo<acp::Client>,
+        cancel_signal: &Arc<tokio::sync::Notify>,
+    ) -> (
+        Option<elicitation::ElicitationSender>,
+        Option<tokio::task::JoinHandle<()>>,
+    ) {
+        if !self
+            .elicitation_supported
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return (None, None);
+        }
+        let (tx, rx) = elicitation::elicitation_channel();
+        let handle =
+            elicitation::spawn_elicitation_bridge(cx.clone(), rx, Arc::clone(cancel_signal));
+        (Some(tx), Some(handle))
+    }
+
     #[tracing::instrument(skip_all, name = "acp.handler.new_session")]
     pub(crate) async fn do_new_session(
         &self,
@@ -244,21 +269,8 @@ impl ZephAcpAgentState {
         let session_cwd = args.cwd.clone();
 
         #[cfg(feature = "unstable-elicitation")]
-        let (elicitation_tx, elicitation_bridge_handle) = if self
-            .elicitation_supported
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            let (tx, rx) = elicitation::elicitation_channel();
-            let handle = elicitation::spawn_elicitation_bridge(
-                cx.clone(),
-                rx,
-                Arc::clone(&cancel_signal),
-                self.timeouts.elicitation_secs,
-            );
-            (Some(tx), Some(handle))
-        } else {
-            (None, None)
-        };
+        let (elicitation_tx, elicitation_bridge_handle) =
+            self.start_elicitation_bridge(cx, &cancel_signal);
 
         let mut acp_ctx = self
             .build_acp_context(
@@ -474,6 +486,9 @@ impl ZephAcpAgentState {
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let (notify_tx, notify_rx) = mpsc::channel(256);
+        #[cfg(feature = "unstable-elicitation")]
+        let (elicitation_tx, elicitation_bridge_handle) =
+            self.start_elicitation_bridge(cx, &cancel_signal);
         let mut acp_ctx = self
             .build_acp_context(
                 &args.session_id,
@@ -483,7 +498,7 @@ impl ZephAcpAgentState {
                 session_cwd.clone(),
                 notify_tx.clone(),
                 #[cfg(feature = "unstable-elicitation")]
-                None,
+                elicitation_tx,
             )
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
@@ -507,6 +522,11 @@ impl ZephAcpAgentState {
             notify_tx,
             notify_rx,
         );
+
+        #[cfg(feature = "unstable-elicitation")]
+        {
+            entry.elicitation_bridge_handle = elicitation_bridge_handle;
+        }
 
         Self::spawn_notify_drainer(&entry, cx)?;
         let attachment = self
@@ -740,6 +760,9 @@ impl ZephAcpAgentState {
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let (notify_tx, notify_rx) = mpsc::channel(256);
+        #[cfg(feature = "unstable-elicitation")]
+        let (elicitation_tx, elicitation_bridge_handle) =
+            self.start_elicitation_bridge(cx, &cancel_signal);
         let mut acp_ctx = self
             .build_acp_context(
                 &new_id,
@@ -749,7 +772,7 @@ impl ZephAcpAgentState {
                 args.cwd.clone(),
                 notify_tx.clone(),
                 #[cfg(feature = "unstable-elicitation")]
-                None,
+                elicitation_tx,
             )
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
@@ -769,6 +792,11 @@ impl ZephAcpAgentState {
             notify_tx,
             notify_rx,
         );
+
+        #[cfg(feature = "unstable-elicitation")]
+        {
+            entry.elicitation_bridge_handle = elicitation_bridge_handle;
+        }
 
         Self::spawn_notify_drainer(&entry, cx)?;
         let attachment = self
@@ -812,6 +840,7 @@ impl ZephAcpAgentState {
     }
 
     #[tracing::instrument(skip_all, name = "acp.handler.resume_session")]
+    #[allow(clippy::too_many_lines)] // strictly sequential session setup, mirrors do_load_session
     pub(crate) async fn do_resume_session(
         &self,
         args: acp::schema::v1::ResumeSessionRequest,
@@ -876,6 +905,9 @@ impl ZephAcpAgentState {
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let (notify_tx, notify_rx) = mpsc::channel(256);
+        #[cfg(feature = "unstable-elicitation")]
+        let (elicitation_tx, elicitation_bridge_handle) =
+            self.start_elicitation_bridge(cx, &cancel_signal);
         let mut acp_ctx = self
             .build_acp_context(
                 &args.session_id,
@@ -885,7 +917,7 @@ impl ZephAcpAgentState {
                 args.cwd.clone(),
                 notify_tx.clone(),
                 #[cfg(feature = "unstable-elicitation")]
-                None,
+                elicitation_tx,
             )
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
@@ -905,6 +937,11 @@ impl ZephAcpAgentState {
             notify_tx,
             notify_rx,
         );
+
+        #[cfg(feature = "unstable-elicitation")]
+        {
+            entry.elicitation_bridge_handle = elicitation_bridge_handle;
+        }
 
         Self::spawn_notify_drainer(&entry, cx)?;
         let attachment = self
@@ -1500,5 +1537,40 @@ mod inherited_session_config_tests {
             temperature_preset,
             zeph_config::AcpTemperaturePreset::Creative
         );
+    }
+
+    /// A restored (load/fork/resume) session stores its bridge handle in the entry, and closing
+    /// the session aborts the bridge instead of leaking it.
+    #[cfg(feature = "unstable-elicitation")]
+    #[tokio::test]
+    async fn closing_a_session_stops_its_elicitation_bridge() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        let session_id = acp::schema::v1::SessionId::new("restored".to_owned());
+        let (_, handle) = LoopbackChannel::pair(4);
+        let (notify_tx, notify_rx) = mpsc::channel(256);
+        let mut entry = ZephAcpAgent::make_session_entry(
+            handle,
+            "claude:opus".to_owned(),
+            std::path::PathBuf::from("."),
+            None,
+            Arc::new(RwLock::new(None::<AnyProvider>)),
+            SessionConfigSeed {
+                thinking_enabled: false,
+                auto_approve_level: "auto-edit".to_owned(),
+                temperature_preset: zeph_config::AcpTemperaturePreset::Creative,
+            },
+            notify_tx,
+            notify_rx,
+        );
+        let bridge = tokio::spawn(std::future::pending::<()>());
+        let probe = bridge.abort_handle();
+        entry.elicitation_bridge_handle = Some(bridge);
+        agent.sessions.lock().insert(session_id.clone(), entry);
+
+        agent.sessions.lock().remove(&session_id);
+        tokio::task::yield_now().await;
+
+        assert!(probe.is_finished(), "the bridge must end with its session");
     }
 }

@@ -818,6 +818,7 @@ mod tests {
             (ClaimSource::Mcp, "\"mcp\""),
             (ClaimSource::A2a, "\"a2a\""),
             (ClaimSource::PeerMessage, "\"peer_message\""),
+            (ClaimSource::UserAnswer, "\"user_answer\""),
             (ClaimSource::CodeSearch, "\"code_search\""),
             (ClaimSource::Diagnostics, "\"diagnostics\""),
             (ClaimSource::Memory, "\"memory\""),

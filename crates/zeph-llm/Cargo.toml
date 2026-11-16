@@ -72,6 +72,10 @@ toml.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 wiremock.workspace = true
 
+[[test]]
+name = "keepalive_ping"
+required-features = ["testing"]
+
 [[bench]]
 name = "candle_inference"
 harness = false

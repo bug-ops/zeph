@@ -152,6 +152,16 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
     /// See [`LlmProvider::prefix_cache`].
     fn prefix_cache(&self) -> crate::provider::PrefixCache;
 
+    /// See [`LlmProvider::keepalive_ping`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`LlmProvider::keepalive_ping`].
+    fn keepalive_ping<'a>(
+        &'a self,
+        req: &'a crate::provider::KeepaliveRequest,
+    ) -> BoxFuture<'a, Result<crate::provider::KeepaliveOutcome, LlmError>>;
+
     /// Send messages and return the assistant response together with per-call extras.
     ///
     /// # Errors
@@ -269,6 +279,13 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
 
     fn prefix_cache(&self) -> crate::provider::PrefixCache {
         LlmProvider::prefix_cache(self)
+    }
+
+    fn keepalive_ping<'a>(
+        &'a self,
+        req: &'a crate::provider::KeepaliveRequest,
+    ) -> BoxFuture<'a, Result<crate::provider::KeepaliveOutcome, LlmError>> {
+        Box::pin(LlmProvider::keepalive_ping(self, req))
     }
 
     fn chat_with_extras<'a>(

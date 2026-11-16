@@ -25,6 +25,15 @@ max_tool_iterations = 10
 # Routing strategy for multi-provider configs: "none" (default), "ema", "thompson", "cascade", "task", "bandit"
 # routing = "none"
 
+[llm.cache_keepalive]
+# Re-read the cached prompt prefix while the session is idle so the provider cache does not expire.
+# Spends tokens on every ping; off by default. Toggle at runtime with /keepalive on|off.
+enabled = false
+# Provider to ping, by [[llm.providers]] name. Empty = the main provider.
+keepalive_provider = ""
+# Pings in a row without real activity before the service stops (must be > 0)
+max_consecutive_pings = 6
+
 # ── Cascade routing ───────────────────────────────────────────────────────────
 # Set routing = "cascade" to enable escalating provider chain.
 # Cheap provider is tried first; escalates on degenerate output.
@@ -831,6 +840,14 @@ max_per_call_override = 131072
 enabled = true
 # Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
 destination = "stdout"
+
+[tools.ask_user]
+# Let the model ask you a clarifying question mid-turn (the ask_user tool). Off by default.
+enabled = false
+# Seconds to wait for your answer before the question times out (must be > 0)
+timeout_secs = 300
+# Maximum questions the model may ask in a single turn (must be > 0)
+max_questions_per_turn = 3
 
 [tools.policy]
 # Enable declarative policy compiler for tool call authorization (requires policy-enforcer feature)

@@ -78,6 +78,10 @@ pub(crate) struct ServeAgentDeps {
     pub(crate) semantic_scan_provider: String,
     /// `config.skills.state.enabled`, wired into `SkillConfigParams` per session (spec 086).
     pub(crate) skill_state_enabled: bool,
+    /// `[tools.ask_user]` and `[llm.cache_keepalive]`, wired into
+    /// `Agent::with_interaction_config` per session. `InteractionConfig` has no `Default`, so
+    /// every literal of this struct must set it.
+    pub(crate) interaction: zeph_core::InteractionConfig,
     /// `config.skills.trust`, wired into `Agent::with_trust_config` per session — mirrors
     /// `src/runner.rs` and `src/daemon.rs` (#5920: previously left on `TrustConfig::default()`
     /// for `/sessions` agents, silently ignoring the operator's configured trust levels).
@@ -606,6 +610,7 @@ pub(crate) async fn assemble_serve_deps(
         semantic_scan: config.skills.semantic_scan,
         semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
         skill_state_enabled: config.skills.state.enabled,
+        interaction: zeph_core::InteractionConfig::from_config(config),
         trust_config: config.skills.trust.clone(),
         rl_routing_enabled: config.skills.rl_routing_enabled,
         rl_learning_rate: config.skills.rl_learning_rate,
@@ -970,6 +975,30 @@ mod tests {
             budget_tokens: 4096,
             rl_head: None,
         }
+    }
+
+    /// Spec 090/091 wiring: `[tools.ask_user]` and `[llm.cache_keepalive]` must flow from the
+    /// configuration into `ServeAgentDeps::interaction`.
+    #[tokio::test]
+    async fn assemble_serve_deps_wires_interaction_config_from_config() {
+        let mut config = zeph_core::config::Config::default();
+        config.tools.ask_user.enabled = true;
+        config.tools.ask_user.timeout_secs = std::num::NonZeroU64::new(17).unwrap();
+        config.llm.cache_keepalive.enabled = true;
+        config.llm.cache_keepalive.max_consecutive_pings = std::num::NonZeroU32::new(2).unwrap();
+        let expected = zeph_core::InteractionConfig::from_config(&config);
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let memory = make_memory().await;
+        let core = make_test_core(memory);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
+
+        let deps = assemble_serve_deps(&app, &core, &supervisor)
+            .await
+            .expect("assemble_serve_deps must succeed with default tool config");
+
+        assert_eq!(deps.interaction, expected);
+        assert!(deps.interaction.ask_user.enabled && deps.interaction.cache_keepalive.enabled);
     }
 
     /// #6045 regression: `assemble_serve_deps` must *validate* `[security.capability_scopes]`

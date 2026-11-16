@@ -137,6 +137,8 @@ impl<C: Channel> Agent<C> {
         // `chat*`/`debug_request_json` call, so no explicit masking step is needed here.
         let dump_id = self.prepare_chat_debug_dump(tool_defs, memcot_state_for_dump.as_deref());
 
+        // A request is leaving: a keepalive ping still in flight is pointless now.
+        self.keepalive_mark_activity();
         let Some(mut result) = self
             .dispatch_chat_with_tools(tool_defs, llm_timeout, llm_span)
             .await?
@@ -144,6 +146,10 @@ impl<C: Channel> Agent<C> {
             return Ok(None);
         };
 
+        // Captured before compaction can rewrite the history: this is the exact request the
+        // provider just accepted. Every successful response counts, tool-use ones included:
+        // the wait that follows a tool-use response is the long tool run the cache must survive.
+        self.keepalive_capture(tool_defs);
         self.sync_secret_mask_metric();
         self.record_chat_metrics_and_compact(start, &mut result)
             .await?;

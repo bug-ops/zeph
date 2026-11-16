@@ -22,6 +22,7 @@ pub mod debug;
 pub mod experiment;
 pub mod goal;
 pub mod help;
+pub mod keepalive;
 pub mod loop_cmd;
 pub mod lsp;
 pub mod mcp;

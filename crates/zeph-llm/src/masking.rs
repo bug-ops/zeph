@@ -347,6 +347,20 @@ impl LlmProvider for MaskedProvider {
         LlmProvider::prefix_cache(self.inner.as_ref())
     }
 
+    async fn keepalive_ping(
+        &self,
+        req: &crate::provider::KeepaliveRequest,
+    ) -> Result<crate::provider::KeepaliveOutcome, crate::LlmError> {
+        let Some(masked) = self.mask_messages(&req.messages) else {
+            return LlmProviderDyn::keepalive_ping(self.inner.as_ref(), req).await;
+        };
+        let masked_req = crate::provider::KeepaliveRequest {
+            messages: masked.into(),
+            ..req.clone()
+        };
+        LlmProviderDyn::keepalive_ping(self.inner.as_ref(), &masked_req).await
+    }
+
     fn last_ttft_ms(&self) -> Option<u64> {
         LlmProvider::last_ttft_ms(self.inner.as_ref())
     }
@@ -427,6 +441,29 @@ mod tests {
         let rendered = sent[0][0].to_request_text();
         assert!(!rendered.contains("SECRET_VALUE"));
         assert!(rendered.contains("<MASKED>"));
+    }
+
+    #[tokio::test]
+    async fn keepalive_ping_masks_messages_like_the_main_request() {
+        use crate::provider::{KeepaliveOutcome, KeepaliveRequest, ResponseUsage};
+
+        let (mock, recorded) =
+            MockProvider::default().with_keepalive(vec![ResponseUsage::default()]);
+        let mp = AnyProvider::Masked(Box::new(masked(AnyProvider::Mock(mock))));
+        let req = KeepaliveRequest {
+            provider: mp.clone(),
+            messages: Arc::from(vec![Message::from_legacy(
+                Role::User,
+                "value is SECRET_VALUE here",
+            )]),
+            tools: Arc::from(Vec::new()),
+            target: None,
+        };
+        let outcome = LlmProvider::keepalive_ping(&mp, &req).await.unwrap();
+        assert!(matches!(outcome, KeepaliveOutcome::Pinged(_)));
+        let seen = recorded.lock().unwrap();
+        assert!(!seen[0].messages[0].content.contains("SECRET_VALUE"));
+        assert!(seen[0].messages[0].content.contains("<MASKED>"));
     }
 
     #[tokio::test]

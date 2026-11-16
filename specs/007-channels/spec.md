@@ -453,3 +453,11 @@ The empty-string convention for clearing a status indicator is replaced by an ex
 - NEVER leave a status `set` without a clear on every exit path: use `StatusSender::scope(text)` (a `#[must_use]` RAII guard that clears on drop, also on early return and cancellation) for work with a duration, or `notice` for a one-shot result or warning
 - NEVER write a status through `AgentEvent::Status` / `ClearStatus` from a non-turn producer; use `AgentEvent::LaneStatus` with its `ProducerLane`
 - NEVER add an unbounded status channel; background status goes through `status_channel`
+
+## `ask_user` and `ConfirmLoop::run_reply` (#6912, spec 090)
+
+- `Channel::ask_user(AskUserRequest) -> AskUserOutcome` is one defaulted trait method (decline); `AnyChannel`, `AppChannel` and `GatewayChannel` forward it. The agent owns the deadline; a channel applies none and its future is cancel-safe.
+- `ConfirmLoop::run_reply(prompt)` returns the next in-scope reply (`ReplyOutcome::{Text, Closed}`) with no deadline; `run_confirm` is `timeout(CONFIRM_TIMEOUT, run_reply(..))` with the unchanged spec-007 semantics.
+- Bot adapters (Telegram, Discord, Slack) share one flow: fixed header first, numbered options, `cancel` as an instruction line, `cancel`/`/cancel`/registered slash command/Telegram-local `/start` `/reset` `/skills` cancel, an invalid reply re-prompts. Replies must come from the chat or channel of the question; Telegram ignores bot senders and declines in guest context. Prompts are escaped per platform (Discord mentions and links, Slack `& < >`, Telegram links).
+- CLI TTY reads with the yieldable line editor under the stdin coordinator, released only when the blocking read has returned; piped stdin declines. TUI reuses the elicitation dialog; Esc cancels only the question.
+- NEVER render model text above the fixed `ASK_USER_HEADER`; NEVER accept an answer from another channel or a bot.

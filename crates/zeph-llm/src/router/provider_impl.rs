@@ -835,4 +835,53 @@ impl LlmProvider for RouterProvider {
                 acc.or(p.prefix_cache())
             })
     }
+
+    #[allow(refining_impl_trait)]
+    // deliberate: erase the opaque type to break router recursion, see `LlmFuture` docs
+    fn keepalive_ping(
+        &self,
+        req: &crate::provider::KeepaliveRequest,
+    ) -> LlmFuture<crate::provider::KeepaliveOutcome> {
+        let Some(backend) = self.keepalive_backend(req.target.as_ref()).cloned() else {
+            return Box::pin(std::future::ready(Ok(
+                crate::provider::KeepaliveOutcome::Unsupported,
+            )));
+        };
+        let backend_req = crate::provider::KeepaliveRequest {
+            provider: backend.clone(),
+            ..req.clone()
+        };
+        Box::pin(tracing::Instrument::instrument(
+            async move { backend.keepalive_ping(&backend_req).await },
+            tracing::info_span!("llm.router.keepalive"),
+        ))
+    }
+}
+
+impl RouterProvider {
+    /// Backend a keepalive ping goes to: the one named by `target`, otherwise the only backend
+    /// that caches the request prefix. `None` when the choice is missing or ambiguous.
+    pub(crate) fn keepalive_backend(
+        &self,
+        target: Option<&zeph_common::ProviderName>,
+    ) -> Option<&crate::any::AnyProvider> {
+        if let Some(name) = target.and_then(zeph_common::ProviderName::as_non_empty) {
+            let found = self.state.providers.iter().find(|p| p.name() == name);
+            if found.is_some() {
+                return found;
+            }
+            tracing::warn!(target = name, "keepalive target is not a router backend");
+        }
+        let mut cacheable = self
+            .state
+            .providers
+            .iter()
+            .filter(|p| p.prefix_cache().is_prefix());
+        let first = cacheable.next();
+        if first.is_some() && cacheable.next().is_some() {
+            tracing::warn!("several router backends cache the prefix: set keepalive_provider");
+            return None;
+        }
+        first
+    }
 }

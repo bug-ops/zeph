@@ -495,3 +495,8 @@ Three layers, plus one prevention primitive:
 - `chat`, `chat_stream`, `chat_with_tools` are independent codepaths — do not delegate one to another
 - Candle and metal/cuda features are mutually exclusive in the build
 - Provider identity is the `name` field from `[[llm.providers]]` — never resolved by type string
+
+## Keepalive Ping (#6911, spec 091)
+
+- `LlmProvider::keepalive_ping(&KeepaliveRequest) -> KeepaliveOutcome` defaults to `Unsupported`; `AnyProvider`, `LlmProviderDyn`, the masking wrapper (masks the replayed messages) and the router forward it. Claude overrides it: a non-streaming request with the captured messages and tools, `max_tokens` from `keepalive_output_cap`, writing nothing to provider usage, the prefix guard or the status channel; it skips below `cache_min_tokens`.
+- A router pings the backend named by `keepalive_provider`, else its single prefix-caching backend, else reports `Unsupported`.

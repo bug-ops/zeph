@@ -33,7 +33,7 @@ pub mod sink;
 pub mod traits;
 pub mod transcript;
 
-pub use commands::{COMMANDS, is_recognized_command};
+pub use commands::{COMMANDS, is_recognized_command, matches_command_name};
 pub use handlers::help::render_help_text;
 
 pub use context::CommandContext;
@@ -353,10 +353,7 @@ impl<Ctx: ?Sized> CommandRegistry<Ctx> {
         let mut best_idx: Option<usize> = None;
         for (idx, handler) in self.handlers.iter().enumerate() {
             let name = handler.name();
-            let matched = trimmed == name
-                || trimmed
-                    .strip_prefix(name)
-                    .is_some_and(|rest| rest.starts_with(' '));
+            let matched = matches_command_name(trimmed, name);
             if matched && name.len() >= best_len {
                 best_len = name.len();
                 best_idx = Some(idx);

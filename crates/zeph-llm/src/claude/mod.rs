@@ -41,6 +41,8 @@
 mod beta;
 mod cache;
 mod guard;
+#[cfg(test)]
+mod keepalive_tests;
 mod model;
 #[cfg(test)]
 mod prefix_tests;
@@ -370,8 +372,8 @@ pub(crate) use self::types::StreamUsage;
 ///
 /// `configured` is the speed the request was sent with; it stands in when the response reports
 /// no `usage.speed` or one this build does not know.
-fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage, configured: ServiceSpeed) {
-    tracker.record(Some(ResponseUsage {
+fn response_usage_from_api(usage: &types::ApiUsage, configured: ServiceSpeed) -> ResponseUsage {
+    ResponseUsage {
         input: usage.input_tokens,
         output: usage.output_tokens,
         cache: Some(CacheUsage {
@@ -384,7 +386,11 @@ fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage, configured:
             .speed
             .and_then(types::ResponseSpeed::service_speed)
             .unwrap_or(configured),
-    }));
+    }
+}
+
+fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage, configured: ServiceSpeed) {
+    tracker.record(Some(response_usage_from_api(usage, configured)));
 }
 
 /// Record the usage a streamed response has reported so far, after `message_start` and again
@@ -2214,5 +2220,76 @@ impl LlmProvider for ClaudeProvider {
             tracing::debug!(summary = %parsed.log_summary(), "parsed ChatResponse");
             return Ok(parsed);
         }
+    }
+
+    #[tracing::instrument(
+        name = "llm.claude.keepalive",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier(), tool_count = req.tools.len())
+    )]
+    async fn keepalive_ping(
+        &self,
+        req: &crate::provider::KeepaliveRequest,
+    ) -> Result<crate::provider::KeepaliveOutcome, LlmError> {
+        use crate::provider::{KeepaliveOutcome, KeepaliveSkip};
+
+        let api_tools = self.get_or_build_api_tools(&req.tools);
+        let ThinkingRequest {
+            thinking: thinking_param,
+            temperature,
+            output_config,
+        } = self.thinking_request();
+        let max_tokens = crate::provider::keepalive_output_cap(
+            thinking_param.as_ref().and_then(|t| t.budget_tokens),
+        );
+        let GuardedHistory {
+            system, history, ..
+        } = self.guarded_history(&req.messages, thinking_param.as_ref(), &req.tools);
+        let body = ToolRequestBody {
+            model: &self.model,
+            max_tokens,
+            system,
+            messages: &history,
+            tools: &api_tools,
+            stream: false,
+            thinking: thinking_param,
+            output_config,
+            temperature,
+            context_management: self.context_management(),
+            speed: self.speed_wire(),
+        };
+        // Same conservative estimate as `cache_min_tokens` (1 token ~ 4 bytes).
+        let estimated_tokens = serde_json::to_vec(&body).map_or(0, |b| b.len() / 4);
+        if estimated_tokens < cache::cache_min_tokens(&self.model) {
+            return Ok(KeepaliveOutcome::Skipped(KeepaliveSkip::BelowMinCacheable));
+        }
+        let beta = self.beta_header(!req.tools.is_empty());
+        // No usage tracker, status channel or retries: a ping must leave no trace on the
+        // provider and the service owns back-off.
+        let response = send_with_retry("Claude", 0, None, None, || {
+            let mut http = self
+                .client
+                .post(&self.api_url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION);
+            if let Some(ref b) = beta {
+                http = http.header("anthropic-beta", b);
+            }
+            http.header("content-type", "application/json")
+                .json(&body)
+                .send()
+        })
+        .await?;
+        let (status, text) = crate::http::read_response_body(response).await?;
+        if !status.is_success() {
+            crate::http::log_api_error_body("claude", status, &text);
+            return Err(claude_error(status, &text));
+        }
+        let resp: ToolApiResponse = serde_json::from_str(&text)?;
+        let usage = resp
+            .usage
+            .as_ref()
+            .map_or_default(|u| response_usage_from_api(u, self.effective_speed()));
+        Ok(KeepaliveOutcome::Pinged(usage))
     }
 }

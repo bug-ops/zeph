@@ -69,6 +69,12 @@ impl Channel for AppChannel {
     ) -> Result<ElicitationResponse, ChannelError> {
         dispatch_app_channel!(self, elicit, request)
     }
+    async fn ask_user(
+        &mut self,
+        request: zeph_core::channel::AskUserRequest,
+    ) -> Result<zeph_core::channel::AskUserOutcome, ChannelError> {
+        dispatch_app_channel!(self, ask_user, request)
+    }
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         match self {
             Self::Standard(c) => c.try_recv(),

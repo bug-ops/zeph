@@ -27,14 +27,15 @@ pub use features::{
     migrate_autodream_config, migrate_caveman_config, migrate_compression_predictor_config,
     migrate_correction_confidence_calibration, migrate_deep_link_config,
     migrate_five_signal_config, migrate_goals_auto_check, migrate_goals_config,
-    migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
-    migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
-    migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
-    migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
-    migrate_rate_limit_advisory, migrate_skill_state_config, migrate_skill_trust_require_check,
-    migrate_skills_registry, migrate_telegram_allowed_user_ids,
-    migrate_telegram_expandable_blockquote_config, migrate_tui_delights, migrate_tui_mouse,
-    migrate_tui_panel_sizing, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_interaction_config, migrate_knowledge_config, migrate_magic_docs_config,
+    migrate_microcompact_config, migrate_orchestration_asset_sensitivity,
+    migrate_orchestration_command_config, migrate_orchestration_ensemble,
+    migrate_orchestration_idle_timeout, migrate_orchestration_persistence,
+    migrate_orchestration_whole_plan_verifier_timeout, migrate_rate_limit_advisory,
+    migrate_skill_state_config, migrate_skill_trust_require_check, migrate_skills_registry,
+    migrate_telegram_allowed_user_ids, migrate_telegram_expandable_blockquote_config,
+    migrate_tui_delights, migrate_tui_mouse, migrate_tui_panel_sizing, migrate_tui_theme_config,
+    migrate_tui_theme_defaults,
 };
 /// Crate-internal: re-exported only so `migrate/tests.rs` can reach it via `super::*`.
 #[cfg(test)]
@@ -797,15 +798,16 @@ use steps::{
     MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
     MigrateGoalsAutoCheck, MigrateGoalsConfig, MigrateGonkagateToGonka,
     MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateIntegrityConfig,
-    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig,
-    MigrateMemoryContextLayout, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
-    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
-    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
-    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig,
-    MigrateMemoryStoreMaxNamespaceRows, MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig,
-    MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
+    MigrateInteractionConfig, MigrateKnowledgeConfig, MigrateLlmStreamLimits,
+    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
+    MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
+    MigrateMemoryConsentGateConfig, MigrateMemoryContextLayout, MigrateMemoryGraph,
+    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryStoreMaxNamespaceRows,
+    MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig, MigrateNliConfig,
+    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
     MigrateOrchestrationEnsemble, MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
     MigrateOrchestrationWholePlanVerifierTimeout, MigrateOrchestratorProvider, MigrateOtelFilter,
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
@@ -1076,6 +1078,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateClaudeSpeed),
             // Step 117 — add a commented [acp.ide_mcp] grants and cap block (#7081, #7082)
             Box::new(MigrateAcpIdeMcpConfig),
+            // Step 118 — add advisory [tools.ask_user] and [llm.cache_keepalive] blocks
+            // (specs 090 / 091)
+            Box::new(MigrateInteractionConfig),
         ]
     });
 

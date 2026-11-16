@@ -204,20 +204,36 @@ fn sanitize_field_name(s: &str) -> String {
     sanitize_field_value(s)
 }
 
+/// Rows `text` occupies when wrapped at `width` columns (blank lines count as one row).
+fn wrapped_rows(text: &str, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    let rows: usize = text
+        .split('\n')
+        .map(|line| line.chars().count().max(1).div_ceil(width))
+        .sum();
+    u16::try_from(rows).unwrap_or(u16::MAX)
+}
+
 /// Render the elicitation modal dialog over the full screen area.
 pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, theme: &Theme) {
     let n_fields = state.request.fields.len();
 
-    // Height: 2 (borders) + 1 (title) + 1 (message) + 1 (blank) + n*2 (fields) + 2 (buttons)
+    // The message gets as many rows as its wrapped text needs (at least 2), so a long header
+    // line cannot push the question and the option list out of view.
+    let message = sanitize_field_value(&state.request.message);
+    let inner_width = centered_rect(70, 1, area).width.saturating_sub(2);
+    let message_rows = wrapped_rows(&message, inner_width).max(2);
+
+    // Height: 2 (borders) + 1 (title) + message + 1 (blank) + n*2 (fields) + 2 (buttons)
     let max_height = area.height.saturating_sub(2);
     #[allow(clippy::cast_possible_truncation)]
-    let height = ((8 + n_fields * 2) as u16).min(max_height);
+    let height = ((6 + message_rows as usize + n_fields * 2) as u16).min(max_height);
     let popup = centered_rect(70, height, area);
 
     frame.render_widget(Clear, popup);
 
     let server_name = sanitize_field_value(&state.request.server_name);
-    let title = format!(" MCP Elicitation: {server_name} ");
+    let title = format!(" Elicitation: {server_name} ");
 
     let outer_block = Block::default()
         .borders(Borders::ALL)
@@ -235,16 +251,15 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, the
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),       // server message
-            Constraint::Length(1),       // blank
-            Constraint::Min(field_rows), // fields
-            Constraint::Length(1),       // blank
-            Constraint::Length(1),       // hint line
+            Constraint::Length(message_rows), // server message
+            Constraint::Length(1),            // blank
+            Constraint::Min(field_rows),      // fields
+            Constraint::Length(1),            // blank
+            Constraint::Length(1),            // hint line
         ])
         .split(inner);
 
     // Server message
-    let message = sanitize_field_value(&state.request.message);
     let msg_para = Paragraph::new(message.as_str())
         .style(theme.assistant_message)
         .wrap(Wrap { trim: false });
@@ -474,5 +489,34 @@ mod tests {
             super::render(&state, frame, area, &theme);
         });
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn wrapped_rows_counts_wrapping_and_blank_lines() {
+        assert_eq!(wrapped_rows("", 10), 1);
+        assert_eq!(wrapped_rows("0123456789", 10), 1);
+        assert_eq!(wrapped_rows("01234567890", 10), 2);
+        assert_eq!(wrapped_rows("a\n\nb", 10), 3);
+    }
+
+    #[test]
+    fn a_long_message_keeps_the_question_and_the_options_visible() {
+        use crate::test_utils::render_to_string;
+
+        let long_header = "Question from the assistant - never share passwords, API keys or other \
+                           secrets";
+        let req = ElicitationRequest {
+            server_name: "assistant question".to_owned(),
+            message: format!("{long_header}\n\nWhich color?\n1. red\n2. green"),
+            fields: vec![string_field("answer", true)],
+        };
+        let state = ElicitationDialogState::new(req);
+        let theme = crate::theme::Theme::default();
+        let output = render_to_string(100, 30, |frame, area| {
+            super::render(&state, frame, area, &theme);
+        });
+        for needle in ["Which color?", "1. red", "2. green"] {
+            assert!(output.contains(needle), "{needle} not visible:\n{output}");
+        }
     }
 }

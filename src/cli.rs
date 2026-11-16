@@ -185,6 +185,16 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "STRATEGY")]
     pub(crate) pruning_strategy: Option<zeph_core::config::PruningStrategy>,
 
+    /// Let the model ask clarifying questions for this session (the `ask_user` tool).
+    /// Overrides `tools.ask_user.enabled` from config.
+    #[arg(long)]
+    pub(crate) ask_user: bool,
+
+    /// Keep the provider prompt cache warm while idle for this session.
+    /// Overrides `llm.cache_keepalive.enabled` from config.
+    #[arg(long)]
+    pub(crate) cache_keepalive: bool,
+
     /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
     /// Requires a Claude provider. Overrides `llm.cloud.server_compaction` from config.
     #[arg(long)]
@@ -1623,6 +1633,14 @@ mod tests {
     fn cli_parses_no_sidequest_flag() {
         let cli = Cli::try_parse_from(["zeph", "--no-sidequest"]).unwrap();
         assert!(cli.no_sidequest);
+    }
+
+    #[test]
+    fn cli_parses_ask_user_and_cache_keepalive_flags() {
+        let off = Cli::try_parse_from(["zeph"]).unwrap();
+        assert!(!off.ask_user && !off.cache_keepalive);
+        let on = Cli::try_parse_from(["zeph", "--ask-user", "--cache-keepalive"]).unwrap();
+        assert!(on.ask_user && on.cache_keepalive);
     }
 
     #[test]

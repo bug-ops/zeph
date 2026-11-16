@@ -4,9 +4,11 @@
 mod acp_commands;
 mod agent_access_impl;
 pub(crate) mod agent_supervisor;
+mod ask_user;
 mod autodream;
 mod autonomous_turn;
 mod builder;
+mod cache_keepalive;
 pub use builder::{SecurityWiringSnapshot, SkillConfigParams};
 mod cocoon_cmd;
 mod command_context_impls;
@@ -365,6 +367,8 @@ impl<C: Channel> Agent<C> {
             metrics: MetricsState::new(token_counter),
             debug: DebugState::default(),
             instructions: InstructionState::default(),
+            ask_user: ask_user::AskUserState::default(),
+            cache_keepalive: cache_keepalive::KeepaliveRuntime::default(),
             ephemeral_plugins: Vec::new(),
         };
 
@@ -636,6 +640,7 @@ impl<C: Channel> Agent<C> {
                 metrics: &self.runtime.metrics,
                 security: &mut self.services.security,
                 tool_orchestrator: &mut self.tool_orchestrator,
+                keepalive: self.runtime.cache_keepalive.shared(),
             };
             // sink_adapter declared before reg so it is dropped after reg (LIFO).
             let mut sink_adapter = crate::channel::ChannelSinkAdapter(&mut self.channel);
@@ -841,6 +846,7 @@ impl<C: Channel> Agent<C> {
              through Agent::set_provider, never assign the field directly"
         );
         self.provider = provider;
+        self.keepalive_on_provider_change();
     }
 
     /// Poll all event sources and return the next [`LoopEvent`].
@@ -1062,6 +1068,8 @@ impl<C: Channel> Agent<C> {
         self.runtime.lifecycle.turn_llm_requests = 0;
         // Reset per-turn tool-call dispatch counter (feeds TurnSummary::tool_calls).
         self.runtime.lifecycle.turn_tool_calls = 0;
+        self.ask_user_on_turn_start();
+        self.keepalive_on_turn_start();
 
         // Spec 050 §2: drain pending risk signals from executor layers before advancing.
         // Also advance MAGE accumulator (spec 004-19 FR-009) and ingest mapped signals.

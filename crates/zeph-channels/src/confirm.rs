@@ -12,6 +12,15 @@
 use tokio::sync::mpsc;
 use zeph_core::channel::ChannelError;
 
+/// Outcome of [`ConfirmLoop::run_reply`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplyOutcome {
+    /// An in-scope reply, returned unchanged.
+    Text(String),
+    /// The incoming-message receiver closed before a reply arrived.
+    Closed,
+}
+
 /// Shared send-prompt-and-await-reply confirmation loop for channel adapters.
 ///
 /// Implementors must provide:
@@ -52,6 +61,32 @@ pub trait ConfirmLoop {
     /// Send the already-formatted prompt out on the channel.
     async fn confirm_send_prompt(&mut self, text: &str) -> Result<(), ChannelError>;
 
+    /// Send `prompt` once and wait for the next in-scope reply, with no deadline of its own.
+    ///
+    /// The caller owns the timeout; dropping the future abandons the wait. Out-of-scope
+    /// messages are ignored without returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if sending the prompt message fails.
+    async fn run_reply(&mut self, prompt: &str) -> Result<ReplyOutcome, ChannelError> {
+        let label = self.confirm_label();
+        self.confirm_send_prompt(prompt).await?;
+        loop {
+            let Some(incoming) = self.confirm_receiver().recv().await else {
+                tracing::warn!("{label} reply channel closed");
+                return Ok(ReplyOutcome::Closed);
+            };
+            if !self.confirm_accepts(&incoming) {
+                tracing::debug!(channel = label, "reply: ignoring out-of-scope message");
+                continue;
+            }
+            return Ok(ReplyOutcome::Text(
+                self.confirm_reply_text(&incoming).to_owned(),
+            ));
+        }
+    }
+
     /// Send `prompt` with a timeout suffix appended, then wait for a matching
     /// `"yes"` reply.
     ///
@@ -65,43 +100,20 @@ pub trait ConfirmLoop {
     /// Returns `Err` if sending the prompt message fails.
     async fn run_confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         let label = self.confirm_label();
-        self.confirm_send_prompt(&format!(
+        let prompt = format!(
             "{prompt}\nReply 'yes' to confirm (timeout: {}s).",
             crate::CONFIRM_TIMEOUT.as_secs()
-        ))
-        .await?;
-        let deadline = tokio::time::Instant::now() + crate::CONFIRM_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
+        );
+        match tokio::time::timeout(crate::CONFIRM_TIMEOUT, self.run_reply(&prompt)).await {
+            Ok(Ok(ReplyOutcome::Text(text))) => Ok(text.trim().eq_ignore_ascii_case("yes")),
+            Ok(Ok(ReplyOutcome::Closed)) => Ok(false),
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
                 tracing::warn!(
                     "{label} confirm timed out after {}s — denied",
                     crate::CONFIRM_TIMEOUT.as_secs()
                 );
-                return Ok(false);
-            }
-            match tokio::time::timeout(remaining, self.confirm_receiver().recv()).await {
-                Ok(Some(incoming)) => {
-                    if !self.confirm_accepts(&incoming) {
-                        tracing::debug!(channel = label, "confirm: ignoring out-of-scope message");
-                        continue;
-                    }
-                    return Ok(self
-                        .confirm_reply_text(&incoming)
-                        .trim()
-                        .eq_ignore_ascii_case("yes"));
-                }
-                Ok(None) => {
-                    tracing::warn!("{label} confirm channel closed — denying");
-                    return Ok(false);
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "{label} confirm timed out after {}s — denied",
-                        crate::CONFIRM_TIMEOUT.as_secs()
-                    );
-                    return Ok(false);
-                }
+                Ok(false)
             }
         }
     }

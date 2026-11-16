@@ -10,8 +10,8 @@ use std::assert_matches;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        117,
-        "MIGRATIONS registry must contain all 117 sequential steps"
+        118,
+        "MIGRATIONS registry must contain all 118 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2205,7 +2205,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 117);
+    assert_eq!(MIGRATIONS.len(), 118);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2434,9 +2434,70 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_telegram_allowed_user_ids",
         "migrate_claude_speed",
         "migrate_acp_ide_mcp_config",
+        "migrate_interaction_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
+}
+
+// ── migrate_interaction_config (specs 090 / 091) ──────────────────────────────────────────
+
+#[test]
+fn interaction_config_appends_both_commented_blocks_when_parents_present() {
+    let src = "[tools.shell]\ntimeout = 30\n\n[llm]\nrouting = \"none\"\n";
+    let result = migrate_interaction_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 2);
+    assert_eq!(
+        result.sections_changed,
+        vec!["tools.ask_user", "llm.cache_keepalive"]
+    );
+    assert!(result.output.contains("# [tools.ask_user]"));
+    assert!(result.output.contains("# [llm.cache_keepalive]"));
+    result
+        .output
+        .parse::<toml_edit::DocumentMut>()
+        .expect("output stays valid TOML");
+}
+
+#[test]
+fn interaction_config_noop_when_parents_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_interaction_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn interaction_config_noop_when_sections_already_active() {
+    let src = "[tools.ask_user]\nenabled = true\n\n[llm.cache_keepalive]\nenabled = true\n";
+    let result = migrate_interaction_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn interaction_config_idempotent_on_own_output() {
+    let src = "[tools.shell]\ntimeout = 30\n\n[llm]\nrouting = \"none\"\n";
+    let first = migrate_interaction_config(src).expect("first");
+    let second = migrate_interaction_config(&first.output).expect("second");
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn full_registry_adds_interaction_blocks_to_legacy_config() {
+    let mut current = "[tools.shell]\ntimeout = 30\n\n[llm]\nrouting = \"none\"\n".to_owned();
+    for m in MIGRATIONS.iter() {
+        current = m
+            .apply(&current)
+            .expect("registry migration must not fail")
+            .output;
+    }
+    assert!(current.contains("# [tools.ask_user]"), "got: {current}");
+    assert!(
+        current.contains("# [llm.cache_keepalive]"),
+        "got: {current}"
+    );
 }
 
 // ── migrate_trace_metadata tests (#4160) ─────────────────────────────────

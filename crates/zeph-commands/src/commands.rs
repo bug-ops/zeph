@@ -182,6 +182,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/keepalive",
+        args: "[on|off|status]",
+        description: "Show or switch the prompt-cache keepalive for this session (session-only, not persisted). Examples: `/keepalive on`, `/keepalive status`",
+        category: SlashCategory::Configuration,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/reasoning-effort",
         args: "[low|medium|high]",
         description: "Show or set the active provider's runtime reasoning-effort level (session-only, not persisted). Example: `/reasoning-effort high`",
@@ -445,7 +452,23 @@ pub const COMMANDS: &[CommandInfo] = &[
 /// process — remote code execution if reachable from an untrusted caller, #5904 CRITICAL-2).
 const UNGATED_DISPATCH_COMMANDS: &[&str] = &["/subagent"];
 
-fn matches_command_name(trimmed: &str, name: &str) -> bool {
+/// Returns `true` when `trimmed` is exactly the command `name`, or `name` followed by a space
+/// and arguments; never a prefix or substring match.
+///
+/// This is the single matching rule shared by [`crate::CommandRegistry::find_handler`] and
+/// callers that must recognise a command in raw text without a live registry.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_commands::matches_command_name;
+///
+/// assert!(matches_command_name("/status", "/status"));
+/// assert!(matches_command_name("/skill create x", "/skill"));
+/// assert!(!matches_command_name("/skills", "/skill"));
+/// ```
+#[must_use]
+pub fn matches_command_name(trimmed: &str, name: &str) -> bool {
     trimmed == name
         || trimmed
             .strip_prefix(name)

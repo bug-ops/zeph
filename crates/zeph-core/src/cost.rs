@@ -357,6 +357,55 @@ impl CostTracker {
         );
     }
 
+    /// Record the usage of a prompt-cache keepalive ping and return its cost in cents.
+    ///
+    /// The tokens and cost count toward the provider totals and the daily spend, but a ping is
+    /// not a provider request, so `request_count` is unchanged. Returns `0.0` when cost
+    /// tracking is disabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_core::cost::CostTracker;
+    /// use zeph_llm::provider::{CacheUsage, ResponseUsage};
+    ///
+    /// let tracker = CostTracker::new(true, 0.0);
+    /// let usage = ResponseUsage {
+    ///     cache: Some(CacheUsage { creation: 0, read: 10_000 }),
+    ///     ..ResponseUsage::default()
+    /// };
+    /// let cents = tracker.record_keepalive_usage("claude", "cloud", "claude-sonnet-4-6", usage);
+    /// assert!(cents > 0.0);
+    /// assert!((tracker.current_spend() - cents).abs() < 1e-9);
+    /// ```
+    pub fn record_keepalive_usage(
+        &self,
+        provider_name: &str,
+        provider_kind: &str,
+        model: &str,
+        usage: zeph_llm::provider::ResponseUsage,
+    ) -> f64 {
+        if !self.enabled {
+            return 0.0;
+        }
+        let cache = usage.cache.unwrap_or_default();
+        let tokens = UsageTokens {
+            input: usage.input,
+            cache_read: cache.read,
+            cache_write: cache.creation,
+            output: usage.output,
+        };
+        self.add_usage(provider_name, provider_kind, model, tokens, usage.speed, 0);
+        self.price_of(
+            model,
+            tokens.input,
+            tokens.cache_read,
+            tokens.cache_write,
+            tokens.output,
+            usage.speed,
+        )
+    }
+
     /// Shared body of [`Self::record_usage`] and [`Self::record_auxiliary_usage`].
     fn add_usage(
         &self,
@@ -511,6 +560,45 @@ mod tests {
         // 0.25 + 1.0 = 1.25
         let spend = tracker.current_spend();
         assert!((spend - 1.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn keepalive_usage_counts_toward_spend_but_not_request_count() {
+        use zeph_llm::provider::{CacheUsage, ResponseUsage};
+
+        let tracker = CostTracker::new(true, 1000.0);
+        let usage = ResponseUsage {
+            input: 10,
+            output: 1,
+            cache: Some(CacheUsage {
+                creation: 0,
+                read: 10_000,
+            }),
+            ..ResponseUsage::default()
+        };
+        let cost = tracker.record_keepalive_usage("claude", "cloud", "claude-sonnet-4-6", usage);
+        assert!(cost > 0.0);
+        assert!((tracker.current_spend() - cost).abs() < 1e-9);
+        let breakdown = tracker.provider_breakdown();
+        let (_, claude) = breakdown.iter().find(|(n, _)| n == "claude").unwrap();
+        assert_eq!(claude.request_count, 0);
+        assert_eq!(claude.cache_read_tokens, 10_000);
+    }
+
+    #[test]
+    fn keepalive_usage_is_free_when_cost_tracking_is_disabled() {
+        let tracker = CostTracker::new(false, 0.0);
+        let usage = zeph_llm::provider::ResponseUsage {
+            input: 1_000,
+            ..zeph_llm::provider::ResponseUsage::default()
+        };
+        assert!(
+            tracker
+                .record_keepalive_usage("claude", "cloud", "claude-sonnet-4-6", usage)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(tracker.current_spend().abs() < f64::EPSILON);
     }
 
     #[test]

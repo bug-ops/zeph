@@ -41,6 +41,8 @@
 - [IDE Integration](guides/ide-integration.md)
 - [Set Up Semantic Memory](guides/semantic-memory.md)
 - [Enable Self-Learning Skills](guides/self-learning.md)
+- [Let the Model Ask You Questions](guides/ask-user.md)
+- [Keep the Prompt Cache Warm](guides/cache-keepalive.md)
 - [Migrate Config](guides/migrate-config.md)
 - [Deploy with Docker](guides/docker.md)
 - [Daemon Mode](guides/daemon-mode.md)

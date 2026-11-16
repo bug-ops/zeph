@@ -301,6 +301,10 @@ pub struct LlmConfig {
     /// keeps pre-existing behavior.
     #[serde(default, skip_serializing_if = "stream_limits_is_default")]
     pub stream_limits: StreamLimits,
+
+    /// Prompt-cache keepalive service (`[llm.cache_keepalive]`). Disabled by default.
+    #[serde(default)]
+    pub cache_keepalive: crate::cache_keepalive::CacheKeepaliveConfig,
 }
 
 fn default_embedding_model_opt() -> String {

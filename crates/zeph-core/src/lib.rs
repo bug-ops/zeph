@@ -73,6 +73,7 @@ pub mod agent;
 #[cfg(feature = "profiling-alloc")]
 pub mod alloc_layer;
 pub mod anchor_store;
+pub mod cache_keepalive;
 pub mod channel;
 pub mod config;
 pub mod config_watcher;
@@ -86,6 +87,7 @@ pub mod goal;
 pub mod history_integrity;
 pub mod instructions;
 pub mod instrumented_channel;
+mod interaction_config;
 pub mod metrics;
 #[cfg(feature = "profiling")]
 pub mod metrics_bridge;
@@ -131,6 +133,7 @@ pub use channel::{
     ToolStartEvent,
 };
 pub use config::{Config, ConfigError};
+pub use interaction_config::InteractionConfig;
 pub use runtime_context::RuntimeContext;
 pub use skill_invoker::{InvokeSkillParams, SkillInvokeExecutor, SkillTrustSnapshot};
 pub use skill_loader::SkillLoaderExecutor;

@@ -103,22 +103,22 @@ use super::{
     migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_auto_check,
     migrate_goals_config, migrate_hooks_permission_denied_config,
-    migrate_hooks_turn_complete_config, migrate_integrity_config, migrate_knowledge_config,
-    migrate_llm_stream_limits, migrate_magic_docs_config, migrate_mcp_elicitation_config,
-    migrate_mcp_max_connect_attempts, migrate_mcp_media_config, migrate_mcp_retry_and_tool_timeout,
-    migrate_mcp_trust_levels, migrate_memory_consent_gate_config, migrate_memory_context_layout,
-    migrate_memory_graph_config, migrate_memory_graph_recall_include_imported,
-    migrate_memory_hebbian_config, migrate_memory_hebbian_consolidation_config,
-    migrate_memory_hebbian_spread_config, migrate_memory_persona_config,
-    migrate_memory_reasoning_config, migrate_memory_reasoning_judge_config,
-    migrate_memory_retrieval_config, migrate_memory_retrieval_query_bias,
-    migrate_memory_store_config, migrate_memory_store_max_namespace_rows,
-    migrate_memory_type_aware_compose_config, migrate_microcompact_config, migrate_nli_config,
-    migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
-    migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
-    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
-    migrate_orchestration_whole_plan_verifier_timeout, migrate_otel_filter,
-    migrate_overflow_max_per_call_override, migrate_pii_filter_names,
+    migrate_hooks_turn_complete_config, migrate_integrity_config, migrate_interaction_config,
+    migrate_knowledge_config, migrate_llm_stream_limits, migrate_magic_docs_config,
+    migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts, migrate_mcp_media_config,
+    migrate_mcp_retry_and_tool_timeout, migrate_mcp_trust_levels,
+    migrate_memory_consent_gate_config, migrate_memory_context_layout, migrate_memory_graph_config,
+    migrate_memory_graph_recall_include_imported, migrate_memory_hebbian_config,
+    migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
+    migrate_memory_persona_config, migrate_memory_reasoning_config,
+    migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
+    migrate_memory_retrieval_query_bias, migrate_memory_store_config,
+    migrate_memory_store_max_namespace_rows, migrate_memory_type_aware_compose_config,
+    migrate_microcompact_config, migrate_nli_config, migrate_orchestration_asset_sensitivity,
+    migrate_orchestration_command_config, migrate_orchestration_ensemble,
+    migrate_orchestration_idle_timeout, migrate_orchestration_orchestrator_provider,
+    migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
+    migrate_otel_filter, migrate_overflow_max_per_call_override, migrate_pii_filter_names,
     migrate_planner_model_to_provider, migrate_plugins_reputation_config,
     migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_qdrant_timeout_secs, migrate_quality_config,
@@ -1510,5 +1510,18 @@ impl Migration for MigrateClaudeSpeed {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_claude_speed(toml_src)
+    }
+}
+
+/// Step 118 — add advisory `[tools.ask_user]` and `[llm.cache_keepalive]` blocks
+/// (specs 090 / 091).
+pub(super) struct MigrateInteractionConfig;
+impl Migration for MigrateInteractionConfig {
+    fn name(&self) -> &'static str {
+        "migrate_interaction_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_interaction_config(toml_src)
     }
 }
