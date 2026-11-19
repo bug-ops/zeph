@@ -195,7 +195,13 @@ impl Ibct {
     /// # Errors
     ///
     /// Returns `IbctError::FeatureDisabled` when compiled without the `ibct` feature.
-    #[allow(clippy::needless_return)]
+    #[cfg_attr(
+        not(feature = "ibct"),
+        expect(
+            clippy::needless_return,
+            reason = "The disabled-feature branch returns an error before the enabled implementation."
+        )
+    )]
     pub fn issue(
         task_id: &str,
         endpoint: &str,
@@ -238,7 +244,13 @@ impl Ibct {
     /// # Errors
     ///
     /// Returns one of `IbctError::*` on any verification failure.
-    #[allow(clippy::needless_return)]
+    #[cfg_attr(
+        not(feature = "ibct"),
+        expect(
+            clippy::needless_return,
+            reason = "The disabled-feature branch returns an error before the enabled implementation."
+        )
+    )]
     pub fn verify(
         &self,
         keys: &[IbctKey],

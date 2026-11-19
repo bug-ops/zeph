@@ -23,7 +23,9 @@ fn subagent_spawn_empty_command_invalid_config() {
     );
 }
 
-#[allow(unsafe_code)]
+#[expect(unsafe_code,
+    reason = "This test exercises Rust 2024 environment mutation and restores the prior value afterward."
+)]
 #[tokio::test]
 async fn subagent_env_isolation() {
     use tokio::io::{AsyncReadExt, BufReader};

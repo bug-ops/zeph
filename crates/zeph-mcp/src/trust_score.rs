@@ -1,11 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-#[allow(unused_imports)]
-use zeph_db::sql;
-
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zeph_db::DbPool;
 
 use crate::manager::McpTrustLevel;
@@ -165,7 +162,7 @@ impl TrustScoreStore {
         // success_count/failure_count are INTEGER (INT4) in the Postgres schema
         // (migration 052_mcp_trust_scores.sql); sqlx-postgres rejects decoding INT4
         // directly into i64 (`ColumnDecode`), so they must be read as i32.
-        let row: Option<(String, f64, i32, i32, i64)> = zeph_db::query_as(sql!(
+        let row: Option<(String, f64, i32, i32, i64)> = zeph_db::query_as(zeph_db::sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
              FROM mcp_trust_scores WHERE server_id = ?"
         ))
@@ -190,7 +187,7 @@ impl TrustScoreStore {
 
         if (entry.score - score_before).abs() > f64::EPSILON {
             let now = i64::try_from(entry.updated_at_secs).unwrap_or(i64::MAX);
-            zeph_db::query(sql!(
+            zeph_db::query(zeph_db::sql!(
                 "UPDATE mcp_trust_scores SET score = ?, updated_at_secs = ? WHERE server_id = ?"
             ))
             .bind(entry.score)
@@ -315,7 +312,7 @@ impl TrustScoreStore {
         // success_count/failure_count are INTEGER (INT4) in the Postgres schema
         // (migration 052_mcp_trust_scores.sql); sqlx-postgres rejects decoding INT4
         // directly into i64 (`ColumnDecode`), so they must be read as i32 (see `load()`).
-        let rows: Vec<(String, f64, i32, i32, i64)> = zeph_db::query_as(sql!(
+        let rows: Vec<(String, f64, i32, i32, i64)> = zeph_db::query_as(zeph_db::sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
              FROM mcp_trust_scores"
         ))
@@ -579,7 +576,7 @@ mod tests {
         // Insert a score above INITIAL_SCORE with a timestamp 10 days in the past.
         let old_ts = unix_now().saturating_sub(10 * 86_400);
         zeph_db::query(
-            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+            zeph_db::sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, 0, 0, ?)"),
         )
         .bind("srv1")
@@ -594,7 +591,7 @@ mod tests {
         assert!(first.score < 0.9, "score should have decayed on load");
 
         // Read the raw DB row to confirm the persisted value changed.
-        let (db_score, db_ts): (f64, i64) = zeph_db::query_as(sql!(
+        let (db_score, db_ts): (f64, i64) = zeph_db::query_as(zeph_db::sql!(
             "SELECT score, updated_at_secs FROM mcp_trust_scores WHERE server_id = ?"
         ))
         .bind("srv1")
@@ -631,7 +628,7 @@ mod tests {
         // Insert a score at or below INITIAL_SCORE — no decay should trigger.
         let now_ts = unix_now();
         zeph_db::query(
-            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+            zeph_db::sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, 0, 0, ?)"),
         )
         .bind("srv1")
@@ -648,7 +645,7 @@ mod tests {
         );
 
         // updated_at_secs in DB should remain approximately the same (no write occurred).
-        let (db_ts,): (i64,) = zeph_db::query_as(sql!(
+        let (db_ts,): (i64,) = zeph_db::query_as(zeph_db::sql!(
             "SELECT updated_at_secs FROM mcp_trust_scores WHERE server_id = ?"
         ))
         .bind("srv1")
@@ -671,7 +668,7 @@ mod tests {
         // Insert score=0.8 with timestamp 10 days ago.
         let old_ts = unix_now().saturating_sub(10 * 86_400);
         zeph_db::query(
-            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+            zeph_db::sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, 0, 0, ?)"),
         )
         .bind("srv1")
@@ -775,7 +772,7 @@ mod tests {
         // Insert a high score with an old timestamp (simulate 30 days ago).
         let old_ts = unix_now().saturating_sub(30 * 86_400);
         zeph_db::query(
-            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+            zeph_db::sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, 0.9, 0, 0, ?)"),
         )
         .bind("srv1")
@@ -821,7 +818,7 @@ mod tests {
         // Insert a score above INITIAL_SCORE with a timestamp exactly 5 days in the past.
         let old_ts = i64::try_from(unix_now().saturating_sub(5 * 86_400)).unwrap();
         zeph_db::query(
-            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+            zeph_db::sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, 0.8, 0, 0, ?)"),
         )
         .bind("srv1")
@@ -836,7 +833,7 @@ mod tests {
 
         // Read the raw row back directly — NOT via `load()`, which would apply its own
         // separate Rust-side decay pass on top and defeat the purpose of this test.
-        let (db_score, db_ts): (f64, i64) = zeph_db::query_as(sql!(
+        let (db_score, db_ts): (f64, i64) = zeph_db::query_as(zeph_db::sql!(
             "SELECT score, updated_at_secs FROM mcp_trust_scores WHERE server_id = ?"
         ))
         .bind("srv1")

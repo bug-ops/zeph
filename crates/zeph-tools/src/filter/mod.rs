@@ -42,7 +42,10 @@ pub struct FilterResult {
 
 impl FilterResult {
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+    )]
     pub fn savings_pct(&self) -> f64 {
         if self.raw_chars == 0 {
             return 0.0;
@@ -233,7 +236,10 @@ impl FilterMetrics {
     }
 
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+    )]
     pub fn savings_pct(&self) -> f64 {
         if self.raw_chars_total == 0 {
             return 0.0;

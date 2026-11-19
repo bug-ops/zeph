@@ -524,7 +524,10 @@ mod tests {
         {
             std::future::ready(Ok(None))
         }
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "The implemented trait requires an async method even though this implementation completes immediately."
+        )]
         async fn execute_tool_call(
             &self,
             call: &ToolCall,
@@ -544,7 +547,10 @@ mod tests {
                 ..Default::default()
             }))
         }
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "The implemented trait requires an async method even though this implementation completes immediately."
+        )]
         async fn execute_tool_call_confirmed(
             &self,
             call: &ToolCall,

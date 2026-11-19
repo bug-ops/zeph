@@ -290,8 +290,7 @@ impl ToolExecutor for WebScrapeExecutor {
         }
 
         let mut outputs = Vec::with_capacity(blocks.len());
-        #[allow(clippy::cast_possible_truncation)]
-        let blocks_executed = blocks.len() as u32;
+        let blocks_executed = u32::try_from(blocks.len()).unwrap_or(u32::MAX);
 
         for block in &blocks {
             let instruction: ScrapeInstruction = serde_json::from_str(block).map_err(|e| {
@@ -305,8 +304,7 @@ impl ToolExecutor for WebScrapeExecutor {
             let scrape_result = self
                 .scrape_instruction(&instruction, &correlation_id, &CallAttribution::default())
                 .await;
-            #[allow(clippy::cast_possible_truncation)]
-            let duration_ms = start.elapsed().as_millis() as u64;
+            let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             match scrape_result {
                 Ok(output) => {
                     self.log_audit(
@@ -366,8 +364,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 let result = self
                     .scrape_instruction(&instruction, &correlation_id, call.attribution())
                     .await;
-                #[allow(clippy::cast_possible_truncation)]
-                let duration_ms = start.elapsed().as_millis() as u64;
+                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 self.run_with_audit(
                     WEB_SCRAPE_ID,
                     WEB_SCRAPE_OUTPUT_NAME,
@@ -386,8 +383,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 let result = self
                     .handle_fetch(&p, &correlation_id, call.attribution())
                     .await;
-                #[allow(clippy::cast_possible_truncation)]
-                let duration_ms = start.elapsed().as_millis() as u64;
+                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 self.run_with_audit(
                     FETCH_ID,
                     FETCH_ID,
@@ -423,7 +419,10 @@ fn tool_error_to_audit_result(e: &ToolError) -> AuditResult {
 }
 
 impl WebScrapeExecutor {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+    )]
     async fn run_with_audit(
         &self,
         audit_tool_name: &str,
@@ -477,7 +476,10 @@ impl WebScrapeExecutor {
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "function with many required inputs; a *Params struct would be more verbose without simplifying the call site"
+    )]
     async fn log_audit(
         &self,
         tool: &str,
@@ -750,7 +752,10 @@ impl WebScrapeExecutor {
     ///
     /// Returns `ToolError::Blocked` if any redirect target resolves to a private IP.
     /// Returns `ToolError::Execution` on HTTP errors, too-large bodies, or too many redirects.
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This function keeps one cohesive protocol flow together; splitting it would obscure the control flow."
+    )]
     async fn fetch_html(
         &self,
         url: &str,
@@ -780,8 +785,8 @@ impl WebScrapeExecutor {
                 Ok(r) => r,
                 Err(e) => {
                     if self.egress_config.enabled {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let duration_ms = hop_start.elapsed().as_millis() as u64;
+                        let duration_ms =
+                            u64::try_from(hop_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                         let event = EgressEvent {
                             timestamp: chrono_now(),
                             kind: "egress",
@@ -796,7 +801,10 @@ impl WebScrapeExecutor {
                             blocked: false,
                             block_reason: None,
                             attribution: attribution.clone(),
-                            #[allow(clippy::cast_possible_truncation)]
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "The redirect loop caps hop at MAX_REDIRECTS (3), which fits in u8."
+                            )]
                             hop: hop as u8,
                         };
                         self.log_egress_event(&event).await;
@@ -832,8 +840,8 @@ impl WebScrapeExecutor {
                 let validated = validate_url(next_url.as_str());
                 if let Err(ref _e) = validated {
                     if self.egress_config.enabled && self.egress_config.log_blocked {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let duration_ms = hop_start.elapsed().as_millis() as u64;
+                        let duration_ms =
+                            u64::try_from(hop_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                         let next_host = next_url.host_str().unwrap_or("").to_owned();
                         let event = EgressEvent {
                             timestamp: chrono_now(),
@@ -849,7 +857,10 @@ impl WebScrapeExecutor {
                             blocked: true,
                             block_reason: Some("ssrf"),
                             attribution: attribution.clone(),
-                            #[allow(clippy::cast_possible_truncation)]
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "The redirect loop caps hop at MAX_REDIRECTS (3), which fits in u8."
+                            )]
                             hop: (hop + 1) as u8,
                         };
                         self.log_egress_event(&event).await;
@@ -860,8 +871,8 @@ impl WebScrapeExecutor {
                 let resolve_result = resolve_and_validate(&validated).await;
                 if let Err(ref _e) = resolve_result {
                     if self.egress_config.enabled && self.egress_config.log_blocked {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let duration_ms = hop_start.elapsed().as_millis() as u64;
+                        let duration_ms =
+                            u64::try_from(hop_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                         let next_host = next_url.host_str().unwrap_or("").to_owned();
                         let event = EgressEvent {
                             timestamp: chrono_now(),
@@ -877,7 +888,10 @@ impl WebScrapeExecutor {
                             blocked: true,
                             block_reason: Some("ssrf"),
                             attribution: attribution.clone(),
-                            #[allow(clippy::cast_possible_truncation)]
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "The redirect loop caps hop at MAX_REDIRECTS (3), which fits in u8."
+                            )]
                             hop: (hop + 1) as u8,
                         };
                         self.log_egress_event(&event).await;
@@ -894,8 +908,8 @@ impl WebScrapeExecutor {
 
             if !status.is_success() {
                 if self.egress_config.enabled {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let duration_ms = hop_start.elapsed().as_millis() as u64;
+                    let duration_ms =
+                        u64::try_from(hop_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     let event = EgressEvent {
                         timestamp: chrono_now(),
                         kind: "egress",
@@ -910,7 +924,10 @@ impl WebScrapeExecutor {
                         blocked: false,
                         block_reason: None,
                         attribution: attribution.clone(),
-                        #[allow(clippy::cast_possible_truncation)]
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "The redirect loop caps hop at MAX_REDIRECTS (3), which fits in u8."
+                        )]
                         hop: hop as u8,
                     };
                     self.log_egress_event(&event).await;
@@ -925,8 +942,8 @@ impl WebScrapeExecutor {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     if matches!(e, BodyReadError::TooLarge { .. }) && self.egress_config.enabled {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let duration_ms = hop_start.elapsed().as_millis() as u64;
+                        let duration_ms =
+                            u64::try_from(hop_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                         let event = EgressEvent {
                             timestamp: chrono_now(),
                             kind: "egress",
@@ -941,7 +958,10 @@ impl WebScrapeExecutor {
                             blocked: false,
                             block_reason: None,
                             attribution: attribution.clone(),
-                            #[allow(clippy::cast_possible_truncation)]
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "The redirect loop caps hop at MAX_REDIRECTS (3), which fits in u8."
+                            )]
                             hop: hop as u8,
                         };
                         self.log_egress_event(&event).await;
@@ -952,8 +972,8 @@ impl WebScrapeExecutor {
 
             // Success — emit egress event.
             if self.egress_config.enabled {
-                #[allow(clippy::cast_possible_truncation)]
-                let duration_ms = hop_start.elapsed().as_millis() as u64;
+                let duration_ms =
+                    u64::try_from(hop_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let response_bytes = if self.egress_config.log_response_bytes {
                     bytes.len()
                 } else {
@@ -973,7 +993,10 @@ impl WebScrapeExecutor {
                     blocked: false,
                     block_reason: None,
                     attribution: attribution.clone(),
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "The redirect loop caps hop at MAX_REDIRECTS (3), which fits in u8."
+                    )]
                     hop: hop as u8,
                 };
                 self.log_egress_event(&event).await;

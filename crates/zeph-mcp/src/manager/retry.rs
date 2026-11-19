@@ -160,7 +160,10 @@ where
 ///
 /// This is a thin shim over [`retry_loop`] that binds [`connect_entry`] as the attempt
 /// function. `add_server` uses [`connect_entry`] directly (single-attempt, no retry).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+)]
 #[tracing::instrument(name = "mcp.manager.connect_with_retry", skip_all, fields(server_id = %entry.id), err)]
 pub(super) async fn connect_with_retry(
     entry: &ServerEntry,
@@ -199,8 +202,6 @@ pub(super) async fn connect_with_retry(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
-// function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 #[tracing::instrument(name = "mcp.manager.connect_entry", skip_all, fields(server_id = %entry.id), err)]
 pub(super) async fn connect_entry(
     entry: &ServerEntry,

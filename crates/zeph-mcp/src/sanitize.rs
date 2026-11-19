@@ -382,7 +382,10 @@ fn sanitize_schema_value_tracked(
 /// with the same `max_description_bytes` that was used at startup.
 // complex algorithm function coordinating description/schema sanitization, depth-cap
 // drop bookkeeping, and cross-tool-reference detection; not in scope to decompose here.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This function keeps one cohesive protocol flow together; splitting it would obscure the control flow."
+)]
 pub fn sanitize_tools(
     tools: &mut [McpTool],
     server_id: &str,

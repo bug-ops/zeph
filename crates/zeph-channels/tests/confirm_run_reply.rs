@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "This integration test uses unwraps to keep setup and assertion failures concise."
+)]
 
 //! Acceptance tests (tests-first) for `ConfirmLoop::run_reply` (plan r2 Track A, M4') and the
 //! guarantee that `run_confirm` keeps its spec-007 behaviour on top of it.
@@ -41,7 +44,10 @@ impl ConfirmLoop for Fake {
         &incoming.text
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn confirm_send_prompt(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sent.push(text.to_owned());
         Ok(())

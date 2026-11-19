@@ -109,7 +109,10 @@ impl ToolExecutor for SetCwdExecutor {
     // Kept as a genuine `async fn` (never `std::future::ready`) so the mutation stays
     // lazy (poll-time), matching the pre-1.98 behavior and avoiding a select!-cancellation
     // hazard (see #6746).
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         if call.tool_id != TOOL_NAME {
             return Ok(None);

@@ -266,7 +266,10 @@ impl EmbeddingAnomalyGuard {
         //
         // NOTE: cold-start window is still exploitable if the attacker controls early samples.
         // This is a known limitation documented in the design; the fix targets steady-state drift.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+        )]
         let alpha = if entry.sample_count < self.min_samples {
             1.0 / (entry.sample_count as f32 + 1.0)
         } else {

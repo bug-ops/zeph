@@ -159,7 +159,10 @@ impl Channel for JsonCliChannel {
         false
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text });
         self.pending_chunks = true;
@@ -177,14 +180,20 @@ impl Channel for JsonCliChannel {
         std::future::ready(Ok(()))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text: chunk });
         self.pending_chunks = true;
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         if self.pending_chunks {
             self.sink.emit(&JsonEvent::ResponseEnd);
@@ -222,13 +231,19 @@ impl Channel for JsonCliChannel {
         std::future::ready(Ok(ElicitationResponse::Declined))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn send_notice(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::Status { message: text });
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn send_status(&mut self, text: &StatusText) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::Status {
             message: text.as_str(),
@@ -236,13 +251,19 @@ impl Channel for JsonCliChannel {
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn clear_status(&mut self) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::Status { message: "" });
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
         if count == self.last_queue_count {
             return Ok(());
@@ -271,7 +292,10 @@ impl Channel for JsonCliChannel {
         std::future::ready(Ok(()))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn send_stop_hint(&mut self, hint: StopHint) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::Status {
             message: &format!("stop_hint: {hint:?}"),

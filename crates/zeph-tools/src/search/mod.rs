@@ -239,7 +239,6 @@ impl WebSearchExecutor {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn log_audit(
         &self,
         command: &str,
@@ -433,7 +432,7 @@ impl WebSearchExecutor {
     /// Split out from [`handle_search`](Self::handle_search) so it can be tested directly
     /// against a local mock server — mirroring `WebScrapeExecutor::fetch_html`, which takes
     /// pre-resolved `(host, addrs)` for the same reason.
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // mirrors scrape.rs's fetch_html: one exit-point-per-EgressEvent flow
+    // Mirrors scrape.rs's fetch_html: one exit-point-per-EgressEvent flow.
     #[tracing::instrument(name = "tools.search.issue_request", skip(self, addrs, params, attribution), fields(host = %host))]
     async fn issue_search(
         &self,
@@ -460,8 +459,7 @@ impl WebSearchExecutor {
         )
         .await;
 
-        #[allow(clippy::cast_possible_truncation)]
-        let duration_ms = hop_start.elapsed().as_millis() as u64;
+        let duration_ms = u64::try_from(hop_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         let results = match search_result {
             Err(_elapsed) => {
@@ -666,8 +664,7 @@ impl ToolExecutor for WebSearchExecutor {
         let result = self
             .handle_search(&params, &correlation_id, call.attribution())
             .await;
-        #[allow(clippy::cast_possible_truncation)]
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         match result {
             Ok((summary, raw_response)) => {

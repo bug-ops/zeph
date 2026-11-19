@@ -487,7 +487,10 @@ pub(crate) struct BashParams {
 /// # }
 /// ```
 #[derive(Debug)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These booleans are independent configuration switches and do not form one mutually exclusive state."
+)]
 pub struct ShellExecutor {
     timeout: Duration,
     policy: Arc<ArcSwap<ShellPolicy>>,
@@ -576,7 +579,13 @@ pub(crate) struct ResolvedContext {
     pub(crate) name: Option<String>,
     /// Whether the context originated from a trusted source (operator TOML).
     /// Reserved for future audit log enrichment.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "This context field is reserved for audit enrichment."
+        )
+    )]
     pub(crate) trusted: bool,
 }
 
@@ -824,8 +833,7 @@ impl ShellExecutor {
         let runs = self.background_runs.lock();
         runs.iter()
             .map(|(id, h)| {
-                #[allow(clippy::cast_possible_truncation)]
-                let elapsed_ms = h.elapsed().as_millis() as u64;
+                let elapsed_ms = u64::try_from(h.elapsed().as_millis()).unwrap_or(u64::MAX);
                 background::BackgroundRunSnapshot {
                     run_id: id.to_string(),
                     command: h.command.clone(),
@@ -878,8 +886,7 @@ impl ShellExecutor {
         let mut cumulative_filter_stats: Option<FilterStats> = None;
         let mut last_envelope: Option<ShellOutputEnvelope> = None;
         let mut overall = ToolStatus::Success;
-        #[allow(clippy::cast_possible_truncation)]
-        let blocks_executed = blocks.len() as u32;
+        let blocks_executed = u32::try_from(blocks.len()).unwrap_or(u32::MAX);
 
         for block in &blocks {
             let BlockResult {
@@ -990,8 +997,7 @@ impl ShellExecutor {
         if self.is_cancelled_exit(exit_code, termination) {
             return Err(ToolError::Cancelled);
         }
-        #[allow(clippy::cast_possible_truncation)]
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         if let Some(snap) = snapshot
             && let Some(surviving) = self
@@ -1052,7 +1058,6 @@ impl ShellExecutor {
     ///
     /// This is the structured-tool-call path — it uses the resolved CWD and env directly
     /// instead of re-reading process state on every call.
-    #[allow(clippy::too_many_lines)]
     #[tracing::instrument(name = "tools.shell.execute_block", skip(self, resolved), level = "info",
         fields(cwd = %resolved.cwd.display(), env_name = resolved.name.as_deref().unwrap_or("")))]
     async fn execute_block_with_context(
@@ -1105,8 +1110,7 @@ impl ShellExecutor {
         if self.is_cancelled_exit(exit_code, termination) {
             return Err(ToolError::Cancelled);
         }
-        #[allow(clippy::cast_possible_truncation)]
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         if let Some(snap) = snapshot
             && let Some(surviving) = self
@@ -1170,7 +1174,10 @@ impl ShellExecutor {
         }))
     }
 
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "This tuple is a private one-use result shape, so a named type would add indirection."
+    )]
     fn capture_snapshot_for(
         &self,
         block: &str,
@@ -1465,7 +1472,10 @@ impl ShellExecutor {
     }
 
     /// Check blocklist, permission policy, and confirmation requirements for `block`.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This function keeps one cohesive protocol flow together; splitting it would obscure the control flow."
+    )]
     async fn check_permissions(&self, block: &str, skip_confirm: bool) -> Result<(), ToolError> {
         // Deobfuscate before any policy check to prevent bypass via encoding tricks.
         let normalized = deobfuscate::deobfuscate(block);
@@ -1921,7 +1931,10 @@ impl ShellExecutor {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+    )]
     async fn log_audit_with_context(
         &self,
         command: &str,
@@ -2252,7 +2265,10 @@ impl ShellExecutor {
 
 /// Drive a background shell run from spawn to completion, using a pre-resolved `env`
 /// and `cwd` from `resolve_context` instead of reading `skill_env`/process-env at spawn time.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+)]
 async fn run_background_task_with_env(
     run_id: RunId,
     command: String,
@@ -2336,8 +2352,7 @@ async fn run_background_task_with_env(
     )
     .await;
 
-    #[allow(clippy::cast_possible_truncation)]
-    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
     let exit_code = envelope.exit_code;
     let success = termination == BashTermination::Exited && exit_code == 0;
     let truncated = crate::executor::truncate_tool_output_at(&out, 4096);
@@ -2416,7 +2431,10 @@ pub(crate) fn strip_shell_escapes(input: &str) -> String {
                         let hi = (bytes[j + 2] as char).to_digit(16);
                         let lo = (bytes[j + 3] as char).to_digit(16);
                         if let (Some(h), Some(l)) = (hi, lo) {
-                            #[allow(clippy::cast_possible_truncation)]
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "Each hex digit is at most 15, so the combined value is at most 255."
+                            )]
                             let byte = ((h << 4) | l) as u8;
                             decoded.push(byte as char);
                             j += 4;
@@ -2435,7 +2453,6 @@ pub(crate) fn strip_shell_escapes(input: &str) -> String {
                                 len = 4;
                             }
                         }
-                        #[allow(clippy::cast_possible_truncation)]
                         decoded.push((val & 0xFF) as u8 as char);
                         j += len;
                         valid = true;
@@ -2854,8 +2871,17 @@ pub struct ShellOutputEnvelope {
     pub truncated: bool,
 }
 
-// Used only in cfg(test) blocks; dead_code analysis does not see test imports.
-#[allow(dead_code, clippy::too_many_arguments)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "This helper is used only by the shell test module."
+    )
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+)]
 async fn execute_bash(
     code: &str,
     timeout: Duration,
@@ -2880,6 +2906,13 @@ async fn execute_bash(
     .into_pair()
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "This helper is used only by the shell test module."
+    )
+)]
 fn build_bash_command(
     code: &str,
     extra_env: Option<&std::collections::HashMap<String, String>>,
@@ -3049,6 +3082,13 @@ impl BashRun {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "This helper is used only by the shell test module."
+        )
+    )]
     fn into_pair(self) -> (ShellOutputEnvelope, String) {
         (self.envelope, self.out)
     }
@@ -3122,7 +3162,10 @@ enum BashLoopOutcome {
     Cancelled,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+)]
 async fn run_bash_stream(
     code: &str,
     deadline: tokio::time::Instant,

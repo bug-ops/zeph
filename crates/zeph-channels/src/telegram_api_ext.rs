@@ -585,7 +585,10 @@ impl TelegramApiClient {
         user_id: i64,
     ) -> Result<bool, TelegramApiError> {
         #[derive(Serialize)]
-        #[allow(clippy::struct_field_names)]
+        #[expect(
+            clippy::struct_field_names,
+            reason = "The field names mirror the external API schema."
+        )]
         struct Req {
             chat_id: i64,
             message_id: i64,

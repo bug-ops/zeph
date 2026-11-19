@@ -23,7 +23,10 @@ pub(crate) struct ProviderSetOverride {
     /// Base URL for requests sent through this provider.
     pub base_url: String,
     /// Additional headers (e.g. routing headers, not auth secrets).
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "This item is retained for a serialization, configuration, or alternate-build path."
+    )]
     pub headers: HashMap<String, String>,
 }
 

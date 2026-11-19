@@ -23,7 +23,10 @@ use zeph_common::ToolName;
 
 use crate::config::AuditConfig;
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "The reference form matches the surrounding callback API."
+)]
 fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
@@ -122,7 +125,10 @@ enum AuditDestination {
 ///  "duration_ms":12,"exit_code":0,"claim_source":"shell"}
 /// ```
 #[derive(serde::Serialize)]
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent boolean flags; bitflags or enum would obscure semantics without reducing complexity"
+)]
 pub struct AuditEntry {
     /// Unix timestamp (seconds) when the tool invocation started.
     pub timestamp: String,
@@ -409,7 +415,11 @@ impl AuditLogger {
     /// # Errors
     ///
     /// Returns an error if a file destination cannot be opened.
-    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "The async signature is retained to keep this interface consistent with its async call path."
+    )]
     pub async fn from_config(config: &AuditConfig, tui_mode: bool) -> Result<Self, std::io::Error> {
         use zeph_config::AuditDestination as CfgDest;
 

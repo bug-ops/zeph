@@ -1,7 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[allow(clippy::wildcard_imports)]
+#![cfg_attr(
+    not(test),
+    expect(
+        clippy::wildcard_imports,
+        reason = "This adapter maps many ACP schema types; the wildcard keeps protocol conversion code readable."
+    )
+)]
 use acp::v1::schema::*;
 use agent_client_protocol as acp;
 use zeph_common::text::xml_escape;
@@ -303,7 +309,10 @@ fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<SessionUpdate> {
     vec![SessionUpdate::ToolCall(tool_call)]
 }
 
-#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+#[expect(
+    clippy::too_many_arguments,
+    reason = "function with many required inputs; a *Params struct would be more verbose without simplifying the call site"
+)]
 fn terminal_tool_updates(
     tool_call_id: String,
     display: String,
@@ -358,7 +367,10 @@ fn terminal_tool_updates(
     vec![terminal_intermediate, final_update]
 }
 
-#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+#[expect(
+    clippy::too_many_arguments,
+    reason = "function with many required inputs; a *Params struct would be more verbose without simplifying the call site"
+)]
 fn non_terminal_tool_updates(
     tool_call_id: String,
     display: String,

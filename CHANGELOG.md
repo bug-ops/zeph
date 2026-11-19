@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-a2a`, `zeph-gateway`, `zeph-acp`, `zeph-mcp`, `zeph-channels`, `zeph-tools`: begin the #7150 rollout by warning on `#[allow]`, replacing active suppressions with reasoned `#[expect]` attributes, deleting stale expectations, and saturating block-count and duration conversions.
+
 ## [0.24.0] - 2026-11-16
 
 ### Added

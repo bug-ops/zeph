@@ -384,7 +384,10 @@ mod tests {
         let tools: Vec<McpTool> = (0..5).map(|i| make_tool(&format!("t{i}"), "d")).collect();
         let embed: EmbedFn = Box::new(|text: &str| -> zeph_llm::provider::EmbedFuture {
             // Return distinct vectors based on text length mod 5.
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+            )]
             let v = vec![text.len() as f32 / 10.0, 1.0];
             Box::pin(async move { Ok(v) })
         });

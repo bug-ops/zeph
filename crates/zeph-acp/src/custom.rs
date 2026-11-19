@@ -423,7 +423,10 @@ async fn handle_session_import(
     })
 }
 
-#[allow(clippy::unused_async)]
+#[expect(
+    clippy::unused_async,
+    reason = "The async signature is retained to keep this interface consistent with its async call path."
+)]
 async fn handle_agent_tools(
     _agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
@@ -456,7 +459,10 @@ async fn handle_agent_tools(
     to_ext_response(&AgentToolsResponse { tools })
 }
 
-#[allow(clippy::unused_async)]
+#[expect(
+    clippy::unused_async,
+    reason = "The async signature is retained to keep this interface consistent with its async call path."
+)]
 async fn handle_working_dir_update(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
