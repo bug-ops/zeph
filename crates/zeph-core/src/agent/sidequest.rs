@@ -47,7 +47,6 @@ pub(crate) struct ToolOutputCursor {
 
 /// LLM response schema for `SideQuest` eviction.
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(dead_code)]
 pub(crate) struct EvictionResponse {
     pub(crate) del_cursors: Vec<usize>,
 }
@@ -441,10 +440,11 @@ impl<C: Channel> Agent<C> {
                 .collect();
             valid.sort_unstable();
             valid.dedup();
-            #[allow(
+            #[expect(
                 clippy::cast_precision_loss,
                 clippy::cast_possible_truncation,
-                clippy::cast_sign_loss
+                clippy::cast_sign_loss,
+                reason = "max_evict uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
             )]
             let max_evict = ((n_cursors as f32) * max_eviction_ratio).ceil() as usize;
             valid.truncate(max_evict);

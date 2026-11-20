@@ -553,7 +553,10 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
     EXTRA.get_or_init(build_extra_commands)
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "build_infra_commands keeps ordered steps together because they share state and control flow"
+)]
 fn build_infra_commands() -> Vec<CommandEntry> {
     vec![
         CommandEntry {

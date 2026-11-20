@@ -64,7 +64,10 @@ impl ToolExecutor for CallableToolExecutor {
         std::future::ready(Ok(None))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "execute_tool_call implements the trait-required async signature while completing synchronously"
+    )]
     async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         self.dispatched.fetch_add(1, Ordering::SeqCst);
         let mut outputs = self.outputs.lock().unwrap();
@@ -597,7 +600,10 @@ async fn network_deny_wrapped_executor_blocks_fetch_before_reaching_inner() {
             std::future::ready(Ok(None))
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "execute_tool_call implements the trait-required async signature while completing synchronously"
+        )]
         async fn execute_tool_call(
             &self,
             _call: &ToolCall,

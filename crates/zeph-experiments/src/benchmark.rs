@@ -140,7 +140,10 @@ impl BenchmarkSet {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::redundant_closure_for_method_calls)]
+    #![expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "The closure keeps the adapted argument shape explicit."
+    )]
     use std::assert_matches;
 
     use super::*;

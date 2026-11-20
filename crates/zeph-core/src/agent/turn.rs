@@ -74,7 +74,10 @@ pub struct TurnMetrics {
 ///
 /// Defined in Phase 1 for forward compatibility. Populated in Phase 2 when
 /// `Turn.tool_results` is wired through the tool execution chain.
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "ToolOutputRecord is reached through feature-gated or generated integration paths rather than direct Rust calls"
+)]
 pub(crate) struct ToolOutputRecord {
     /// Registered tool name (e.g., `"shell"`, `"web_scrape"`).
     pub(crate) tool_name: String,

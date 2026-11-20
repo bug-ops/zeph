@@ -496,7 +496,10 @@ mod tests {
 
     use super::*;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "make_scenario takes ownership because the value is consumed by the operation"
+    )]
     fn make_scenario(criteria: serde_json::Value) -> Scenario {
         Scenario::single(
             "test_0",
@@ -714,7 +717,10 @@ mod tests {
 
     // ─── EnvironmentEvaluator unit tests ─────────────────────────────────────
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "make_env_evaluator is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     fn make_env_evaluator(
         final_snapshot: serde_json::Value,
         db_seed_path: &std::path::Path,

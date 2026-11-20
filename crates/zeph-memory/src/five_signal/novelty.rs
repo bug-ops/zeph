@@ -56,7 +56,10 @@ impl NoveltyComputer {
     #[inline]
     pub fn compute(&self, fact_created_at: i64) -> f64 {
         let _span = tracing::info_span!("memory.five_signal.novelty.compute").entered();
-        #[expect(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Elapsed days are an approximate novelty-decay input rather than an exact counter."
+        )]
         let days = ((fact_created_at - self.session_start).max(0) as f64) / 86_400.0;
         (-self.decay_rate * days).exp()
     }

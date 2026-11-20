@@ -82,7 +82,6 @@
 //! you already hold a [`zeph_db::DbPool`].
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
-#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 pub mod durable;
 mod error;

@@ -95,7 +95,13 @@ pub(crate) struct ToolSetup {
     /// — no production call site needs it, since the concrete `McpToolExecutor` is folded
     /// into the type-erased `executor: DynExecutor` above and cannot be introspected
     /// afterward any other way.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "This flag is inspected only by build_tool_setup tests; production cannot introspect the erased executor"
+        )
+    )]
     pub(crate) mcp_media_enabled: bool,
     /// Clock backing the `get_current_time` tool (#6361). Callers must pass this SAME `Arc`
     /// into `Agent::with_clock` so the tool and the time-reminder injection share one clock.
@@ -440,10 +446,11 @@ async fn drain_embedding_guard_events(
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    clippy::fn_params_excessive_bools
+    clippy::fn_params_excessive_bools,
+    reason = "build_tool_setup This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
 )]
 pub(crate) async fn build_tool_setup(
     config: &Config,
@@ -1586,7 +1593,10 @@ pub(crate) fn build_quality_pipeline(
 /// inside `apply_common_tool_gating`) because this function's outputs feed into the composite
 /// tree `apply_common_tool_gating` gates — callers MUST pass the returned floor into that call
 /// so `TrustGateExecutor` shares the identical cell.
-#[allow(clippy::type_complexity)] // 4-tuple of pre-existing types (executors + shared snapshot + trust floor); a type alias would only rename these once, at one call site
+#[expect(
+    clippy::type_complexity,
+    reason = "alias keeps the existing concrete type visible at the boundary where it is consumed"
+)] // 4-tuple of pre-existing types (executors + shared snapshot + trust floor); a type alias would only rename these once, at one call site
 pub(crate) fn build_skill_executors(
     registry: &Arc<RwLock<zeph_skills::registry::SkillRegistry>>,
 ) -> (
@@ -2236,7 +2246,13 @@ pub(crate) struct PolicyGatePieces {
     /// Only read from `src/serve/deps.rs`, which is gated behind `#[cfg(feature = "session")]`
     /// (`src/main.rs`) — feature bundles that don't pull in `session` (e.g. `ide`, `chat`,
     /// `bench`) never compile that reader, so this field is otherwise genuinely dead code there.
-    #[cfg_attr(not(feature = "session"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "session"),
+        expect(
+            dead_code,
+            reason = "Session builds read this field when assembling persisted agent state."
+        )
+    )]
     pub(crate) policy_configured: bool,
 }
 
@@ -2852,7 +2868,10 @@ pub(crate) fn sandbox_policy_from_config(
 /// unconditional loops and five config-gated loops are never skipped in bare mode; the other
 /// three callers always pass `false`. `caller` labels the optical-forgetting startup span so
 /// traces stay attributable to their entry point.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "spawn_memory_maintenance_loops keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) fn spawn_memory_maintenance_loops(
     app: &crate::bootstrap::AppBuilder,
     memory: &std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
@@ -4887,7 +4906,10 @@ mod tests {
     /// `wire_risk_chain_attaches_the_returned_accumulator_to_the_executor` above — and every
     /// other field via `Agent::security_wiring_snapshot()`.
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // exhaustively constructs + asserts every field once
+    #[expect(
+        clippy::too_many_lines,
+        reason = "apply_security_pipeline_wires_every_field keeps ordered steps together because they share state and control flow"
+    )] // exhaustively constructs + asserts every field once
     async fn apply_security_pipeline_wires_every_field() {
         let agent = make_agent();
 

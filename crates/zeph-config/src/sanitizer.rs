@@ -81,7 +81,10 @@ impl Default for EmbeddingGuardConfig {
 /// Configuration for the content isolation pipeline, nested under
 /// `[security.content_isolation]` in the agent config file.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ContentIsolationConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct ContentIsolationConfig {
     /// When `false`, the sanitizer is a no-op: content passes through unchanged.
     #[serde(default = "default_true")]
@@ -418,7 +421,10 @@ fn default_custom_replacement() -> String {
 /// Enabled by default: filtering is a cheap synchronous regex substitution with no LLM
 /// call, and keeps PII out of LLM payloads, `SQLite` history, and debug dumps (#6263).
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "PiiFilterConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct PiiFilterConfig {
     /// Master switch. When `false`, the filter is a no-op. Default: `true`.
     #[serde(default = "default_true")]

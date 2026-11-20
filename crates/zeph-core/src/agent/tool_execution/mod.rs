@@ -163,12 +163,18 @@ pub(crate) enum VigilOutcome {
     Clean,
     /// Advisory: body was truncated+annotated; `ContentSanitizer` continues downstream.
     Sanitized {
-        #[allow(dead_code)]
+        #[expect(
+            dead_code,
+            reason = "is_blocked is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )]
         risk: zeph_tools::VigilRiskLevel,
     },
     /// Hard-block: sentinel replaces the body; `ContentSanitizer` is skipped.
     Blocked {
-        #[allow(dead_code)]
+        #[expect(
+            dead_code,
+            reason = "is_blocked is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )]
         risk: zeph_tools::VigilRiskLevel,
         sentinel: String,
     },
@@ -844,12 +850,21 @@ fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
 /// Scores above `tau` (default 0.6) are considered complex enough to benefit
 /// from TAFC augmentation.
 pub(crate) fn schema_complexity(schema: &serde_json::Value) -> f64 {
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "depth uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let depth = schema_depth(schema).min(8) as f64 / 8.0;
     let combinator_score = f64::from(u8::from(has_combinators(schema))) * 0.4;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "enum_score uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let enum_score = (enum_variant_count(schema).min(10) as f64 / 10.0) * 0.3;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "flat_params_score uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let flat_params_score = (top_level_property_count(schema).min(8) as f64 / 8.0) * 0.2;
     (depth * 0.3 + combinator_score + enum_score + flat_params_score).min(1.0)
 }

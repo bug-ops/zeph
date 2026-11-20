@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use tokio_util::sync::CancellationToken;
-#[allow(unused_imports)]
 use zeph_db::sql;
 use zeph_llm::any::AnyProvider;
 

@@ -89,7 +89,10 @@ pub enum VigilVerdict {
         /// Human-readable reason (first matched pattern name).
         reason: String,
         /// All matched pattern names (may overlap across `extra_patterns`).
-        #[allow(dead_code)]
+        #[expect(
+            dead_code,
+            reason = "VigilGate is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )]
         patterns: Vec<String>,
         /// Action determined by config and match count.
         action: VigilAction,
@@ -161,7 +164,10 @@ impl VigilGate {
 
     /// Returns `true` when VIGIL is enabled.
     #[must_use]
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "is_enabled is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     pub fn is_enabled(&self) -> bool {
         self.config.enabled
     }

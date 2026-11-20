@@ -97,7 +97,10 @@ impl VariationGenerator for GridStep {
                 continue;
             }
 
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "raw uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let raw = range.min() + step * self.current_step as f64;
 
             if raw > range.max() + f64::EPSILON {

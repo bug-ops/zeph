@@ -41,7 +41,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     ///
     /// Most commands are now handled through the session-registry or agent-registry. This
     /// method is kept for commands that could not be migrated due to non-Sync type constraints.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "handle_builtin_command keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     pub(super) fn handle_builtin_command(&self, _trimmed: &str) -> Option<bool> {
         None
     }
@@ -380,7 +383,13 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     /// Load an image and return a status string for use via [`SessionControlAccess::load_image`].
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "This item exists only in the feature configuration that includes its call site."
+        )
+    )]
     pub(super) fn handle_image_as_string(&mut self, path: &str) -> String {
         use zeph_common::path_guard::{PathRejection, classify_relative_path};
         use zeph_llm::provider::{ImageData, MessagePart};
@@ -418,7 +427,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     ///
     /// Execute a `/plugins` command given pre-cloned state, suitable for use inside
     /// `tokio::task::spawn_blocking` without borrowing `&self`.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "run_plugin_command takes ownership because the value is consumed by the operation"
+    )]
     pub(super) fn run_plugin_command(
         args: &str,
         managed_dir: Option<std::path::PathBuf>,

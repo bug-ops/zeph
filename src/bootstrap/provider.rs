@@ -367,7 +367,10 @@ pub fn create_summary_provider(
 /// initialized and wrapped in a `RouterProvider` with the appropriate strategy.
 /// When routing is `None`, selects the provider marked `default = true` (or the first
 /// entry) and falls back to subsequent entries on initialization failure.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "create_provider_from_pool keeps ordered steps together because they share state and control flow"
+)]
 fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapError> {
     let pool = &config.llm.providers;
 

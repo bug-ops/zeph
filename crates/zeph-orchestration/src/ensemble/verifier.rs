@@ -170,7 +170,6 @@ impl EnsembleVerifier {
         let quorum = self.quorum();
         let member_timeout = self.member_timeout;
         let messages = build_verify_prompt(task, output, tool_trace, sanitizer);
-        #[allow(clippy::cast_possible_truncation)]
         let input_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
 
         let calls = self.members.iter().map(|(name, provider)| {

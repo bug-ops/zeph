@@ -79,7 +79,10 @@ pub(crate) struct MemoryState {
     pub(crate) subsystems: MemorySubsystemState,
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "SkillState These independent flags belong to the same configuration or state object and are set or read together"
+)]
 pub(crate) struct SkillState {
     pub(crate) registry: Arc<RwLock<SkillRegistry>>,
     /// Per-turn trust snapshot written by `prepare_context` after `build_skill_trust_map`.
@@ -267,7 +270,10 @@ pub struct AdversarialPolicyInfo {
     pub timeout_ms: u64,
 }
 
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub(crate) struct RuntimeConfig {
     pub(crate) security: SecurityConfig,
     pub(crate) timeouts: TimeoutConfig,
@@ -778,7 +784,6 @@ pub(crate) struct OrchestrationState {
     pub(crate) orchestration_config: crate::config::OrchestrationConfig,
     /// Lazily initialized plan template cache. `None` until first use or when
     /// memory (`SQLite`) is unavailable.
-    #[allow(dead_code)]
     pub(crate) plan_cache: Option<zeph_orchestration::PlanCache>,
     /// Goal embedding from the most recent `plan_with_cache()` call. Consumed by
     /// `finalize_plan_execution()` to cache the completed plan template.
@@ -787,7 +792,6 @@ pub(crate) struct OrchestrationState {
     pub(crate) topology_advisor: Option<std::sync::Arc<zeph_orchestration::TopologyAdvisor>>,
     /// Last `AdaptOrch` verdict; carried from `handle_plan_goal_as_string` to scheduler loop
     /// for `record_outcome`.
-    #[allow(dead_code)] // read via .take() in plan.rs; clippy false positive
     pub(crate) last_advisor_verdict: Option<zeph_orchestration::AdvisorVerdict>,
     /// Task graph persistence handle. `None` when no `SemanticMemory` was
     /// attached via `with_memory`, or when
@@ -823,11 +827,9 @@ pub(crate) struct OrchestrationState {
     /// for the same process lifetime.
     // Accessed exclusively through ensure_durable_backend() in plan.rs; rustc's cross-module
     // dead_code analysis does not follow the indirect Option method chains.
-    #[allow(dead_code)]
     pub(crate) durable_backend: Option<std::sync::Arc<zeph_durable::DurableBackendEnum>>,
     /// Writer handle for the shared P2 durable backend.
     // Same as durable_backend: accessed through plan.rs ensure_durable_backend().
-    #[allow(dead_code)]
     pub(crate) durable_writer: Option<zeph_durable::JournalWriterHandle>,
     /// [`BlockingHandle`] for the background `JournalWriter` actor task, tracked by `TaskSupervisor`.
     ///
@@ -993,7 +995,10 @@ impl Default for ToolState {
 }
 
 /// Groups per-session I/O and policy state.
-#[allow(clippy::struct_excessive_bools)] // runtime state — boolean flags are idiomatic here
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "SessionState These independent flags belong to the same configuration or state object and are set or read together"
+)] // runtime state — boolean flags are idiomatic here
 pub(crate) struct SessionState {
     pub(crate) env_context: EnvironmentContext,
     /// Timestamp of the last assistant message appended to context.
@@ -1185,7 +1190,10 @@ impl HooksConfigSnapshot {
 pub(crate) struct MessageState {
     pub(crate) messages: Vec<Message>,
     // QueuedMessage is pub(super) in message_queue — same visibility as this struct; lint suppressed.
-    #[allow(private_interfaces)]
+    #[expect(
+        private_interfaces,
+        reason = "this item keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     pub(crate) message_queue: VecDeque<QueuedMessage>,
     /// Image parts staged by `/image` commands, attached to the next user message.
     pub(crate) pending_image_parts: Vec<zeph_llm::provider::MessagePart>,
@@ -1600,7 +1608,10 @@ impl Default for FeedbackState {
 
 /// Goal lifecycle feature configuration stored in `RuntimeConfig`.
 #[derive(Debug, Clone)]
-#[allow(clippy::struct_excessive_bools)] // runtime mirror of the TOML config struct
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pub These independent flags belong to the same configuration or state object and are set or read together"
+)] // runtime mirror of the TOML config struct
 pub(crate) struct GoalRuntimeConfig {
     /// Whether goal tracking is enabled.
     pub(crate) enabled: bool,

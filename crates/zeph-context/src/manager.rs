@@ -197,7 +197,10 @@ impl ContextManager {
     /// Apply budget and compaction thresholds from config.
     ///
     /// Must be called once after config is resolved. Safe to call again when config reloads.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub fn apply_budget_config(
         &mut self,
         budget_tokens: usize,
@@ -267,10 +270,11 @@ impl ContextManager {
     /// let tier = manager.compaction_tier(96_000);
     /// // Returns Soft (75% is between 60% and 80%)
     /// ```
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        reason = "compaction_tier uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
     )]
     pub fn compaction_tier(&self, cached_tokens: u64) -> CompactionTier {
         let Some(ref budget) = self.budget else {
@@ -424,7 +428,10 @@ impl ContextManager {
     /// assert!(cm.should_proactively_regrade(70_000, 0.6, false));
     /// ```
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "should_proactively_regrade uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     pub fn should_proactively_regrade(
         &self,
         cached_tokens: u64,
@@ -468,10 +475,11 @@ impl ContextManager {
             CompressionStrategy::Focus => {
                 // Focus fires at the soft-compaction threshold (same as tier machinery).
                 let budget = self.budget.as_ref()?.max_tokens();
-                #[allow(
+                #[expect(
                     clippy::cast_precision_loss,
                     clippy::cast_sign_loss,
-                    clippy::cast_possible_truncation
+                    clippy::cast_possible_truncation,
+                    reason = "threshold uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; converts a value that is nonnegative by the domain invariant at this site"
                 )]
                 let threshold = (budget as f32 * self.soft_compaction_threshold) as usize;
                 if usize::try_from(current_tokens).unwrap_or(usize::MAX) > threshold {

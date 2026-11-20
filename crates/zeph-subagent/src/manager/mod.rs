@@ -387,7 +387,10 @@ pub type PreExecutionVerifiers = Arc<[Box<dyn zeph_tools::PreExecutionVerifier>]
 // SpawnContext/TaskNode allowlists, never a caller-supplied HashSet<_, S>), and
 // `HashSet::intersection` requires both sides to share the same hasher type anyway —
 // generalizing over `S` here would add a type parameter with no real call site benefit.
-#[allow(clippy::implicit_hasher)]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "intersect_allowlists uses the default hasher because this collection is local and not on a custom-hasher boundary"
+)]
 #[must_use]
 pub fn intersect_allowlists(
     a: Option<HashSet<String>>,
@@ -685,7 +688,6 @@ pub struct SubAgentManager {
     peer_router: Arc<PeerRouter>,
     /// This manager's own `PeerGroupId::Session` root registration, kept alive for the
     /// manager's lifetime so `AgentId::Root(PeerGroupId::Session)` stays addressable.
-    #[allow(dead_code)] // held only to keep the route registered; never read directly
     peer_root_registration: PeerRegistration,
     /// Receiver half of the session root's own mailbox, drained by
     /// [`try_recv_peer_message`][Self::try_recv_peer_message] (T005).

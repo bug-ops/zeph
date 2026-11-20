@@ -7,7 +7,6 @@
 //! the TTL window are served from the database without an API round-trip.
 
 use zeph_db::DbPool;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use crate::error::MemoryError;

@@ -6,7 +6,6 @@ use crate::graph::types::{EdgeType, GraphOrigin, GraphProvenance};
 use crate::store::SqliteStore;
 use crate::types::{CommunityId, ConversationId, EdgeId, EntityId, EpisodeId};
 use std::assert_matches;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 async fn setup() -> GraphStore {
@@ -1183,7 +1182,10 @@ async fn seed_pre_023_fixtures(pool: &sqlx::SqlitePool) -> (i64, i64) {
 /// Must use a single connection so `PRAGMA foreign_keys = OFF` takes effect on the same
 /// connection that executes DROP TABLE (PRAGMA is per-connection, not per-transaction).
 #[cfg(feature = "sqlite")]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "apply_migration_024 keeps ordered steps together because they share state and control flow"
+)]
 async fn apply_migration_024(conn: &mut sqlx::SqliteConnection) {
     sqlx::query(sql!("PRAGMA foreign_keys = OFF"))
         .execute(&mut *conn)

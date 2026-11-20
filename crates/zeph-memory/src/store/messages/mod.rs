@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use futures::TryStreamExt as _;
-#[allow(unused_imports)]
 use zeph_common;
 use zeph_common::ContextFidelity;
 use zeph_db::ActiveDialect;
 use zeph_db::fts::sanitize_fts_query;
-#[allow(unused_imports)]
 use zeph_db::{begin_write, placeholder_list, sql};
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, MessageVisibility, Role};
 
@@ -340,7 +338,10 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the insert fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "save_message_with_provenance This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     pub async fn save_message_with_provenance(
         &self,
         conversation_id: ConversationId,
@@ -1980,8 +1981,7 @@ impl SqliteStore {
         .fetch_all(&mut *tx)
         .await?;
 
-        #[allow(clippy::cast_possible_truncation)]
-        let downscaled = candidate_ids.len() as u32;
+        let downscaled = u32::try_from(candidate_ids.len()).unwrap_or(u32::MAX);
 
         if downscaled > 0 {
             let placeholders = zeph_db::placeholder_list(1, candidate_ids.len());
@@ -2030,9 +2030,7 @@ impl SqliteStore {
                 .bind(replay_min_access)
                 .execute(&mut *tx)
                 .await?;
-            #[allow(clippy::cast_possible_truncation)]
-            let n = replay_result.rows_affected() as u32;
-            n
+            u32::try_from(replay_result.rows_affected()).unwrap_or(u32::MAX)
         } else {
             0
         };
@@ -2057,8 +2055,7 @@ impl SqliteStore {
             .bind(protect_min_access)
             .execute(&mut *tx)
             .await?;
-        #[allow(clippy::cast_possible_truncation)]
-        let pruned = prune_result.rows_affected() as u32;
+        let pruned = u32::try_from(prune_result.rows_affected()).unwrap_or(u32::MAX);
 
         tx.commit().await?;
 

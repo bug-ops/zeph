@@ -60,7 +60,10 @@ pub enum PidLockError {
 /// ```
 #[derive(Debug)]
 pub struct PidLockGuard {
-    #[allow(dead_code)] // held for its Drop (closes fd, releases flock)
+    #[expect(
+        dead_code,
+        reason = "acquire is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )] // held for its Drop (closes fd, releases flock)
     fd: OwnedFd,
     path: PathBuf,
 }

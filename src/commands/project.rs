@@ -71,7 +71,10 @@ struct PurgeCategory {
 
 fn fmt_bytes(bytes: u64) -> impl fmt::Display {
     fmt::from_fn(move |f| {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "sibling_path uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         if bytes >= 1_048_576 {
             write!(f, "{:.1} MB", bytes as f64 / 1_048_576.0)
         } else if bytes >= 1024 {

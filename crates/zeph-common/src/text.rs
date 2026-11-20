@@ -20,7 +20,10 @@
 /// assert_eq!(format_tokens(2_000_000), "2.0M");
 /// ```
 #[must_use]
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "format_tokens uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+)]
 pub fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)

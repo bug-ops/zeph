@@ -21,7 +21,10 @@ use zeph_subagent::{SubAgentDef, ToolPolicy};
 ///
 /// Implementations must be `Send + Sync` to be used inside async task loops.
 /// The standard implementation is [`LlmPlanner`].
-#[allow(async_fn_in_trait)]
+#[expect(
+    async_fn_in_trait,
+    reason = "Planner keeps this narrowly scoped lint exception at the item that requires it"
+)]
 pub trait Planner: Send + Sync {
     /// Generate a task graph from a user goal.
     ///
@@ -468,7 +471,10 @@ fn convert_response(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::needless_pass_by_value)]
+    #![expect(
+        clippy::needless_pass_by_value,
+        reason = "This narrow exception is required by the local test or feature configuration."
+    )]
     use std::assert_matches;
 
     use super::*;

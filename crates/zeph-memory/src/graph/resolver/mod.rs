@@ -366,7 +366,10 @@ impl<'a> EntityResolver<'a> {
 
     /// Handle a candidate in the ambiguous score range by running LLM disambiguation.
     /// Returns `Ok(Some(...))` if the LLM confirms a match, `Ok(None)` to fall through to create.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn handle_ambiguous_candidate(
         &self,
         emb_store: &EmbeddingStore,
@@ -448,7 +451,10 @@ impl<'a> EntityResolver<'a> {
 
     /// Attempt embedding-based resolution. Returns `Ok(Some(...))` if resolved (early return),
     /// `Ok(None)` if no match found (caller should fall through to create), or `Err` on DB error.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "resolve_via_embedding keeps ordered steps together because they share state and control flow"
+    )]
     async fn resolve_via_embedding(
         &self,
         normalized: &str,
@@ -568,7 +574,10 @@ impl<'a> EntityResolver<'a> {
     }
 
     /// Create a new entity, register aliases, and store its embedding in Qdrant.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn create_with_embedding(
         &self,
         emb_store: &EmbeddingStore,
@@ -634,9 +643,15 @@ impl<'a> EntityResolver<'a> {
     /// `upsert_entity` (keyed on `canonical_name` + `entity_type`, not on `payload_entity_id`),
     /// so it is guaranteed to exist in the local `SQLite` database — callers MUST use the
     /// returned id (not `payload_entity_id`) as the FK target for edge inserts (#5801).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
-    #[allow(clippy::too_many_lines)] // cross-DB id correction (#5801) added a diagnostic branch
+    #[expect(
+        clippy::too_many_lines,
+        reason = "merge_entity keeps ordered steps together because they share state and control flow"
+    )] // cross-DB id correction (#5801) added a diagnostic branch
     async fn merge_entity(
         &self,
         emb_store: &EmbeddingStore,
@@ -790,7 +805,10 @@ impl<'a> EntityResolver<'a> {
     ///
     /// Failures are logged at warn level but do not propagate — the entity is still
     /// valid in `SQLite` even if Qdrant upsert fails.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn store_entity_embedding(
         &self,
         emb_store: &EmbeddingStore,
@@ -878,7 +896,10 @@ impl<'a> EntityResolver<'a> {
     /// Ask the LLM whether two entities are the same.
     ///
     /// Returns `Some(true)` for merge, `Some(false)` for separate, `None` on failure.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn llm_disambiguate(
         &self,
         provider: &AnyProvider,
@@ -1083,7 +1104,10 @@ impl<'a> EntityResolver<'a> {
     /// # Errors
     ///
     /// Returns an error if any database operation fails.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn resolve_edge_typed(
         &self,
         source_id: EntityId,

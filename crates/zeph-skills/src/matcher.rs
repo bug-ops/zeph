@@ -215,7 +215,10 @@ impl CategoryMatcher {
                     *c += v;
                 }
             }
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "n uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let n = positions.len() as f32;
             for c in &mut centroid {
                 *c /= n;
@@ -282,7 +285,10 @@ impl SkillMatcher {
     /// Create a matcher by pre-computing embeddings for all skill descriptions and trigger phrases.
     ///
     /// Returns `None` if all description embeddings fail (caller should fall back to all skills).
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "new keeps ordered steps together because they share state and control flow"
+    )]
     pub async fn new<F>(skills: &[&SkillMeta], embed_fn: F) -> Option<Self>
     where
         F: Fn(&str) -> EmbedFuture,
@@ -616,10 +622,11 @@ impl SkillMatcherBackend {
     /// Qdrant round-trip (see issue #5786).
     #[cfg_attr(
         not(feature = "qdrant"),
-        allow(
+        expect(
             unused_variables,
             clippy::unused_async,
-            clippy::unused_async_trait_impl
+            clippy::unused_async_trait_impl,
+            reason = "The Qdrant-only backend is absent when this fallback implementation compiles."
         )
     )]
     pub async fn refresh_skill_embeddings(&self, meta: &[&SkillMeta], scored: &[ScoredMatch]) {
@@ -705,7 +712,6 @@ impl SkillMatcherBackend {
         feature = "profiling",
         tracing::instrument(name = "skill.matcher_sync", skip_all)
     )]
-    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn sync<F>(
         &mut self,
         meta: &[&SkillMeta],

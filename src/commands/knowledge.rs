@@ -146,7 +146,7 @@ pub(crate) async fn handle_knowledge(
 ///
 /// Returns an error when the project root cannot be located or a source path
 /// escapes the root allowlist.
-#[allow(clippy::too_many_lines)]
+
 #[tracing::instrument(skip_all, fields(dry_run, sources_count = sources.len()))]
 async fn handle_ingest(
     sources: Vec<KnowledgeSource>,
@@ -901,7 +901,10 @@ fn print_ingest_report(report: &IngestReport) {
 ///
 /// Wraps `cfg` in a `MemoryWriteValidator` and returns it as the shared closure expected by
 /// `SemanticMemory::ingest_documents` (INV-4, spec-067 §G-5 S3).
-#[allow(clippy::unnecessary_wraps)] // SharedPostExtractValidator is Option<Arc<...>>; callers pass it directly
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "build_shared_validator preserves the result shape shared with adjacent implementations"
+)] // SharedPostExtractValidator is Option<Arc<...>>; callers pass it directly
 fn build_shared_validator(
     cfg: zeph_config::sanitizer::MemoryWriteValidationConfig,
 ) -> SharedPostExtractValidator {
@@ -1008,8 +1011,12 @@ fn read_sidecar_trust(root: &Path, sidecar: &Path) -> Option<SidecarTrust> {
 ///
 /// Returns an error when config loading, DB access, provider resolution, or transcript-dir
 /// resolution fails. Per-document failures are collected in the `IngestReport` and printed.
-#[allow(clippy::too_many_lines)]
+
 #[tracing::instrument(skip_all, fields(dry_run))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "run_graph_ingest coordinates source validation, preview generation, and persistence through one ingestion context."
+)]
 async fn run_graph_ingest(
     dry_run: bool,
     effective_max: usize,
@@ -1303,7 +1310,10 @@ fn print_graph_ingest_report(report: &zeph_memory::graph::ingest::IngestReport) 
         println!("  {:<50} {:>7}  {:>7}", "Entity", "Degree", "% edges");
         println!("  {}", "-".repeat(68));
         for h in &report.hub_degree {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "pct uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let pct = if total_edges > 0 {
                 (h.degree as f64 / total_edges as f64) * 100.0
             } else {
@@ -1323,7 +1333,10 @@ fn print_graph_ingest_report(report: &zeph_memory::graph::ingest::IngestReport) 
             );
         }
         if total_edges > 0 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "top_pct uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let top_pct = (report.hub_degree[0].degree as f64 / total_edges as f64) * 100.0;
             let health = if top_pct <= HUB_DEGREE_THRESHOLD_PCT {
                 "PASS"
@@ -1534,8 +1547,12 @@ fn cwd_matches_root(path: &Path, root: &Path) -> bool {
 /// # Errors
 ///
 /// Returns an error when config loading, memory construction, or the batch graph write fails.
-#[allow(clippy::too_many_lines)]
+
 #[tracing::instrument(skip_all, fields(dry_run))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The external-agent importer validates source files, parses records, and commits one bounded batch through shared state."
+)]
 async fn handle_external_agent_ingest(
     agent_sources: &[KnowledgeSource],
     dry_run: bool,

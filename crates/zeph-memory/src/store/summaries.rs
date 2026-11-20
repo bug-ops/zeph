@@ -4,7 +4,6 @@
 use super::SqliteStore;
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 impl SqliteStore {
@@ -60,7 +59,10 @@ impl SqliteStore {
         )>,
         MemoryError,
     > {
-        #[allow(clippy::type_complexity)]
+        #[expect(
+            clippy::type_complexity,
+            reason = "rows keeps the existing concrete type visible at the boundary where it is consumed"
+        )]
         let rows: Vec<(
             i64,
             ConversationId,

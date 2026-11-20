@@ -48,7 +48,10 @@ use zeph_tools::ErasedToolExecutor;
 /// `build_agent` factory (see `SessionActor::spawn`) clones the fields it needs — every field
 /// here is cheap to clone (`Arc`, `Clone` provider handles, or a `usize`/config snapshot).
 #[derive(Clone)]
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; mirrors src/acp.rs's SharedAgentDeps
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ServeAgentDeps These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; mirrors src/acp.rs's SharedAgentDeps
 pub(crate) struct ServeAgentDeps {
     pub(crate) provider: AnyProvider,
     pub(crate) embedding_provider: AnyProvider,
@@ -298,7 +301,10 @@ pub(crate) async fn build_serve_deps(
 ///
 /// Returns an error if the core tool executor cannot be built (audit logger, sandbox
 /// initialization).
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "assemble_serve_deps keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) async fn assemble_serve_deps(
     app: &crate::bootstrap::AppBuilder,
     core: &crate::acp::SharedCore,

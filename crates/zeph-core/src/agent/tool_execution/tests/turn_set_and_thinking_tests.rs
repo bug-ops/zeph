@@ -114,7 +114,10 @@ fn names(defs: &[ToolDefinition]) -> Vec<String> {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "tool_array_is_identical_on_every_iteration_of_a_turn keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn tool_array_is_identical_on_every_iteration_of_a_turn() {
     let (mock, recorded) = MockProvider::with_responses(vec![]).with_tool_recording();
     let (mock, _) = mock.with_tool_use(vec![
@@ -147,7 +150,10 @@ async fn tool_array_is_identical_on_every_iteration_of_a_turn() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "tool_with_met_requires_is_callable_in_a_later_iteration keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn tool_with_met_requires_is_callable_in_a_later_iteration() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "read")]),
@@ -170,7 +176,10 @@ async fn tool_with_met_requires_is_callable_in_a_later_iteration() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "tool_with_unmet_requires_is_rejected_at_dispatch keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn tool_with_unmet_requires_is_rejected_at_dispatch() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "write")]),
@@ -191,7 +200,10 @@ async fn tool_with_unmet_requires_is_rejected_at_dispatch() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "tool_outside_the_turn_set_is_rejected_at_dispatch keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn tool_outside_the_turn_set_is_rejected_at_dispatch() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "grep")]),
@@ -210,7 +222,10 @@ async fn tool_outside_the_turn_set_is_rejected_at_dispatch() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "ordered_blocks_are_stored_in_response_order_and_not_persisted keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn ordered_blocks_are_stored_in_response_order_and_not_persisted() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![]);
     let executor = MockToolExecutor::new(vec![Ok(Some(output("read", "ok")))])
@@ -248,7 +263,10 @@ async fn ordered_blocks_are_stored_in_response_order_and_not_persisted() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "scrubbed_text_drops_the_thinking_that_follows_it keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn scrubbed_text_drops_the_thinking_that_follows_it() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![]);
     let executor = MockToolExecutor::new(vec![Ok(Some(output("read", "ok")))])
@@ -315,7 +333,10 @@ fn thinking_count(messages: &[Message]) -> usize {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "provider_dropped_thinking_is_stripped_from_history_once keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn provider_dropped_thinking_is_stripped_from_history_once() {
     let response = ChatResponse::ToolUse {
         content: AssistantContent::new(vec![
@@ -352,7 +373,10 @@ async fn provider_dropped_thinking_is_stripped_from_history_once() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "text_reply_with_dropped_thinking_is_stripped_from_history keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn text_reply_with_dropped_thinking_is_stripped_from_history() {
     let mut response = ChatResponse::text("done");
     response.set_replay(ThinkingReplay::Dropped {
@@ -372,7 +396,10 @@ async fn text_reply_with_dropped_thinking_is_stripped_from_history() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "binding_mismatch_strips_all_thinking_and_retries_once keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn binding_mismatch_strips_all_thinking_and_retries_once() {
     let (mock, counter) = MockProvider::with_responses(vec!["recovered".into()])
         .with_errors(vec![LlmError::ThinkingBindingMismatch])
@@ -387,7 +414,10 @@ async fn binding_mismatch_strips_all_thinking_and_retries_once() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "binding_mismatch_is_not_retried_twice keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn binding_mismatch_is_not_retried_twice() {
     let (mock, counter) = MockProvider::with_responses(vec![])
         .with_errors(vec![
@@ -477,7 +507,10 @@ async fn unbound_provider_keeps_thinking_through_deferred_apply() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "server_compaction_mirror_strips_the_responses_stale_thinking keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn server_compaction_mirror_strips_the_responses_stale_thinking() {
     let response = ChatResponse::ToolUse {
         content: AssistantContent::new(vec![
@@ -929,7 +962,10 @@ async fn turn_boundary_prune_leaves_thinking_alone() {
 // --- Gate state, trust and dependency bookkeeping ------------------------------------------
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "nested_process_response_restores_the_outer_turn_set keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn nested_process_response_restores_the_outer_turn_set() {
     use crate::agent::turn_gate::TurnToolSet;
 
@@ -961,7 +997,10 @@ async fn nested_process_response_restores_the_outer_turn_set() {
 
 /// Dropping `process_response` mid-call (cancellation) must still restore the outer set (#6835).
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "cancelled_process_response_restores_the_outer_turn_set keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn cancelled_process_response_restores_the_outer_turn_set() {
     use crate::agent::turn_gate::TurnToolSet;
 
@@ -999,7 +1038,10 @@ async fn cancelled_process_response_restores_the_outer_turn_set() {
 
 /// A provider refusal is surfaced once to the user and never persisted or retried (#6844).
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "refusal_is_surfaced_without_history_or_retry keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn refusal_is_surfaced_without_history_or_retry() {
     let (mock, calls) = MockProvider::with_responses(vec![])
         .with_errors(vec![LlmError::Refused {
@@ -1037,7 +1079,10 @@ async fn refusal_is_surfaced_without_history_or_retry() {
 
 /// A refusal outside a user turn (scheduler, background call) must not delete older turns.
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "refusal_without_a_user_turn_keeps_older_history keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn refusal_without_a_user_turn_keeps_older_history() {
     let (mock, _) = MockProvider::with_responses(vec![])
         .with_errors(vec![LlmError::Refused {
@@ -1076,7 +1121,10 @@ fn refusing_provider() -> MockProvider {
 /// A refused self-reflection (nested `process_response`) must not roll back the user turn the
 /// outer tool loop is still working on.
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "refusal_in_a_nested_response_keeps_the_user_turn keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn refusal_in_a_nested_response_keeps_the_user_turn() {
     let mut agent = agent_with(refusing_provider(), MockToolExecutor::no_tools());
     let before = agent.msg.messages.len();
@@ -1098,7 +1146,10 @@ async fn refusal_in_a_nested_response_keeps_the_user_turn() {
 /// The refused turn's persisted rows are soft-deleted, so it does not come back after a restart,
 /// and the in-memory accounting follows the rollback.
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "refusal_soft_deletes_the_persisted_turn_input keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn refusal_soft_deletes_the_persisted_turn_input() {
     use zeph_memory::semantic::SemanticMemory;
 
@@ -1139,7 +1190,10 @@ async fn refusal_soft_deletes_the_persisted_turn_input() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "refused_self_reflection_drops_its_dangling_prompt keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn refused_self_reflection_drops_its_dangling_prompt() {
     let temp_dir = tempfile::tempdir().unwrap();
     let skill_dir = temp_dir.path().join("test-skill");
@@ -1199,7 +1253,10 @@ async fn refused_self_reflection_drops_its_dangling_prompt() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "skipped_prerequisite_does_not_unlock_its_dependant keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn skipped_prerequisite_does_not_unlock_its_dependant() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "read")]),
@@ -1243,7 +1300,10 @@ async fn run_read_then_write(read: zeph_tools::ToolOutput) -> String {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "nonzero_exit_prerequisite_still_unlocks_its_dependant keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn nonzero_exit_prerequisite_still_unlocks_its_dependant() {
     let read = zeph_tools::ToolOutput {
         status: zeph_tools::ToolStatus::from_exit_code(1),
@@ -1254,14 +1314,20 @@ async fn nonzero_exit_prerequisite_still_unlocks_its_dependant() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "error_marker_text_with_success_status_does_not_skip_dependant keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn error_marker_text_with_success_status_does_not_skip_dependant() {
     let text = run_read_then_write(output("read", "[error] printed by the tool itself")).await;
     assert!(text.contains("write ok"), "{text}");
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "failed_status_prerequisite_skips_its_dependant keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn failed_status_prerequisite_skips_its_dependant() {
     let read = zeph_tools::ToolOutput {
         status: zeph_tools::ToolStatus::Failed,
@@ -1275,7 +1341,10 @@ async fn failed_status_prerequisite_skips_its_dependant() {
 // --- Server compaction through the real provider wrapper chain ------------------------------
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "server_compaction_mirror_fires_through_the_masked_provider keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn server_compaction_mirror_fires_through_the_masked_provider() {
     let response = ChatResponse::ToolUse {
         content: AssistantContent::new(vec![
@@ -1316,7 +1385,10 @@ async fn server_compaction_mirror_fires_through_the_masked_provider() {
 // --- Append-only requests across a real loop ------------------------------------------------
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "serialized_request_only_appends_between_loop_iterations keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn serialized_request_only_appends_between_loop_iterations() {
     let thinking_call = |id: &str, think: &str| ChatResponse::ToolUse {
         content: AssistantContent::new(vec![
@@ -1397,7 +1469,10 @@ async fn paste_gate_fails_closed_on_unmet_requires_without_a_turn_set() {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "another_caller_compacting_on_the_same_provider_does_not_touch_main_history keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn another_caller_compacting_on_the_same_provider_does_not_touch_main_history() {
     let compacted = ChatResponse::ToolUse {
         content: AssistantContent::new(vec![AssistantBlock::ToolUse(call("sub1", "read"))]),
@@ -1449,7 +1524,10 @@ async fn another_caller_compacting_on_the_same_provider_does_not_touch_main_hist
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
+#[expect(
+    clippy::large_futures,
+    reason = "real_output_that_starts_with_a_skip_marker_still_unlocks_its_dependant keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 async fn real_output_that_starts_with_a_skip_marker_still_unlocks_its_dependant() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "read")]),

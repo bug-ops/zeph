@@ -56,7 +56,10 @@ use session::{step_serve, step_session};
 use worktree::step_worktree;
 
 #[cfg_attr(test, derive(Clone))]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "WizardState These independent flags belong to the same configuration or state object and are set or read together"
+)]
 pub(crate) struct WizardState {
     pub(crate) provider: Option<ProviderKind>,
     pub(crate) base_url: Option<String>,
@@ -433,7 +436,10 @@ pub(crate) struct WizardState {
 }
 
 impl Default for WizardState {
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The default wizard state initializes the full set of independently configurable prompts and values."
+    )]
     fn default() -> Self {
         Self {
             provider: None,
@@ -768,7 +774,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
 
     Ok(())
 }
-#[allow(clippy::too_many_lines)]
+
 fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 4/10: Channel ==\n");
 
@@ -983,7 +989,10 @@ fn step_integrity(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Config assembly maps the wizard's complete set of choices into the canonical config model in one pass."
+)]
 pub(crate) fn build_config(state: &WizardState) -> Config {
     let mut config = Config::default();
     config.agent.auto_update_check = state.auto_update_check;
@@ -1957,7 +1966,6 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the directory cannot be created or the file cannot be written.
-#[allow(clippy::too_many_lines)]
 fn step_lsp_context(state: &mut WizardState) -> anyhow::Result<()> {
     if !state.mcpls_enabled {
         // LSP context injection requires mcpls to be configured.
@@ -1976,7 +1984,7 @@ fn step_lsp_context(state: &mut WizardState) -> anyhow::Result<()> {
     println!();
     Ok(())
 }
-#[allow(clippy::too_many_lines)]
+
 fn step_debug(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Debug ==\n");
     state.debug_dump_enabled = Confirm::new()

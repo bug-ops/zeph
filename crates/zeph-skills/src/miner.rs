@@ -211,7 +211,10 @@ impl SkillMiner {
     }
 
     /// Process a single repo: generate skill, dedup, write.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "process_repo keeps ordered steps together because they share state and control flow"
+    )]
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "skills.miner.process_repo", skip(self, repo, existing_embeddings), fields(repo = %repo.full_name, is_dry_run))

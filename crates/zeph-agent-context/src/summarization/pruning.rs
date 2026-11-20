@@ -70,7 +70,6 @@ pub(crate) fn prune_tool_outputs(
 /// Oldest-first (Reactive) tool output pruning.
 ///
 /// Returns the number of tokens freed.
-#[allow(clippy::cast_precision_loss)]
 pub(crate) fn prune_tool_outputs_oldest_first(
     summ: &mut ContextSummarizationView<'_>,
     min_to_free: usize,

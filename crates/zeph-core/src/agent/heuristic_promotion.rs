@@ -119,7 +119,10 @@ impl<C: Channel> super::Agent<C> {
 }
 
 /// The periodic background loop for heuristic promotion.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "run_promotion_loop This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn run_promotion_loop(
     provider: AnyProvider,
     embed_provider: AnyProvider,
@@ -158,7 +161,10 @@ async fn run_promotion_loop(
 }
 
 /// Execute a single promotion scan pass across all qualifying skills.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "run_promotion_scan This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn run_promotion_scan(
     provider: &AnyProvider,
     embed_provider: &AnyProvider,
@@ -233,7 +239,11 @@ async fn run_promotion_scan(
 }
 
 /// Evaluate one skill's heuristics and write a quarantined draft if recommended.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "evaluate_skill This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+)]
 async fn evaluate_skill(
     provider: &AnyProvider,
     embed_provider: &AnyProvider,
@@ -383,7 +393,10 @@ const EMBED_TIMEOUT_SECS: u64 = 30;
 /// embedding similarity before writing to quarantine.
 ///
 /// Returns `Some(draft_name)` when a draft was written, `None` otherwise.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "write_draft This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn write_draft(
     output_dir: &std::path::Path,
     embed_provider: &AnyProvider,

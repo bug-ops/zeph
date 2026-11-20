@@ -17,6 +17,11 @@
 //! - [`EqualizerWidget`] — full ratatui [`Widget`] for the side-panel slot; draws a braille
 //!   waveform (mirrored about the centre axis) that jerks in time to a sharp beat envelope.
 
+#![expect(
+    clippy::cast_precision_loss,
+    reason = "Wave animation converts bounded tick, band, and cell indices to floats for phase and normalized display calculations."
+)]
+
 use std::f32::consts::TAU;
 
 use ratatui::buffer::Buffer;
@@ -188,17 +193,13 @@ pub fn band_value(state: WaveState, band_idx: u32, t: u64) -> f32 {
     if p.amplitude < f32::EPSILON {
         return 0.0; // Idle / Stalled → flat baseline
     }
-
-    #[allow(clippy::cast_precision_loss)]
     let tf = (t % 65536) as f32; // harmless wrap after ≈4.5 h
-    #[allow(clippy::cast_precision_loss)]
     let bar_phase = (band_idx as f32 * 0.618_034).fract() * TAU;
 
     let y = if p.sines <= 1 {
         let mut v = p.amplitude * (p.omega * tf + bar_phase).sin();
         if p.choppy {
             // Secondary component (tribonacci ratio) for erratic Tool spikes.
-            #[allow(clippy::cast_precision_loss)]
             let bar_phase2 = (band_idx as f32 * 1.324_718).fract() * TAU;
             v = (v + 0.4 * p.amplitude * (p.omega * 1.7 * tf + bar_phase2).sin())
                 .clamp(-p.amplitude, p.amplitude);
@@ -210,14 +211,10 @@ pub fn band_value(state: WaveState, band_idx: u32, t: u64) -> f32 {
         let count = p.sines as usize;
         let mut sum = 0.0_f32;
         for (i, &om) in omegas[..count].iter().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
             let phase = (band_idx as f32 * (0.618_034 + i as f32 * 0.381_966)).fract() * TAU;
             sum += (p.omega * om * tf + phase).sin();
         }
-        #[allow(clippy::cast_precision_loss)]
-        {
-            p.amplitude * (sum / count as f32).clamp(-1.0, 1.0)
-        }
+        p.amplitude * (sum / count as f32).clamp(-1.0, 1.0)
     };
 
     // Normalise to [0, 1] then square: bars mostly low, spiking sharply to peak.
@@ -231,7 +228,11 @@ pub fn band_value(state: WaveState, band_idx: u32, t: u64) -> f32 {
 #[must_use]
 pub fn sample(state: WaveState, x: u32, t: u64) -> usize {
     let band = x / BAND_W;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bucket narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+    )]
     let bucket = (band_value(state, band, t) * 7.0).round() as usize;
     bucket.clamp(0, 7)
 }
@@ -256,7 +257,6 @@ pub fn sample(state: WaveState, x: u32, t: u64) -> usize {
 /// - `ascii_only` — when `true`, uses ASCII glyph ramp regardless of state.
 /// - `buf` — reused span buffer; cleared on entry.
 /// - `theme` — used for colour styling.
-#[allow(clippy::too_many_arguments)]
 pub fn glyphs<'a>(
     state: WaveState,
     width: u32,
@@ -394,9 +394,17 @@ impl Widget for EqualizerWidget<'_> {
             let amp = wave_profile(self.state, sx, sub_w, self.tick);
             let half = amp * max_half;
             // `center ± half` is bounded to `[0, sub_h]`, which fits u16.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "top narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+            )]
             let top = (center - half).round().clamp(0.0, f32::from(sub_h - 1)) as u16;
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "bot narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+            )]
             let bot = (center + half).round().clamp(0.0, f32::from(sub_h - 1)) as u16;
             let col = usize::from(sx / 2);
             let sub_col = usize::from(sx % 2);
@@ -448,10 +456,7 @@ fn wave_profile(state: WaveState, sx: u16, sub_w: u16, t: u64) -> f32 {
     if p.amplitude < f32::EPSILON {
         return 0.0;
     }
-
-    #[allow(clippy::cast_precision_loss)]
     let tf = (t % 65536) as f32; // harmless wrap after ≈4.5 h
-    #[allow(clippy::cast_precision_loss)]
     let u = if sub_w <= 1 {
         0.0
     } else {
@@ -511,12 +516,20 @@ fn wave_color(
             let v = intensity.clamp(0.0, 1.0);
             if matches!(state, WaveState::Stalled) {
                 // Error tint: dark red at centre → bright red at the peaks.
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "this item narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+                )]
                 return Color::Rgb((80.0 + v * 175.0) as u8, 10, 10);
             }
             if matches!(state, WaveState::Network { .. }) {
                 // Violet gradient: #14102C (centre) → #8B5CF6 (peaks).
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "this item narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+                )]
                 return Color::Rgb(
                     (20.0 + v * 119.0) as u8, // 20 → 139
                     (16.0 + v * 76.0) as u8,  // 16 → 92
@@ -524,7 +537,11 @@ fn wave_color(
                 );
             }
             // Teal gradient: #0A191E (centre) → #1FB9A8 (peaks / accent).
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "bucket_to_rgb narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+            )]
             Color::Rgb(
                 (10.0 + v * 21.0) as u8,  // 10 → 31
                 (25.0 + v * 160.0) as u8, // 25 → 185
@@ -548,16 +565,22 @@ fn wave_color(
 fn bucket_to_rgb(state: WaveState, bucket: usize) -> Color {
     if matches!(state, WaveState::Stalled) {
         // Error tint: low-to-mid red gradient along the flat line.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "v narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let v = (80 + bucket * 22) as u8;
         return Color::Rgb(v, 15, 15);
     }
     // Quadratic fade keeps low buckets dark so the peak stands out.
-    #[allow(clippy::cast_precision_loss)]
     let t = (bucket as f32 / 7.0).powi(2);
     if matches!(state, WaveState::Network { .. }) {
         // Violet fade: 0 → dark (#14102C), 7 → #8B5CF6.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "r narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+        )]
         return Color::Rgb(
             (20.0_f32 + t * 119.0) as u8,
             (16.0_f32 + t * 76.0) as u8,
@@ -565,11 +588,23 @@ fn bucket_to_rgb(state: WaveState, bucket: usize) -> Color {
         );
     }
     // Teal fade: 0 → dark (#0A191E), 7 → accent (#1FB9A8).
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "r narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+    )]
     let r = (10.0_f32 + t * 21.0) as u8; // 10..=31
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "g narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+    )]
     let g = (25.0_f32 + t * 160.0) as u8; // 25..=185
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "b narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+    )]
     let b = (30.0_f32 + t * 138.0) as u8; // 30..=168
     Color::Rgb(r, g, b)
 }

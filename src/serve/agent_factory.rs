@@ -72,7 +72,10 @@ const REACTIVATION_LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::
     level = "info",
     fields(session_id = session_id.as_str())
 )]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "build_agent_factory keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) async fn build_agent_factory(
     deps: ServeAgentDeps,
     session_id: zeph_common::SessionId,
@@ -617,7 +620,11 @@ fn wrap_capability_scope(
 /// `memory.consent_gate.audit_all` (issue #6559) and is independent of `consent_gate` (which is
 /// `None` whenever `enabled = false`) — the validation-only caller may pass `true` (the config
 /// default) since the composed executor is discarded there.
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+#[expect(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    reason = "compose_session_tool_tree keeps the existing concrete type visible at the boundary where it is consumed; This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 pub(super) fn compose_session_tool_tree(
     base: Arc<dyn ErasedToolExecutor>,
     registry: &Arc<parking_lot::RwLock<zeph_skills::registry::SkillRegistry>>,
@@ -1509,7 +1516,10 @@ mod tests {
     /// and asserts the exact values echoed by `/skills injection`'s `Display` output, not just
     /// "non-default", so a swapped argument in `with_skill_group_config` would also be caught.
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // pushed over the limit by the new hooks_config fixture field (#6581)
+    #[expect(
+        clippy::too_many_lines,
+        reason = "build_agent_factory_wires_skill_group_config keeps ordered steps together because they share state and control flow"
+    )] // pushed over the limit by the new hooks_config fixture field (#6581)
     async fn build_agent_factory_wires_skill_group_config() {
         use zeph_commands::SkillAccess as _;
 

@@ -47,10 +47,11 @@ impl TaskBuffer {
         }
         let mut sorted: Vec<Duration> = self.latencies.iter().copied().collect();
         sorted.sort_unstable();
-        #[allow(
+        #[expect(
             clippy::cast_precision_loss,
             clippy::cast_sign_loss,
-            clippy::cast_possible_truncation
+            clippy::cast_possible_truncation,
+            reason = "idx uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; converts a value that is nonnegative by the domain invariant at this site"
         )]
         let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
         let idx = idx.min(sorted.len() - 1);
@@ -60,10 +61,12 @@ impl TaskBuffer {
     fn snapshot(&self) -> TaskMetricsSnapshot {
         TaskMetricsSnapshot {
             call_count: self.call_count,
-            #[allow(clippy::cast_possible_truncation)]
-            p50_ms: self.percentile(0.50).map(|d| d.as_millis() as u64),
-            #[allow(clippy::cast_possible_truncation)]
-            p95_ms: self.percentile(0.95).map(|d| d.as_millis() as u64),
+            p50_ms: self
+                .percentile(0.50)
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            p95_ms: self
+                .percentile(0.95)
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
         }
     }
 }
@@ -134,8 +137,7 @@ impl ClassifierMetrics {
             ClassifierTask::Feedback => "feedback",
         };
 
-        #[allow(clippy::cast_possible_truncation)]
-        let latency_ms_u64 = latency.as_millis() as u64;
+        let latency_ms_u64 = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
         tracing::debug!(
             classifier_task = task_name,
             latency_ms = latency_ms_u64,

@@ -372,7 +372,10 @@ fn format_plain_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
     format!("- [{}] {}\n", role_label, item.message.content)
 }
 
-#[allow(clippy::map_unwrap_or)]
+#[expect(
+    clippy::map_unwrap_or,
+    reason = "format_structured_recall_entry keeps this narrowly scoped lint exception at the item that requires it"
+)]
 fn format_structured_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
     let source = match item.message.role {
         Role::Assistant => "assistant",

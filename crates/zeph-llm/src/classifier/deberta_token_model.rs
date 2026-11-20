@@ -46,7 +46,10 @@ impl DebertaV2TokenClassifier {
     ) -> candle_core::Result<Self> {
         let deberta = DebertaV2Model::load(vb.clone(), config)?;
         // Dropout probability precision loss from f64 -> f32 is immaterial here.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "dropout narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let dropout = candle_nn::Dropout::new(config.hidden_dropout_prob as f32);
         let classifier =
             candle_nn::linear(config.hidden_size, id2label_len, vb.root().pp("classifier"))?;

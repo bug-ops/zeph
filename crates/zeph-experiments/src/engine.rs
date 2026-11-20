@@ -203,7 +203,7 @@ impl ExperimentEngine {
             biased;
             () = self.cancel.cancelled() => {
                 tracing::info!(session_id = %self.session_id, "cancelled before baseline");
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(clippy::cast_possible_truncation, reason = "initial_baseline_score narrows a value whose domain-specific range is bounded at this conversion site")]
                 return Ok(ExperimentSessionReport {
                     session_id: self.session_id.clone(),
                     results: vec![],
@@ -241,7 +241,10 @@ impl ExperimentEngine {
     /// # Errors
     ///
     /// Returns [`EvalError`] if any LLM call or `SQLite` persist fails.
-    #[allow(clippy::too_many_lines)] // experiment loop with inherent complexity: variation→evaluate→compare
+    #[expect(
+        clippy::too_many_lines,
+        reason = "run_loop keeps ordered steps together because they share state and control flow"
+    )] // experiment loop with inherent complexity: variation→evaluate→compare
     #[tracing::instrument(
         name = "experiments.engine.run_loop",
         skip(self, start, best_snapshot),
@@ -333,7 +336,10 @@ impl ExperimentEngine {
             });
         }
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "wall_time_ms narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let wall_time_ms = start.elapsed().as_millis() as u64;
         let total_improvement = best_score - initial_baseline_score;
         tracing::info!(
@@ -363,7 +369,10 @@ impl ExperimentEngine {
     ///
     /// Returns [`EvalError::Storage`] if the `SQLite` insert fails.
     #[tracing::instrument(name = "experiments.engine.persist_result", skip_all)]
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn persist_result(
         &self,
         variation: &Variation,
@@ -379,7 +388,10 @@ impl ExperimentEngine {
         };
         let value_json = serde_json::to_string(&variation.value)
             .map_err(|e| EvalError::Storage(e.to_string()))?;
-        #[allow(clippy::cast_possible_wrap)]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "new_result converts a value bounded to the destination range by the domain invariant"
+        )]
         let new_result = NewExperimentResult {
             session_id: self.session_id.as_str(),
             parameter: variation.parameter.as_str(),
@@ -423,7 +435,10 @@ impl ExperimentEngine {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::doc_markdown)]
+    #![expect(
+        clippy::doc_markdown,
+        reason = "The documentation uses established project terminology."
+    )]
 
     use super::*;
     use crate::benchmark::{BenchmarkCase, BenchmarkSet};
@@ -467,7 +482,7 @@ mod tests {
             let variations = (0..n)
                 .map(|i| Variation {
                     parameter: ParameterKind::Temperature,
-                    #[allow(clippy::cast_precision_loss)]
+                    #[expect(clippy::cast_precision_loss, reason = "next uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
                     value: VariationValue::Float(OrderedFloat(0.5 + i as f64 * 0.1)),
                 })
                 .collect();

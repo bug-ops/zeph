@@ -295,7 +295,10 @@ pub struct OllamaProvider {
     logprobs_rejected: Arc<AtomicBool>,
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "apply_generation_overrides narrows a value whose domain-specific range is bounded at this conversion site"
+)]
 fn apply_generation_overrides(
     request: ChatMessageRequest,
     overrides: &GenerationOverrides,

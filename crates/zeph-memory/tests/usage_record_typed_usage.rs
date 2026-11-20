@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "Fixture construction failures should fail the test immediately.; Fixture construction failures should fail the test immediately."
+)]
 
 //! Acceptance tests (tests-first) for #7137: `UsageRecord` carries a typed
 //! `usage: TokenUsage` instead of four loose counters; DB columns are unchanged.

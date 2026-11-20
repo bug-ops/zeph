@@ -38,7 +38,10 @@ impl RecordingCaller {
 }
 
 impl McpCaller for RecordingCaller {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "call_tool implements the trait-required async signature while completing synchronously"
+    )]
     async fn call_tool(
         &self,
         server_id: &str,

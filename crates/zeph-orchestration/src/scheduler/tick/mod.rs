@@ -719,7 +719,10 @@ impl DagScheduler {
             .unwrap_or(self.default_task_budget_cents);
         if effective_budget > 0.0 {
             // 1 cent per second is a conservative placeholder until real cost attribution lands.
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "estimated_cents uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let estimated_cents = duration_ms as f64 / 1_000.0;
             if estimated_cents > effective_budget {
                 tracing::warn!(

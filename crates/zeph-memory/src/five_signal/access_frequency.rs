@@ -82,7 +82,10 @@ impl AccessFrequencyCache {
         let normalized = fact_ids
             .iter()
             .map(|id| {
-                #[expect(clippy::cast_precision_loss)]
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "The access count feeds a logarithmic score where f64 precision is sufficient."
+                )]
                 let raw = *counts.get(&id.0).unwrap_or(&0) as f64;
                 let score =
                     (1.0_f64 + raw.min(MAX_ACCESS_COUNT)).ln() / (1.0 + MAX_ACCESS_COUNT).ln();

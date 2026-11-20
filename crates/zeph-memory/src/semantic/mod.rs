@@ -530,7 +530,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if `SQLite` cannot be initialized.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "with_weights_and_pool_size This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     pub async fn with_weights_and_pool_size(
         sqlite_path: &str,
         qdrant_url: &str,
@@ -985,7 +988,10 @@ impl SemanticMemory {
                 *c += v;
             }
         }
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "n uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let n = embeddings.len() as f32;
         for c in &mut centroid {
             *c /= n;

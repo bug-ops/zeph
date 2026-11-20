@@ -719,7 +719,10 @@ pub struct GraphRecallParams<'a> {
 /// `SemanticMemory`.
 ///
 /// All async methods use `Pin<Box<dyn Future<...>>>` for dyn-compatibility.
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "ContextMemoryBackend keeps the existing concrete type visible at the boundary where it is consumed"
+)]
 pub trait ContextMemoryBackend: Send + Sync {
     /// Load persona facts with at least `min_confidence`.
     fn load_persona_facts<'a>(

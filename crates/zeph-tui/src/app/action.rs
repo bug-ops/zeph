@@ -8,7 +8,6 @@ use crate::command::TuiCommand;
 
 /// Scroll direction for page-level scroll actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum ScrollDir {
     Up,
     Down,
@@ -16,7 +15,6 @@ pub(crate) enum ScrollDir {
 
 /// Vertical cursor or field navigation direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum VertDir {
     Up,
     Down,
@@ -24,7 +22,6 @@ pub(crate) enum VertDir {
 
 /// Horizontal tab-cycling direction for the mention picker (FR-004).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum HorizDir {
     Left,
     Right,
@@ -32,7 +29,6 @@ pub(crate) enum HorizDir {
 
 /// Sub-edits for the command-palette text field.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum PaletteEdit {
     /// Push one character into the filter field.
     PushChar(char),
@@ -42,7 +38,6 @@ pub(crate) enum PaletteEdit {
 
 /// Sub-edits for elicitation dialog fields (C4 — all 7 variants required).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum ElicitationEdit {
     /// Push one character into the current text field.
     PushChar(char),
@@ -65,7 +60,10 @@ pub(crate) enum ElicitationEdit {
 /// Variants cover the full key/mouse surface; agent-event handlers remain outside this
 /// enum (they are already a self-contained reducer over disjoint state).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "The action enum keeps the complete reducer command surface, including actions not emitted by the current keyboard decoder."
+)]
 pub(crate) enum Action {
     // ── Scroll ─────────────────────────────────────────────────────────────────
     /// Scroll the focused panel by `lines` lines (negative = up, positive = down).
@@ -293,7 +291,6 @@ impl Action {
 
 /// Cursor movement kinds for [`Action::MoveCursor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum CursorMove {
     Left,
     Right,

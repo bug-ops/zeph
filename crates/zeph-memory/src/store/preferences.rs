@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_common::text::truncate_to_bytes_ref;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use super::SqliteStore;

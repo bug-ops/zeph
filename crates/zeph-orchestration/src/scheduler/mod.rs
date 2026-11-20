@@ -267,7 +267,13 @@ pub(super) struct RunningTask {
     /// Admission control permit; dropped when the task completes to release the provider slot.
     /// `OwnedSemaphorePermit` does not implement `Debug`, so the manual `Debug` impl on
     /// `DagScheduler` skips `running` (it logs `running_count` instead).
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The scheduler retains the semaphore permit for the running task's entire lifetime."
+        )
+    )]
     pub(super) admission_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     /// Shared progress heartbeat (issue #6245), written once per turn boundary by
     /// `zeph_subagent::agent_loop::run_agent_loop` and read by `DagScheduler::check_timeouts`
@@ -309,7 +315,10 @@ pub(super) struct RunningTask {
 ///     scheduler.wait_event().await;
 /// }
 /// ```
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct DagScheduler {
     pub(super) graph: TaskGraph,
     pub(super) max_parallel: usize,
@@ -915,7 +924,10 @@ impl Drop for DagScheduler {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::default_trait_access)]
+    #![expect(
+        clippy::default_trait_access,
+        reason = "The explicit default keeps the fixture type clear."
+    )]
     use std::assert_matches;
 
     use super::*;

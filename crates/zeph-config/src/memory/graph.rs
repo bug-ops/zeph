@@ -419,7 +419,10 @@ impl Default for ExperienceConfig {
 /// a redaction pass is implemented on the write path.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "GraphConfig These independent flags belong to the same configuration or state object and are set or read together"
+)]
 pub struct GraphConfig {
     pub enabled: bool,
     pub extract_model: String,

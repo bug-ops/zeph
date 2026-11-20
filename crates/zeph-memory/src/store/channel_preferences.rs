@@ -49,8 +49,6 @@ impl SqliteStore {
         key: &str,
         value: &str,
     ) -> Result<(), MemoryError> {
-        // Saturate at i64::MAX (~292 million years from epoch) to avoid clippy::cast_possible_truncation.
-        #[allow(clippy::cast_possible_truncation)]
         let now_ms = i64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

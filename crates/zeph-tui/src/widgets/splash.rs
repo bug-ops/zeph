@@ -183,7 +183,10 @@ fn gradient_wordmark_spans(
     spans.push(Span::styled(prefix, accent_style));
 
     for (letter_pos, ch) in letters.iter().enumerate() {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "interp uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let interp = if n_letters <= 1 {
             0.0_f32
         } else {
@@ -220,7 +223,11 @@ fn lerp_rgb_components(
 }
 
 fn lerp_channel(a: u8, b: u8, t: f32) -> u8 {
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "boost_rgb converts a value that is nonnegative by the domain invariant at this site; narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     {
         (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8
     }
@@ -228,7 +235,11 @@ fn lerp_channel(a: u8, b: u8, t: f32) -> u8 {
 
 /// Boost RGB channels towards white by `amount` in [0, 1].
 fn boost_rgb(r: u8, g: u8, b: u8, amount: f32) -> (u8, u8, u8) {
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "boost converts a value that is nonnegative by the domain invariant at this site; narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let boost = |c: u8| -> u8 {
         let boosted = f32::from(c) + (255.0 - f32::from(c)) * amount;
         boosted.min(255.0) as u8

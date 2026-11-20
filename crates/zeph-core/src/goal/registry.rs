@@ -78,7 +78,10 @@ impl AutonomousRegistry {
     ///
     /// All fields are taken as a flat argument list; the registry owns the produced entry.
     /// The lock is never held across an `.await`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "upsert This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     pub fn upsert(
         &self,
         goal_id: GoalId,

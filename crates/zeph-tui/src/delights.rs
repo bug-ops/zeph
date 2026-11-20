@@ -64,7 +64,10 @@ impl StreamRate {
         if self.first_token_at.is_none() {
             self.first_token_at = Some(now);
             if let Some(start) = self.turn_start {
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "ttft narrows a value whose domain-specific range is bounded at this conversion site"
+                )]
                 let ttft = now.duration_since(start).as_millis() as u64;
                 self.last_ttft_ms = Some(ttft);
             }
@@ -97,7 +100,10 @@ impl StreamRate {
         if dt < 0.001 {
             return None;
         }
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "tokens uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let tokens = cn.saturating_sub(*c0) as f32;
         Some(tokens / dt)
     }
@@ -109,12 +115,21 @@ impl StreamRate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToastKind {
     /// Informational notice (default colour).
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "No current toast producer emits an informational category"
+        )
+    )]
     Info,
     /// Success / completion notice (green tint).
     Success,
     /// Warning notice (yellow tint).
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "No current toast producer emits a warning category"
+    )]
     Warn,
 }
 
@@ -241,7 +256,10 @@ pub(crate) fn format_toks(rate: f32) -> String {
 #[must_use]
 pub(crate) fn format_ttft(ms: u64) -> String {
     if ms >= 1000 {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "secs uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let secs = ms as f32 / 1000.0;
         format!("TTFT {secs:.1}s")
     } else {
@@ -259,9 +277,15 @@ pub(crate) fn shimmer_brightness(letter_idx: usize, n_letters: usize, phase: u64
         return 0.0;
     }
     // Map phase [0..SHIMMER_TICKS] to a sweep position across all letters.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "sweep_pos uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let sweep_pos = phase as f32 / SHIMMER_TICKS as f32 * (n_letters + 2) as f32 - 1.0;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "dist uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let dist = (letter_idx as f32 - sweep_pos).abs();
     // Bell curve: peak at 0 distance, falls to ~0 at distance ≥ 1.5 letters.
     let brightness = (-dist * dist * 2.0).exp();

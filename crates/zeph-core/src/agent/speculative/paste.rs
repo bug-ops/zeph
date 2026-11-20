@@ -110,7 +110,10 @@ impl PatternStore {
     /// # Errors
     ///
     /// Returns [`PatternError::Db`] on `SQLite` failure.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn observe(
         &self,
         skill_name: &str,
@@ -131,7 +134,10 @@ impl PatternStore {
             h.to_hex().to_string()
         };
         let tmpl = args_template(&args_obj);
-        #[allow(clippy::cast_possible_wrap)]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "latency_i64 converts a value bounded to the destination range by the domain invariant"
+        )]
         let latency_i64 = latency_ms as i64;
 
         // Fetch the existing row's count_decayed + last_seen_at so we can compute
@@ -156,11 +162,13 @@ impl PatternStore {
         .await?;
 
         if let Some((old_decayed, last_seen_at, old_count_raw, old_avg_latency)) = existing {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "elapsed uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let elapsed = (now - last_seen_at).max(0) as f64;
             let new_decayed = old_decayed * 0.5f64.powf(elapsed / half_life_secs) + 1.0;
             let new_count_raw = old_count_raw + 1;
-            #[allow(clippy::cast_precision_loss)]
             let new_avg_latency = (old_avg_latency * old_count_raw + latency_i64) / new_count_raw;
 
             zeph_db::query(
@@ -259,11 +267,11 @@ impl PatternStore {
                 Some(Prediction {
                     tool_id: zeph_common::ToolName::new(next_tool),
                     args,
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[expect(clippy::cast_possible_truncation, reason = "refresh narrows a value whose domain-specific range is bounded at this conversion site")]
                     confidence: score as f32,
                     source: PredictionSource::HistoryPattern {
                         skill: skill_name.to_owned(),
-                        #[allow(clippy::cast_possible_truncation)]
+                        #[expect(clippy::cast_possible_truncation, reason = "refresh narrows a value whose domain-specific range is bounded at this conversion site")]
                         rank: i as u8,
                     },
                 })
@@ -336,10 +344,9 @@ impl PatternStore {
         .execute(&mut *tx)
         .await?;
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         for (rank, (next_tool, args_fp, tmpl, score, wilson)) in scored.iter().enumerate().take(10)
         {
-            let rank_i64 = rank as i64;
+            let rank_i64 = i64::try_from(rank).unwrap_or(i64::MAX);
             zeph_db::query(
                 r"
                 INSERT OR REPLACE INTO tool_pattern_predictions
@@ -427,10 +434,10 @@ fn score_rows(
         .into_iter()
         .map(
             |(tool, fp, tmpl, count_raw, success_raw, count_decayed, last_seen_at)| {
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(clippy::cast_precision_loss, reason = "elapsed uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
                 let elapsed = now.saturating_sub(last_seen_at) as f64;
                 let current_decay = count_decayed * 0.5f64.powf(elapsed / half_life_secs);
-                #[allow(clippy::cast_sign_loss)]
+                #[expect(clippy::cast_sign_loss, reason = "wilson converts a value that is nonnegative by the domain invariant at this site")]
                 let wilson = wilson_lower_bound(success_raw as u64, count_raw as u64);
                 (tool, fp, tmpl, current_decay, wilson)
             },
@@ -453,7 +460,10 @@ fn score_rows(
         .collect()
 }
 
-#[allow(clippy::cast_possible_wrap)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "unix_now converts a value bounded to the destination range by the domain invariant"
+)]
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -462,7 +472,10 @@ fn unix_now() -> i64 {
 }
 
 /// Wilson 95% one-sided lower confidence bound.
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "wilson_lower_bound uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+)]
 fn wilson_lower_bound(successes: u64, n: u64) -> f64 {
     if n == 0 {
         return 0.0;

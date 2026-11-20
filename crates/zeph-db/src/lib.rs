@@ -18,7 +18,6 @@
 //! for a `PostgreSQL` build.
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
-#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 #[cfg(all(feature = "sqlite", feature = "postgres"))]
 compile_error!("features `sqlite` and `postgres` are mutually exclusive for `zeph-db`");

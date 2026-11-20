@@ -35,7 +35,10 @@ fn default_title() -> String {
 /// Both channels (macOS and webhook) are independently enableable.
 /// At least one channel must be reachable for a notification to fire.
 // Config structs legitimately use multiple boolean flags — each maps to a distinct TOML key.
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "NotificationsConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NotificationsConfig {
     /// Master switch. When `false`, no notifications are sent regardless of other fields.

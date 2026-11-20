@@ -110,7 +110,10 @@ impl<C: Channel> Agent<C> {
         Ok(retry_succeeded)
     }
 
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "generate_improved_skill coordinates the prompt, candidate validation, and persistence steps through shared learning state."
+    )]
     pub(crate) async fn generate_improved_skill(
         &mut self,
         skill_name: &str,
@@ -240,7 +243,10 @@ impl<C: Channel> Agent<C> {
         .await
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "check_improvement_allowed uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     pub(crate) async fn check_improvement_allowed(
         &self,
         memory: &SemanticMemory,
@@ -450,7 +456,6 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    #[allow(clippy::cast_precision_loss)]
     /// Check rollback eligibility for all skills that have an active auto-generated version.
     /// Called once per turn before processing the user message so that accumulated outcome
     /// data can trigger rollback even when no new tool executions occur in the current turn.
@@ -480,7 +485,10 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "check_rollback_inner uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     async fn check_rollback_inner(&self, skill_name: &str) {
         if !self.is_learning_enabled() {
             return;

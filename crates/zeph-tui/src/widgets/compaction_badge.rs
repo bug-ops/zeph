@@ -62,7 +62,10 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
 /// Returns `"?"` when system time is unavailable or `at_ms` is in the future.
 fn format_elapsed(at_ms: u64) -> String {
     // u128 → u64: safe until year 584 million; truncation is acceptable for display.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "now_ms narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let now_ms = std::time::SystemTime::UNIX_EPOCH
         .elapsed()
         .map_or(0, |d| d.as_millis() as u64);
@@ -79,7 +82,10 @@ fn format_elapsed(at_ms: u64) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "format_elapsed_seconds narrows a value whose domain-specific range is bounded at this conversion site"
+)]
 mod tests {
     use super::*;
 

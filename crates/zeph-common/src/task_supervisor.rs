@@ -752,7 +752,6 @@ impl TaskSupervisor {
     ///
     /// Panics inside `f` are captured and returned as [`BlockingError::Panicked`] — they
     /// do not propagate to the caller.
-    #[allow(clippy::needless_pass_by_value)] // `name` is cloned into async task and registry
     pub fn spawn_blocking<F, R>(&self, name: Arc<str>, f: F) -> BlockingHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,

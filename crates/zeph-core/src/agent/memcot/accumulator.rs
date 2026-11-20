@@ -279,7 +279,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::large_futures)]
+    #[expect(
+        clippy::large_futures,
+        reason = "reset_session_counters_clears_state keeps the composed async path concrete to preserve static dispatch without adding boxing"
+    )]
     async fn reset_session_counters_clears_state() {
         let cfg = MemCotConfig {
             enabled: true,

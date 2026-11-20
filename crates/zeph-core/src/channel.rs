@@ -300,7 +300,7 @@ const STATUS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// # Implementor contract: side effects must stay poll-time-lazy (#6746)
 ///
 /// Every method here returns `impl Future<Output = _> + Send`. A body with no internal
-/// `.await` must remain a genuine `async fn` (with `#[allow(clippy::unused_async_trait_impl)]`)
+/// `.await` must remain a genuine `async fn` (with `#[expect(clippy::unused_async_trait_impl, reason = "Channel implements the trait-required async signature while completing synchronously")]`)
 /// whenever it has an observable side effect — mutating `self`, sending on a channel, or
 /// panicking. **Never** rewrite such a body to a synchronous `fn` wrapping
 /// `std::future::ready(body)`: `std::future::ready` evaluates its argument eagerly, at the

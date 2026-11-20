@@ -206,7 +206,10 @@ impl RouterProvider {
         let Some(cfg) = &self.bandit_config else {
             return;
         };
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "reward narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let reward = (quality_score as f32) - cfg.cost_weight * (cost_fraction as f32);
         let reward = reward.clamp(-1.0, 1.0);
         let mut state = bandit_arc.lock();
@@ -312,7 +315,6 @@ impl RouterProvider {
                         .map_or(0.0, |s| s.success_ema - s.latency_ema_ms / 10_000.0);
                     // Multiply EMA score by coherence multiplier clamped to [0.5, 1.0].
                     let multiplier = (coherence / asi_cfg.coherence_threshold).clamp(0.5, 1.0);
-                    #[allow(clippy::cast_possible_truncation)]
                     let adjusted = base_score * f64::from(multiplier);
                     (idx, adjusted)
                 })

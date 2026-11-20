@@ -137,7 +137,10 @@ impl RpeRouter {
                 .iter()
                 .filter(|e| !self.entity_history.contains(e))
                 .count();
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let ratio = novel as f32 / candidate_entities.len() as f32;
             ratio
         };

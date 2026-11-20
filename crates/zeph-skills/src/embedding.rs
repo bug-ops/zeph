@@ -393,7 +393,10 @@ mod tests {
             false
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "embed implements the trait-required async signature while completing synchronously"
+        )]
         async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
             let call_no = self.embed_calls.fetch_add(1, Ordering::SeqCst) + 1;
             if self.fail_embed_at_call == Some(call_no) {

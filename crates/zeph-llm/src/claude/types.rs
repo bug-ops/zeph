@@ -544,7 +544,6 @@ impl ToolApiResponse {
 }
 
 #[derive(Deserialize, Debug)]
-#[allow(clippy::struct_field_names)]
 pub(crate) struct ApiUsage {
     #[serde(default)]
     pub input_tokens: u64,

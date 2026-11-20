@@ -710,7 +710,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     ///
     /// Returns `(spawn_success, concurrency_fail, done_status)`.
     /// `done_status` is `Some` when spawn failure forces the scheduler to emit a `Done` action.
-    #[allow(clippy::too_many_lines)] // sub-agent dispatch setup: task lookup, constraint computation, spawn-context assembly, task-supervisor wiring are tightly coupled — extracting would obscure the control flow
+    #[expect(
+        clippy::too_many_lines,
+        reason = "handle_scheduler_spawn_action keeps ordered steps together because they share state and control flow"
+    )] // sub-agent dispatch setup: task lookup, constraint computation, spawn-context assembly, task-supervisor wiring are tightly coupled — extracting would obscure the control flow
     pub(super) async fn handle_scheduler_spawn_action(
         &mut self,
         scheduler: &mut zeph_orchestration::DagScheduler,
@@ -1027,7 +1030,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     // violating Send bounds on the async trait. The per-branch dispatch helpers
     // (`handle_scheduler_spawn_action`, `handle_run_inline_action`, `cancel_agents_from_actions`)
     // already carry the extractable work; the remaining body is irreducible control flow.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "run_scheduler_loop keeps ordered steps together because they share state and control flow"
+    )]
     /// Drive the [`DagScheduler`] tick loop until it emits `SchedulerAction::Done`.
     ///
     /// Each iteration yields at `wait_event()`, during which `channel.recv()` is polled
@@ -1708,7 +1714,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     ///
     /// `task_allowlist` is the planner-emitted per-task allowlist (normalized tool ids); tools
     /// outside it are neither offered to the model nor dispatched.
-    #[allow(clippy::too_many_lines)] // per-iteration secret masking (#5437) crossed the 100-line limit
+    #[expect(
+        clippy::too_many_lines,
+        reason = "run_inline_tool_loop keeps ordered steps together because they share state and control flow"
+    )] // per-iteration secret masking (#5437) crossed the 100-line limit
     pub(super) async fn run_inline_tool_loop(
         &mut self,
         prompt: &str,

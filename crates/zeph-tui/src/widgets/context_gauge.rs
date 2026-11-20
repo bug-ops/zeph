@@ -34,9 +34,16 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         (0.0_f64, format!("{}k / —", used / 1000))
     } else {
         let clamped = used.min(max);
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "r uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let r = clamped as f64 / max as f64;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "pct narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+        )]
         let pct = (r * 100.0) as u64;
         (r, format!("{}k / {}k · {pct}%", used / 1000, max / 1000))
     };
@@ -56,10 +63,11 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
 
 /// Build a block-character bar string of the given `width` (number of cells).
 fn build_bar(ratio: f64, width: usize) -> String {
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::cast_precision_loss
+        clippy::cast_precision_loss,
+        reason = "filled narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
     )]
     let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
     let empty = width.saturating_sub(filled);
@@ -87,7 +95,10 @@ mod tests {
         let ratio: f64 = if max == 0 {
             0.0
         } else {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "r uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let r = used.min(max) as f64 / max as f64;
             r
         };
@@ -102,7 +113,10 @@ mod tests {
         let m = make_metrics(200_000, 128_000);
         let max = m.context_max_tokens;
         let used = m.context_tokens;
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let ratio = used.min(max) as f64 / max as f64;
         assert!((ratio - 1.0).abs() < f64::EPSILON);
     }

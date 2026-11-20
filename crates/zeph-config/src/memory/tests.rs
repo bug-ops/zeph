@@ -12,7 +12,6 @@ mod general_config {
     fn pruning_strategy_toml_task_aware_mig_falls_back_to_reactive() {
         #[derive(serde::Deserialize)]
         struct Wrapper {
-            #[allow(dead_code)]
             pruning_strategy: PruningStrategy,
         }
         let toml = r#"pruning_strategy = "task_aware_mig""#;
@@ -28,7 +27,6 @@ mod general_config {
     fn pruning_strategy_toml_round_trip() {
         #[derive(serde::Deserialize)]
         struct Wrapper {
-            #[allow(dead_code)]
             pruning_strategy: PruningStrategy,
         }
         for (input, expected) in [
@@ -46,7 +44,10 @@ mod general_config {
     #[test]
     fn pruning_strategy_toml_unknown_value_errors() {
         #[derive(serde::Deserialize)]
-        #[allow(dead_code)]
+        #[expect(
+            dead_code,
+            reason = "Wrapper is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )]
         struct Wrapper {
             pruning_strategy: PruningStrategy,
         }

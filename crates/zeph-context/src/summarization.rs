@@ -49,7 +49,10 @@ pub struct SummarizationDeps {
     ///
     /// Used by `zeph-core` to write debug dumps without the `SummarizationDeps` knowing
     /// about `DebugDumper`. Pass `None` when debug dumps are not needed.
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "summarize_structured keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     pub on_anchored_summary: Option<Arc<dyn Fn(&AnchoredSummary, bool) + Send + Sync>>,
 }
 
@@ -533,11 +536,12 @@ pub fn build_tool_pair_summary_prompt(req: &Message, res: &Message) -> String {
 /// // half the tool responses using a middle-out strategy — preserving the most
 /// // recent and oldest results while collapsing middle ones to [compacted].
 /// ```
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    reason = "remove_tool_responses_middle_out uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
 )]
 #[must_use]
 pub fn remove_tool_responses_middle_out(mut messages: Vec<Message>, fraction: f32) -> Vec<Message> {

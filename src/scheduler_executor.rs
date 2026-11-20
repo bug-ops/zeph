@@ -545,7 +545,10 @@ mod tests {
         (SchedulerExecutor::new(tx, store), rx)
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "make_call takes ownership because the value is consumed by the operation"
+    )]
     fn make_call(tool_id: &str, params: serde_json::Value) -> ToolCall {
         let serde_json::Value::Object(params) = params else {
             panic!("scheduler test params must be a JSON object");

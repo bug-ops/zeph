@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-#[allow(unused_imports)]
+#[cfg(test)]
 use zeph_db::sql;
 
 use crate::embedding_store::EmbeddingStore;
@@ -177,7 +177,11 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
         fallback = tracing::field::Empty,
     )
 )]
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "hela_spreading_recall This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 pub async fn hela_spreading_recall(
     store: &GraphStore,
     embeddings: &EmbeddingStore,
@@ -721,7 +725,10 @@ impl SpreadingActivation {
     /// Formula: `1.0 / (1.0 + age_days * temporal_decay_rate)`.
     /// Returns `1.0` when `temporal_decay_rate = 0.0` (no temporal adjustment).
     /// Reuses the same formula as `GraphFact::score_with_decay` (SA-INV-05).
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "recency_weight uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     fn recency_weight(&self, valid_from: &str, now_secs: i64) -> f32 {
         if self.params.temporal_decay_rate <= 0.0 {
             return 1.0;
@@ -733,7 +740,10 @@ impl SpreadingActivation {
         let age_days = age_secs as f64 / 86_400.0;
         let weight = 1.0_f64 / (1.0 + age_days * self.params.temporal_decay_rate);
         // cast f64 -> f32: safe, weight is in [0.0, 1.0]
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "w narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let w = weight as f32;
         w
     }

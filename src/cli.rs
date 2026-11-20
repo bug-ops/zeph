@@ -12,7 +12,10 @@ use zeph_memory::store::agent_sessions::SessionStatus;
     version,
     about = "Lightweight AI agent with hybrid inference"
 )]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Cli These independent flags belong to the same configuration or state object and are set or read together"
+)]
 pub(crate) struct Cli {
     /// Run with TUI dashboard
     #[arg(long)]

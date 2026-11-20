@@ -202,6 +202,10 @@ impl BenchRun {
     /// assert_eq!(run.aggregate.exact_match, 1);
     /// assert_eq!(run.aggregate.error_count, 0);
     /// ```
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The aggregate averages benchmark scores, where the dataset count is small relative to f64 precision."
+    )]
     pub fn recompute_aggregate(&mut self) {
         let total = self.results.len();
 
@@ -209,14 +213,11 @@ impl BenchRun {
             self.aggregate = Aggregate::default();
             return;
         }
-
-        #[allow(clippy::cast_precision_loss)]
         let mean_score = self.results.iter().map(|r| r.score).sum::<f64>() / total as f64;
 
         // Median: sort scores, average the two middle values for even N.
         let mut sorted_scores: Vec<f64> = self.results.iter().map(|r| r.score).collect();
         sorted_scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        #[allow(clippy::cast_precision_loss)]
         let median_score = if total % 2 == 1 {
             sorted_scores[total / 2]
         } else {
@@ -224,7 +225,6 @@ impl BenchRun {
         };
 
         // Population standard deviation (divide by N).
-        #[allow(clippy::cast_precision_loss)]
         let variance = self
             .results
             .iter()

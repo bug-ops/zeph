@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use zeph_db::{ActiveDialect, DbPool};

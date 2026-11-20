@@ -383,7 +383,10 @@ pub struct ElicitationState {
 /// - [`with_metrics_rx`](Self::with_metrics_rx) — live metrics watch channel.
 /// - [`with_cancel_signal`](Self::with_cancel_signal) — Ctrl-C cancel notify.
 /// - [`with_command_tx`](Self::with_command_tx) — slash-command dispatch channel.
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct App {
     // SESSION-LOCAL state (10 fields relocated into SessionSlot)
     pub(crate) sessions: SessionRegistry,
@@ -701,7 +704,10 @@ pub(crate) fn format_security_report(metrics: &MetricsSnapshot) -> String {
 
     let mut lines = vec![format!("Security event history ({n} events):")];
     for ev in &metrics.security_events {
-        #[allow(clippy::cast_possible_wrap)]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "ts converts a value bounded to the destination range by the domain invariant"
+        )]
         let ts = chrono::DateTime::from_timestamp(ev.timestamp as i64, 0).map_or_else(
             || "??:??:??".to_owned(),
             |dt| {

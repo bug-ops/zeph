@@ -273,7 +273,10 @@ async fn check_gitignore_for_local(memory_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::format_collect)]
+    #![expect(
+        clippy::format_collect,
+        reason = "The iterator is rendered into one output string."
+    )]
     use std::assert_matches;
 
     use serial_test::serial;

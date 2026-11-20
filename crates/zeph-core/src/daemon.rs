@@ -236,7 +236,13 @@ pub fn remove_pid_file(path: &str) -> std::io::Result<()> {
 // Wraps the shared guard purely for its `Drop` impl (unlinks the pid file on release).
 #[cfg(unix)]
 #[derive(Debug)]
-pub struct PidGuard(#[allow(dead_code)] zeph_common::pidfile::PidLockGuard);
+pub struct PidGuard(
+    #[expect(
+        dead_code,
+        reason = "acquire is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
+    zeph_common::pidfile::PidLockGuard,
+);
 
 #[cfg(unix)]
 impl PidGuard {
@@ -313,7 +319,10 @@ fn expand_tilde(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::field_reassign_with_default)]
+    #![expect(
+        clippy::field_reassign_with_default,
+        reason = "The fixture overrides selected fields while retaining the other default values."
+    )]
     use std::assert_matches;
 
     use super::*;

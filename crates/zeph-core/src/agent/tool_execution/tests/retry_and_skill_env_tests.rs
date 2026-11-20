@@ -92,7 +92,10 @@ fn make_tool_use_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseReq
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "call_process_one_tool_result This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn call_process_one_tool_result<C: crate::channel::Channel>(
     agent: &mut crate::agent::Agent<C>,
     tc: &zeph_llm::provider::ToolUseRequest,

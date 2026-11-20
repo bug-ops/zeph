@@ -287,7 +287,10 @@ pub(crate) struct SchedulerInitResult {
 /// Does NOT touch any `Agent` — returns raw channel receivers so callers can apply them to
 /// whichever `Agent<C>` they control. Returns `None` when the scheduler is disabled.
 #[cfg(feature = "scheduler")]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "init_scheduler connects optional persistence, job handlers, and background scheduling into one lifecycle operation."
+)]
 pub(crate) async fn init_scheduler(
     config: &Config,
     shutdown_rx: watch::Receiver<bool>,
@@ -474,7 +477,6 @@ pub(crate) async fn init_scheduler(
 }
 
 #[cfg(feature = "scheduler")]
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn bootstrap_scheduler<C>(
     agent: zeph_core::agent::Agent<C>,
     config: &Config,

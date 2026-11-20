@@ -158,7 +158,10 @@ impl RollingRateTracker {
         }
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "rate uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     fn rate(&self) -> f32 {
         if self.window.is_empty() {
             return 0.0;
@@ -439,7 +442,10 @@ pub fn compute_reference_completeness(content: &str) -> f32 {
 
     // Normalize by approximate word count; each issue costs ~0.25, floor at 0.0.
     let word_count = content.split_ascii_whitespace().count().max(1);
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let ratio = total_issues as f32 / word_count as f32;
     (1.0 - ratio * 2.0).clamp(0.0, 1.0)
 }
@@ -604,11 +610,20 @@ fn parse_llm_score(response: &str) -> f32 {
         return 0.5;
     };
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "iv narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let iv = val["information_value"].as_f64().unwrap_or(0.5) as f32;
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "rc narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let rc = val["reference_completeness"].as_f64().unwrap_or(0.5) as f32;
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "cr narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let cr = val["contradiction_risk"].as_f64().unwrap_or(0.0) as f32;
 
     // Mirror the rule-based formula with default weights.

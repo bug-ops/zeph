@@ -32,7 +32,6 @@ impl App {
 
     /// Decode a `KeyEvent` into the corresponding `Action`, or `None` if the event
     /// has no effect (e.g. an unrecognised key in a modal that ignores it).
-    #[allow(clippy::too_many_lines)]
     fn decode_key(&self, key: KeyEvent) -> Option<Action> {
         // Global: Ctrl-C cancels a busy agent turn immediately; when idle it arms a
         // double-press quit window (see `Action::RequestQuit`, reducer.rs).
@@ -120,8 +119,11 @@ impl App {
             _ => None,
         }
     }
-
-    #[allow(clippy::too_many_lines)] // large match over all TuiCommand variants
+    // large match over all TuiCommand variants
+    #[expect(
+        clippy::too_many_lines,
+        reason = "execute_command maps the TUI command registry to ordered view and action effects in one dispatch table."
+    )]
     pub(super) fn execute_command(&mut self, cmd: TuiCommand) {
         match cmd {
             TuiCommand::ViewConfig
@@ -787,8 +789,6 @@ impl App {
             _ => None,
         }
     }
-
-    #[allow(clippy::too_many_lines)]
     fn decode_normal_key(&self, key: KeyEvent) -> Option<Action> {
         if let Some(a) = self.decode_subagent_panel_key(key) {
             return Some(a);

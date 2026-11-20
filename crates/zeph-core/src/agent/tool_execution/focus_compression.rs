@@ -407,7 +407,10 @@ mod tests {
     // targeting is unaffected by the presence/position of a non-`ToolResult` sibling, and
     // that the `Image` part itself survives all three passes byte-for-byte.
     #[test]
-    #[allow(clippy::too_many_lines)] // control + interleaved runs, both passes asserted
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre_assembly_passes_preserve_image_sibling keeps ordered steps together because they share state and control flow"
+    )] // control + interleaved runs, both passes asserted
     fn pre_assembly_passes_preserve_image_sibling() {
         use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
         use zeph_llm::provider::{ImageData, ToolUseRequest};

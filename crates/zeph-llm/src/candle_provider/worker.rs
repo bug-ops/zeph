@@ -47,7 +47,13 @@ pub(crate) struct InferenceWorker {
     /// `Some` on the original worker; `None` on all clones (they share the same channel).
     /// The task exits naturally when all `Sender` clones are dropped — `guard` exists only
     /// to prevent premature abort, not for join.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The production worker retains its join handle to prevent premature task abort."
+        )
+    )]
     pub(super) guard: Option<tokio::task::JoinHandle<()>>,
 }
 

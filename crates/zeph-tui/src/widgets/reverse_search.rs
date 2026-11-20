@@ -140,7 +140,10 @@ pub fn render(
     } else {
         state.matches.len().min(MAX_VISIBLE)
     };
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "height narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let height = (visible as u16) + 2;
 
     let width: u16 = 60;

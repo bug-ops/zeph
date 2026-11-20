@@ -65,7 +65,10 @@ fn marker_score(content: &str) -> f64 {
 /// Returns score in [0.0, 1.0] using sigmoid-like curve.
 /// 0 chars → 0.0, 300 chars → ~0.5, 3000+ chars → ~0.91
 fn density_score(content: &str) -> f64 {
-    #[expect(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Character count is used as a smooth density proxy, not as an exact integer quantity."
+    )]
     let chars = content.chars().count() as f64;
     let x = chars / 300.0;
     (x / (1.0 + x)).min(1.0)

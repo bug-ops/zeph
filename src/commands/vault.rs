@@ -103,7 +103,10 @@ mod tests {
     use serial_test::serial;
 
     // R-02: default_vault_dir() env var code paths
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "default_vault_dir_xdg_config_home the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[test]
     #[serial]
     fn default_vault_dir_xdg_config_home() {
@@ -117,7 +120,10 @@ mod tests {
         assert_eq!(dir, PathBuf::from("/tmp/xdg-test/zeph"));
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "default_vault_dir_appdata the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[test]
     #[serial]
     fn default_vault_dir_appdata() {
@@ -132,7 +138,10 @@ mod tests {
         assert_eq!(dir, PathBuf::from("/tmp/appdata-test/zeph"));
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "default_vault_dir_home_fallback the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[test]
     #[serial]
     fn default_vault_dir_home_fallback() {
@@ -395,7 +404,10 @@ mod tests {
     // given, matching the precedence `zeph doctor` and agent startup already get via
     // `parse_vault_args` — previously `handle_vault_command` ignored them and always fell back
     // to the default vault directory.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "handle_vault_command_respects_env_vars_without_cli_override isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     #[test]
     #[serial]
     fn handle_vault_command_respects_env_vars_without_cli_override() {

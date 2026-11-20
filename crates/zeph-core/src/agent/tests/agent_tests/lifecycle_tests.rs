@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Integration tests await full agent sessions; future size reflects real agent state.
-#![allow(clippy::large_futures)]
+#![expect(
+    clippy::large_futures,
+    reason = "The test exercises the concrete async path without boxing its future."
+)]
 
-#[allow(unused_imports)]
 use super::*;
 use zeph_config::LearningConfig;
 

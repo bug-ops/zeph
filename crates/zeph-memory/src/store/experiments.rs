@@ -4,7 +4,6 @@
 use super::SqliteStore;
 use crate::error::MemoryError;
 use zeph_common::SessionId;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 #[derive(Debug, Clone)]

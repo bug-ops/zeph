@@ -10,7 +10,6 @@
 //! database are skipped and counted in [`ImportStats::skipped`].
 
 use serde::{Deserialize, Serialize};
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use zeph_db::ActiveDialect;

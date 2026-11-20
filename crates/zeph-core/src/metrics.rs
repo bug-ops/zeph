@@ -382,7 +382,10 @@ pub struct TurnTimings {
 /// use [`StaticMetricsInit`] and `AgentBuilder::with_static_metrics` instead of
 /// adding a raw `send_modify` call in the runner.
 #[derive(Debug, Clone, Default)]
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct MetricsSnapshot {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -930,7 +933,10 @@ pub trait HistogramRecorder: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::field_reassign_with_default)]
+    #![expect(
+        clippy::field_reassign_with_default,
+        reason = "The fixture overrides selected fields while retaining the other default values."
+    )]
 
     use super::*;
 

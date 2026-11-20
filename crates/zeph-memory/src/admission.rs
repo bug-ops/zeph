@@ -334,7 +334,10 @@ pub fn compute_factual_confidence(content: &str) -> f32 {
         .filter(|&&m| lower.contains(m))
         .count();
     // Each hedging marker reduces confidence by 0.1, min 0.2.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "penalty uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let penalty = (matches as f32) * 0.1;
     (1.0 - penalty).max(0.2)
 }

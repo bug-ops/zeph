@@ -249,7 +249,10 @@ impl CostTracker {
         let Some(pricing) = self.pricing_for(model, speed) else {
             return 0.0;
         };
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "record_auxiliary_usage uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         {
             pricing.prompt_cents_per_1k * (usage.input as f64) / 1000.0
                 + pricing.completion_cents_per_1k * (usage.output as f64) / 1000.0
@@ -425,7 +428,10 @@ impl CostTracker {
         if state.successful_tasks == 0 {
             return None;
         }
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "successful_tasks uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         Some(state.spent_cents / state.successful_tasks as f64)
     }
 

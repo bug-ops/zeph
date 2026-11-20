@@ -12,13 +12,6 @@ use crate::agent::ZephAcpAgentState;
 /// Handle an ACP `session.new` request.
 ///
 /// Creates a new agent session, spawns the agent loop, and returns the session ID.
-#[cfg_attr(
-    feature = "gonka",
-    expect(
-        clippy::large_futures,
-        reason = "Gonka provider state increases the new-session handler future size beyond the lint threshold."
-    )
-)]
 pub(crate) async fn handle_new_session(
     req: acp::v1::schema::NewSessionRequest,
     responder: acp::v1::Responder<acp::v1::schema::NewSessionResponse>,

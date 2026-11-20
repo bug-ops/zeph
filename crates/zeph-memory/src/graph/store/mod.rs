@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use zeph_common::trust_level::TurnContextTrust;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use futures::Stream;
@@ -409,7 +408,10 @@ impl GraphStore {
     ///
     /// Never returns an error.
     #[cfg(feature = "postgres")]
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "checkpoint_wal matches the async interface used by neighboring implementations"
+    )]
     #[tracing::instrument(name = "memory.graph.store.checkpoint_wal", skip_all)]
     pub async fn checkpoint_wal(&self) -> Result<(), MemoryError> {
         Ok(())
@@ -555,7 +557,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "insert_edge This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     #[tracing::instrument(name = "memory.graph.store.insert_edge", skip_all)]
     pub async fn insert_edge(
         &self,
@@ -597,7 +602,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[tracing::instrument(name = "memory.graph.store.insert_edge_typed", skip_all)]
     pub async fn insert_edge_typed(
@@ -650,9 +658,15 @@ impl GraphStore {
             // Benna-Fusi multi-timescale update (#3709):
             // fast tracks incoming confidence at high plasticity; slow integrates fast at high retention.
             // Clamp DB-read values to [0, 1] as defense-in-depth against corrupted rows.
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "stored_fast_f32 narrows a value whose domain-specific range is bounded at this conversion site"
+            )]
             let stored_fast_f32 = (stored_fast as f32).clamp(0.0, 1.0);
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "stored_slow_f32 narrows a value whose domain-specific range is bounded at this conversion site"
+            )]
             let stored_slow_f32 = (stored_slow as f32).clamp(0.0, 1.0);
             let new_fast = stored_fast_f32 + self.benna_fast_rate * (confidence - stored_fast_f32);
             let new_slow = stored_slow_f32 + self.benna_slow_rate * (new_fast - stored_slow_f32);
@@ -1420,9 +1434,15 @@ impl GraphStore {
         let mut scores: HashMap<EntityId, f32> =
             entity_ids.iter().map(|&id| (id, 0.0_f32)).collect();
         for (entity_id, degree, type_diversity) in all_rows {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "norm_degree uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let norm_degree = degree as f32 / max_degree as f32;
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "norm_diversity uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let norm_diversity = (type_diversity as f32 / 4.0).min(1.0);
             let score = 0.6 * norm_degree + 0.4 * norm_diversity;
             scores.insert(entity_id, score);
@@ -1991,7 +2011,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "bfs_with_depth keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     #[tracing::instrument(name = "memory.graph.store.bfs_with_depth", skip_all)]
     pub async fn bfs_with_depth(
         &self,
@@ -2018,7 +2041,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "bfs_at_timestamp keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     #[tracing::instrument(name = "memory.graph.store.bfs_at_timestamp", skip_all)]
     pub async fn bfs_at_timestamp(
         &self,
@@ -2052,7 +2078,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "bfs_typed keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     #[tracing::instrument(name = "memory.graph.store.bfs_typed", skip_all)]
     pub async fn bfs_typed(
         &self,
@@ -2081,7 +2110,10 @@ impl GraphStore {
     ///
     /// All IDs used in dynamic SQL come from our own database — no user input reaches the
     /// format string, so there is no SQL injection risk.
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "bfs_core keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     #[tracing::instrument(name = "memory.graph.store.bfs_core", skip_all)]
     async fn bfs_core(
         &self,
@@ -2184,7 +2216,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "bfs_fetch_results keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     #[tracing::instrument(name = "memory.graph.store.bfs_fetch_results", skip_all)]
     async fn bfs_fetch_results(
         &self,
@@ -2573,7 +2608,10 @@ fn edge_from_row(row: EdgeRow) -> Result<Edge, MemoryError> {
         canonical_relation,
         relation: row.relation,
         fact: row.fact,
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Edge confidence is stored as f64 for SQL aggregation and exposed as f32 in the graph model."
+        )]
         confidence: row.confidence as f32,
         valid_from: row.valid_from,
         valid_to: row.valid_to,
@@ -2586,14 +2624,22 @@ fn edge_from_row(row: EdgeRow) -> Result<Edge, MemoryError> {
         last_retrieved_at: row.last_retrieved_at,
         superseded_by: row.superseded_by.map(|v| EdgeId(i64::from(v))),
         supersedes: row.supersedes.map(EdgeId),
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Edge weights are stored as f64 for SQL aggregation and exposed as f32 in the graph model."
+        )]
         weight: row.weight as f32,
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Edge confidences are stored as f64 for SQL aggregation and exposed as f32 in the graph model."
+        )]
         confidence_fast: row.confidence_fast as f32,
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Edge confidences are stored as f64 for SQL aggregation and exposed as f32 in the graph model."
+        )]
         confidence_slow: row.confidence_slow as f32,
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        turn_index: row.turn_index.map(|v| v as u32),
+        turn_index: row.turn_index.and_then(|v| u32::try_from(v).ok()),
         trust_level: decode_trust_level(row.trust_level)?,
     })
 }
@@ -2769,7 +2815,10 @@ impl GraphStore {
     /// - [`MemoryError::SupersedeCycle`] — the new edge would create a supersede cycle.
     /// - [`MemoryError::SupersedeDepthExceeded`] — chain depth cap would be exceeded.
     /// - [`MemoryError::Sqlx`] / [`MemoryError::Db`] — database errors.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "to This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     // TODO(#6935): B3 refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[tracing::instrument(name = "memory.graph.insert_or_supersede", skip_all)]
@@ -2814,7 +2863,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database transaction fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "insert_or_supersede_with_turn_index_and_metrics This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     #[tracing::instrument(name = "memory.graph.store.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede_with_turn_index_and_metrics(
         &self,
@@ -2924,7 +2976,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Propagates errors from [`Self::insert_or_supersede_with_metrics`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[tracing::instrument(name = "memory.graph.store.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede(
@@ -2965,7 +3020,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Propagates errors from [`Self::insert_or_supersede_with_metrics`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[tracing::instrument(name = "memory.graph.store.insert_or_supersede_conflict", skip_all)]
     pub async fn insert_or_supersede_with_conflict_detection(
@@ -3119,7 +3177,11 @@ impl GraphStore {
         .await?
         .flatten();
 
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "d converts a value that is nonnegative by the domain invariant at this site; narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let d = depth.unwrap_or(0) as usize;
         if d > SUPERSEDE_DEPTH_CAP {
             return Err(MemoryError::SupersedeCycle(head_id));
@@ -3338,7 +3400,10 @@ async fn record_reassertion(
     benna_fast_rate: f32,
     benna_slow_rate: f32,
 ) -> Result<(), MemoryError> {
-    #[allow(clippy::cast_possible_wrap)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "asserted_at converts a value bounded to the destination range by the domain invariant"
+    )]
     let asserted_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -3364,9 +3429,15 @@ async fn record_reassertion(
     .await?;
 
     if let Some((stored_fast, stored_slow)) = existing {
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "stored_fast_f32 narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let stored_fast_f32 = (stored_fast as f32).clamp(0.0, 1.0);
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "stored_slow_f32 narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let stored_slow_f32 = (stored_slow as f32).clamp(0.0, 1.0);
         let new_fast = stored_fast_f32 + benna_fast_rate * (confidence - stored_fast_f32);
         let new_slow = stored_slow_f32 + benna_slow_rate * (new_fast - stored_slow_f32);
@@ -3457,7 +3528,10 @@ async fn merge_edge_trust(
 }
 
 /// Insert a new edge row and return its generated ID.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "insert_new_edge This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 #[tracing::instrument(name = "memory.graph.store.insert_new_edge", skip_all)]
 async fn insert_new_edge(
     tx: &mut Tx<'_>,
@@ -3642,7 +3716,10 @@ fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Result<Vec<(Entity, f32)>, Me
             qdrant_point_id,
             trust_level: decode_trust_level(trust_level)?,
         };
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "normalized narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let normalized = (raw_score / max_score).clamp(0.0, 1.0) as f32;
         result.push((entity, normalized));
     }

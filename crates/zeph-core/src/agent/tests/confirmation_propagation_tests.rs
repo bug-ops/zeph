@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Integration tests await full agent sessions; future size reflects real agent state.
-#![allow(clippy::large_futures)]
+#![expect(
+    clippy::large_futures,
+    reason = "The test exercises the concrete async path without boxing its future."
+)]
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -86,7 +89,10 @@ impl ToolExecutor for DagAwareToolExecutor {
         ]
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "execute_tool_call implements the trait-required async signature while completing synchronously"
+    )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let mut results = self.results.lock().unwrap();
         results.remove(call.tool_id.as_str()).unwrap_or(Ok(None))

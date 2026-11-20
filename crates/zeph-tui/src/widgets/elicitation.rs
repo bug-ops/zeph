@@ -226,7 +226,10 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, the
 
     // Height: 2 (borders) + 1 (title) + message + 1 (blank) + n*2 (fields) + 2 (buttons)
     let max_height = area.height.saturating_sub(2);
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "height narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let height = ((6 + message_rows as usize + n_fields * 2) as u16).min(max_height);
     let popup = centered_rect(70, height, area);
 
@@ -246,7 +249,10 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, the
     frame.render_widget(outer_block, popup);
 
     // Split inner area: message, fields, buttons
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "field_rows narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let field_rows = (n_fields as u16).saturating_mul(2);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -341,7 +347,10 @@ fn render_fields(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, 
         };
 
         // Split row: label on left, value on right
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "label_width narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let label_width = (label.len() as u16).min(row.width / 2);
         let field_chunks =
             Layout::horizontal([Constraint::Length(label_width), Constraint::Min(1)]).split(row);

@@ -221,10 +221,11 @@ impl ContextService {
     /// Does nothing while history fits in `slot` tokens. Once it overflows, trims down to
     /// `slot * watermark` so the following turns append without trimming again. Returns the
     /// number of removed messages.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        reason = "trim_history_to_watermark uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
     )]
     #[tracing::instrument(
         name = "agent_context.service.trim_history",
@@ -492,7 +493,10 @@ impl ContextService {
     /// if the context assembler encounters an internal error. In the `append` layout fetch
     /// errors never surface: the history is already trimmed by then, so the turn degrades to a
     /// [`ContextDelta`] without retrieved context that still reports `trimmed_messages`.
-    #[allow(clippy::too_many_lines)] // sequential context-assembly pipeline; splitting would reduce readability
+    #[expect(
+        clippy::too_many_lines,
+        reason = "prepare_context keeps ordered steps together because they share state and control flow"
+    )] // sequential context-assembly pipeline; splitting would reduce readability
     #[tracing::instrument(name = "agent_context.service.prepare_context", skip_all, err)]
     pub async fn prepare_context(
         &self,
@@ -576,27 +580,33 @@ impl ContextService {
         }
 
         // Compression-spectrum retrieval policy (#3305, #3455).
-        let active_levels: &'static [zeph_memory::compression::CompressionLevel] =
-            if let Some(ref budget) = view.context_manager.budget {
-                let used = view.cached_prompt_tokens;
-                let max = budget.max_tokens();
-                #[allow(clippy::cast_precision_loss)]
-                let remaining_ratio = if max == 0 {
-                    1.0_f32
-                } else {
-                    1.0 - (used as f32 / max as f32).clamp(0.0, 1.0)
-                };
-                let levels =
-                    zeph_memory::compression::RetrievalPolicy::default().select(remaining_ratio);
-                tracing::debug!(
-                    remaining_ratio,
-                    active_levels = ?levels,
-                    "compression_spectrum: retrieval policy selected"
-                );
-                levels
+        let active_levels: &'static [zeph_memory::compression::CompressionLevel] = if let Some(
+            ref budget,
+        ) =
+            view.context_manager.budget
+        {
+            let used = view.cached_prompt_tokens;
+            let max = budget.max_tokens();
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "remaining_ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
+            let remaining_ratio = if max == 0 {
+                1.0_f32
             } else {
-                &[]
+                1.0 - (used as f32 / max as f32).clamp(0.0, 1.0)
             };
+            let levels =
+                zeph_memory::compression::RetrievalPolicy::default().select(remaining_ratio);
+            tracing::debug!(
+                remaining_ratio,
+                active_levels = ?levels,
+                "compression_spectrum: retrieval policy selected"
+            );
+            levels
+        } else {
+            &[]
+        };
 
         let memory_backend: Option<std::sync::Arc<dyn zeph_common::memory::ContextMemoryBackend>> =
             view.memory.clone().map(
@@ -800,7 +810,10 @@ impl ContextService {
     /// the session digest. Returns a [`ContextDelta`] whose `code_context` field the caller
     /// must apply via `inject_code_context`, plus the count of messages freshly inserted at
     /// indices `1..1+inserted_count` (used by the fidelity scorer as the exempt range — INV-10).
-    #[allow(clippy::too_many_lines)] // sequential message injection: order matters, cannot split
+    #[expect(
+        clippy::too_many_lines,
+        reason = "apply_prepared_context keeps ordered steps together because they share state and control flow"
+    )] // sequential message injection: order matters, cannot split
     #[tracing::instrument(name = "agent_context.service.apply_prepared_context", skip_all)]
     async fn apply_prepared_context(
         &self,
@@ -1014,7 +1027,10 @@ impl ContextService {
     /// Sanitizes and scrubs every fetched section the same way the `replace` path does before
     /// injection and concatenates them into one block stamped with the keys of the items it
     /// carries. History is already trimmed by the caller; `trimmed_messages` is passed through.
-    #[allow(clippy::too_many_lines)] // sequential section assembly: order matters
+    #[expect(
+        clippy::too_many_lines,
+        reason = "collect_turn_context keeps ordered steps together because they share state and control flow"
+    )] // sequential section assembly: order matters
     #[tracing::instrument(
         name = "agent_context.service.collect_turn_context",
         skip_all,
@@ -1321,11 +1337,9 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError::Memory`] if `SQLite` persistence fails during Hard compaction.
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::too_many_lines
+    #[expect(
+        clippy::too_many_lines,
+        reason = "maybe_compact keeps the multi-tier compaction state transitions together so cooldown and status handling remain ordered."
     )]
     #[tracing::instrument(name = "agent_context.service.maybe_compact", skip_all, err)]
     pub async fn maybe_compact(
@@ -1468,10 +1482,11 @@ impl ContextService {
     /// Does not trigger an LLM call. Does not set `compacted_this_turn` so Hard tier
     /// may still fire in the same turn if context remains above the hard threshold.
     #[tracing::instrument(name = "agent_context.service.do_soft_compaction", skip_all)]
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        reason = "do_soft_compaction uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
     )]
     async fn do_soft_compaction(
         &self,
@@ -1526,10 +1541,11 @@ impl ContextService {
 
     /// Execute the Hard compaction tier: soft pass first, then LLM summarization if needed.
     #[tracing::instrument(name = "agent_context.service.do_hard_compaction", skip_all, err)]
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        reason = "do_hard_compaction uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
     )]
     async fn do_hard_compaction(
         &self,
@@ -2007,10 +2023,11 @@ fn format_tiered_recall(items: &[String]) -> Option<Message> {
 }
 
 /// Per-turn token cap of the `append` layout: `turn_budget_ratio` of the context budget.
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    reason = "turn_cap uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
 )]
 fn turn_cap(manager: &zeph_context::manager::ContextManager, append: AppendSettings) -> usize {
     manager.budget.as_ref().map_or(0, |b| {
@@ -3070,7 +3087,10 @@ mod tests {
             Cow::Borrowed(s)
         }
 
-        #[allow(clippy::too_many_arguments)]
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "make_view This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+        )]
         fn make_view<'a>(
             sanitizer: &'a ContentSanitizer,
             quarantine_summarizer: Option<&'a QuarantinedSummarizer>,
@@ -3969,7 +3989,10 @@ mod tests {
             }
         }
 
-        #[allow(clippy::too_many_arguments)]
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "make_view This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+        )]
         pub(super) fn make_view<'a>(
             fixture: &'a Fixture,
             last_confidence: &'a mut Option<f32>,
@@ -5185,7 +5208,10 @@ mod tests {
             // min_to_free (falls through to Step 4) but the LLM step's real reduction lands
             // at/under the threshold (escapes the "still Hard" recheck).
             let hard_threshold_tokens = u64::midpoint(measured_final_tokens, non_body_overhead);
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "hard_ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let hard_ratio = hard_threshold_tokens as f32 / budget_tokens as f32;
 
             let mut fixture =

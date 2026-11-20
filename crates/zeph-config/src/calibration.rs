@@ -85,7 +85,10 @@ impl ConfidenceCalibration {
     /// Returns [`CalibrationError`] when the knots violate an invariant: fewer than two points,
     /// a coordinate outside `0.0..=1.0`, first raw not `0.0`, last raw not `1.0`, raw not strictly
     /// increasing, or calibrated decreasing.
-    #[allow(clippy::float_cmp)] // endpoints must be exactly 0.0 and 1.0
+    #[expect(
+        clippy::float_cmp,
+        reason = "new compares a deterministic value produced by the same arithmetic path"
+    )] // endpoints must be exactly 0.0 and 1.0
     pub fn new(points: Vec<[f32; 2]>) -> Result<Self, CalibrationError> {
         if points.is_empty() {
             return Ok(Self::identity());
@@ -322,7 +325,10 @@ mod tests {
     fn threshold_deserialize_rejects_nan_and_out_of_range() {
         #[derive(Deserialize)]
         struct W {
-            #[allow(dead_code)]
+            #[expect(
+                dead_code,
+                reason = "this item is reached through feature-gated or generated integration paths rather than direct Rust calls"
+            )]
             t: ConfidenceThreshold,
         }
         assert!(toml::from_str::<W>("t = nan").is_err());

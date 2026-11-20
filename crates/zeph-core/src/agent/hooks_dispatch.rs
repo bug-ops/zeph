@@ -274,7 +274,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::HookAgentCtx;
-    #[allow(clippy::wildcard_imports)]
+    #[expect(
+        clippy::wildcard_imports,
+        reason = "simulate_cwd_change groups a cohesive internal module surface used throughout this implementation"
+    )]
     use crate::agent::agent_tests::*;
 
     /// Helper: point the agent's `last_known_cwd` at `from` and the real process cwd at `to`,

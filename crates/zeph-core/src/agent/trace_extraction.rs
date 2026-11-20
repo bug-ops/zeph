@@ -144,7 +144,10 @@ impl<C: Channel> super::Agent<C> {
 }
 
 /// Background task: build extractor, embed existing skills, run extraction, write idempotency row.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "run_extraction This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn run_extraction(
     extract_provider: AnyProvider,
     embed_provider: AnyProvider,

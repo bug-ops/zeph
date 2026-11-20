@@ -4,7 +4,10 @@
 use super::super::agent_tests::{
     MockChannel, MockToolExecutor, create_test_registry, mock_provider, mock_provider_failing,
 };
-#[allow(clippy::wildcard_imports)]
+#[expect(
+    clippy::wildcard_imports,
+    reason = "test_memory groups a cohesive internal module surface used throughout this implementation"
+)]
 use super::super::*;
 use super::background::{
     AriseTaskArgs, arise_store_version, chrono_parse_sqlite, write_skill_file,
@@ -45,7 +48,10 @@ fn create_registry_with_tempdir() -> (SkillRegistry, tempfile::TempDir) {
     (registry, temp_dir)
 }
 
-#[allow(clippy::default_trait_access)]
+#[expect(
+    clippy::default_trait_access,
+    reason = "learning_config_enabled uses the concrete type name to keep the default value unambiguous"
+)]
 fn learning_config_enabled() -> LearningConfig {
     LearningConfig {
         enabled: true,

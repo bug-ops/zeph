@@ -34,7 +34,10 @@ impl EmbedModel {
     /// # Errors
     ///
     /// Returns an error if model download, hash verification, or loading fails.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     pub fn load(
         repo_id: &str,
         hf_token: Option<&str>,

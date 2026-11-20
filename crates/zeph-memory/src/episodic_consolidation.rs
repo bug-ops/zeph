@@ -84,7 +84,10 @@ struct ConsolidationCandidate {
     /// when every source event of a fact shares the same conversation (see
     /// [`promote_fact`]'s `conversation_id` parameter).
     conversation_id: ConversationId,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "ExtractedFact is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     session_id: String,
     event_type: String,
     summary: String,
@@ -173,7 +176,10 @@ pub async fn start_episodic_consolidation_loop(
 /// # Errors
 ///
 /// Returns [`MemoryError`] on database or LLM errors.
-#[allow(clippy::too_many_lines)] // complex sweep pipeline; decomposition deferred to future refactor
+#[expect(
+    clippy::too_many_lines,
+    reason = "run_episodic_consolidation_sweep keeps ordered steps together because they share state and control flow"
+)] // complex sweep pipeline; decomposition deferred to future refactor
 #[tracing::instrument(skip_all, name = "memory.episodic.sweep")]
 pub async fn run_episodic_consolidation_sweep(
     pool: DbPool,
@@ -279,7 +285,10 @@ pub async fn run_episodic_consolidation_sweep(
                 0.0_f64
             };
 
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "cog_weight_f32 narrows a value whose domain-specific range is bounded at this conversion site"
+            )]
             let cog_weight_f32 = cog_weight as f32;
 
             let valid_source_ids: Vec<i64> = fact
@@ -557,7 +566,10 @@ fn jaccard(a: &HashSet<&str>, b: &HashSet<&str>) -> f32 {
     if union == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "is_jaccard_duplicate uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     (intersection as f32 / union as f32)
 }
 

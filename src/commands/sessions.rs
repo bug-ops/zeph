@@ -347,8 +347,7 @@ async fn import_session(
         .create(new_id.as_str())
         .await
         .map_err(|e| anyhow::anyhow!("failed to create imported session: {e}"))?;
-    #[allow(clippy::cast_possible_truncation)]
-    let event_count = events.len() as u64;
+    let event_count = u64::try_from(events.len()).unwrap_or(u64::MAX);
     session_store
         .update_seq(new_id.as_str(), log.last_seq().unwrap_or(0), event_count)
         .await

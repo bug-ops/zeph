@@ -551,7 +551,10 @@ mod tests {
     /// read a payload-less control entry stamped under the previous key is a faithful regression
     /// for this channel's wiring — including the crash-orphan shape (`EffectIntent` never carries
     /// a payload, so the AEAD blob-scan alone could never have caught a missed wiring here).
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "scheduler_daemon_reads_previous_key_control_entry_through_rotation_window the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[tokio::test]
     #[serial_test::serial]
     async fn scheduler_daemon_reads_previous_key_control_entry_through_rotation_window() {
@@ -683,7 +686,10 @@ mod tests {
     /// both that it now attaches the current epoch unconditionally and the previous epoch while
     /// the window is open, by resuming a pre-rotation execution with a committed `StepResult`
     /// through the daemon's own resolved keys.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "scheduler_daemon_resumes_previous_epoch_high_water_mark_through_rotation_window isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     #[tokio::test]
     #[serial_test::serial]
     async fn scheduler_daemon_resumes_previous_epoch_high_water_mark_through_rotation_window() {

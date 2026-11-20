@@ -448,22 +448,34 @@ mod tests {
     }
 
     impl Channel for AnswerChannel {
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "recv implements the trait-required async signature while completing synchronously"
+        )]
         async fn recv(&mut self) -> Result<Option<crate::channel::ChannelMessage>, ChannelError> {
             Ok(None)
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "send implements the trait-required async signature while completing synchronously"
+        )]
         async fn send(&mut self, _text: &str) -> Result<(), ChannelError> {
             Ok(())
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "send_chunk implements the trait-required async signature while completing synchronously"
+        )]
         async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
             Ok(())
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "flush_chunks implements the trait-required async signature while completing synchronously"
+        )]
         async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
             Ok(())
         }

@@ -140,10 +140,11 @@ pub(crate) fn lines(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Line<'stati
         + metrics.compaction_probe_failures
         + metrics.compaction_probe_errors;
 
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        reason = "pct uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
     )]
     if total_probes > 0 {
         let pct = |n: u64| -> u64 { (n as f64 / total_probes as f64 * 100.0).round() as u64 };

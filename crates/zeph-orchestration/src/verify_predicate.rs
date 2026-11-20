@@ -183,7 +183,10 @@ struct EvalResponse {
 }
 
 // Suppress unused-import warning when feature is disabled.
-#[allow(unused_imports)]
+#[expect(
+    unused_imports,
+    reason = "natural_predicate_as_natural retains an import used by other supported feature or test configurations"
+)]
 use OrchestrationError as _;
 
 #[cfg(test)]

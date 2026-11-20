@@ -118,7 +118,6 @@ impl<C: Channel> Agent<C> {
         let cid = self.services.memory.persistence.conversation_id;
         match memory.sqlite().load_compression_guidelines_meta(cid).await {
             Ok((version, created_at)) => {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let version_u32 = u32::try_from(version).unwrap_or(0);
                 self.update_metrics(|m| {
                     m.guidelines_version = version_u32;
@@ -197,7 +196,13 @@ impl<C: Channel> Agent<C> {
     /// This avoids unconditionally clobbering the bridge's span-derived timings every turn
     /// (#5946) while still working correctly for fields the bridge does not (yet) populate.
     pub(super) fn flush_turn_timings(&mut self) {
-        #[cfg_attr(not(feature = "profiling"), allow(unused_mut))]
+        #[cfg_attr(
+            not(feature = "profiling"),
+            expect(
+                unused_mut,
+                reason = "The exception is needed only for this narrowly scoped test or feature configuration."
+            )
+        )]
         let mut timings = std::mem::take(&mut self.runtime.metrics.pending_timings);
         tracing::debug!(
             prepare_context_ms = timings.prepare_context_ms,
@@ -477,7 +482,10 @@ impl<C: Channel> Agent<C> {
     /// `message_id` in only once the paired `messages` row is persisted; `plan.rs`/
     /// `scheduler_loop.rs` background call sites pass `None` for `message_id` (no persisted
     /// conversational message exists for them).
-    #[allow(clippy::too_many_arguments)] // mirrors CostTracker::record_usage's own allow — a *Params struct would be more verbose without simplifying the call sites
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // mirrors CostTracker::record_usage's own allow — a *Params struct would be more verbose without simplifying the call sites
     pub(crate) fn build_usage_record(
         &self,
         provider: &zeph_llm::any::AnyProvider,
@@ -527,9 +535,9 @@ impl<C: Channel> Agent<C> {
             if latency_ms <= ttft {
                 return None;
             }
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss, reason = "window_secs uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
             let window_secs = (latency_ms - ttft) as f64 / 1000.0;
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss, reason = "record_successful_task uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
             Some(output_tokens as f64 / window_secs)
         });
         Some(zeph_memory::UsageRecord {

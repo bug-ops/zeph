@@ -426,7 +426,10 @@ impl<C: Channel> Agent<C> {
     ///
     /// Returns an error if the channel, LLM provider, or tool execution encounters a fatal error.
     #[tracing::instrument(name = "core.agent.run", skip_all, level = "debug", err)]
-    #[allow(clippy::too_many_lines)] // run loop is inherently large; each branch is independent
+    #[expect(
+        clippy::too_many_lines,
+        reason = "run keeps ordered steps together because they share state and control flow"
+    )] // run loop is inherently large; each branch is independent
     pub async fn run(&mut self) -> Result<(), error::AgentError>
     where
         C: 'static,
@@ -1277,7 +1280,10 @@ impl<C: Channel> Agent<C> {
         result
     }
 
-    #[allow(clippy::too_many_lines)] // turn pipeline is inherently sequential; each step is a single call
+    #[expect(
+        clippy::too_many_lines,
+        reason = "process_user_message_inner keeps ordered steps together because they share state and control flow"
+    )] // turn pipeline is inherently sequential; each step is a single call
     #[tracing::instrument(
         name = "core.agent.process_user_message_inner",
         skip_all,

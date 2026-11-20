@@ -221,7 +221,10 @@ mod tests {
     }
 
     impl VaultDirGuard {
-        #[allow(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "new the test uses Edition 2024 environment mutation inside a controlled test fixture"
+        )]
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
             let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
@@ -236,7 +239,10 @@ mod tests {
     }
 
     impl Drop for VaultDirGuard {
-        #[allow(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "drop the test uses Edition 2024 environment mutation inside a controlled test fixture"
+        )]
         fn drop(&mut self) {
             unsafe {
                 match &self.prev_xdg {

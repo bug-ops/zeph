@@ -789,7 +789,10 @@ mod tests {
         RetailEnv::new_from_seed(&db_path).unwrap()
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "call takes ownership because the value is consumed by the operation"
+    )]
     fn call(tool: &str, params: serde_json::Value) -> ToolCall {
         use zeph_common::ToolName;
         ToolCall {

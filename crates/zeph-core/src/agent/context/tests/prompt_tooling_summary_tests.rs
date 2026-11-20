@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::large_futures)]
+#![expect(
+    clippy::large_futures,
+    reason = "The test exercises the concrete async path without boxing its future."
+)]
 
 use std::sync::Arc;
 
@@ -1442,7 +1445,10 @@ fn find_oldest_unsummarized_skips_pruned_content() {
 
 // Suppress unused import warning: chunk_messages is imported for module coherence
 // but tests in this file call it via its alias to avoid conflicts.
-#[allow(unused_imports)]
+#[expect(
+    unused_imports,
+    reason = "g3_active_goal_appears_after_volatile_marker retains an import used by other supported feature or test configurations"
+)]
 use crate::agent::context::chunk_messages;
 
 // ── G3: active_goal appears after <!-- cache:volatile --> ──────────────────────

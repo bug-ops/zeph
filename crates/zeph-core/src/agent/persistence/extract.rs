@@ -229,7 +229,6 @@ impl<C: Channel> Agent<C> {
                     .await
                     {
                         Ok(Ok((version, created_at))) => {
-                            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                             let version_u32 = u32::try_from(version).unwrap_or(0);
                             tx.send_modify(|m| {
                                 m.guidelines_version = version_u32;

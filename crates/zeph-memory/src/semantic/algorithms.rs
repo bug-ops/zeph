@@ -4,7 +4,10 @@
 use crate::types::MessageId;
 use zeph_common::math::cosine_similarity;
 
-#[allow(clippy::implicit_hasher)]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "apply_temporal_decay uses the default hasher because this collection is local and not on a custom-hasher boundary"
+)]
 pub fn apply_temporal_decay(
     ranked: &mut [(MessageId, f64)],
     timestamps: &std::collections::HashMap<MessageId, i64>,
@@ -22,14 +25,20 @@ pub fn apply_temporal_decay(
 
     for (msg_id, score) in ranked.iter_mut() {
         if let Some(&ts) = timestamps.get(msg_id) {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "age_days uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let age_days = (now - ts).max(0) as f64 / 86400.0;
             *score *= (-lambda * age_days).exp();
         }
     }
 }
 
-#[allow(clippy::implicit_hasher)]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "apply_mmr uses the default hasher because this collection is local and not on a custom-hasher boundary"
+)]
 pub fn apply_mmr(
     ranked: &[(MessageId, f64)],
     vectors: &std::collections::HashMap<MessageId, Vec<f32>>,

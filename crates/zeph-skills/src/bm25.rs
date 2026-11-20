@@ -78,7 +78,10 @@ impl Bm25Index {
 
         for (i, desc) in descriptions.iter().enumerate() {
             let tokens = tokenize(desc);
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "len uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let len = tokens.len() as f32;
             doc_lengths.push(len);
 
@@ -87,7 +90,10 @@ impl Bm25Index {
                 *term_counts.entry(token.as_str()).or_default() += 1;
             }
             for (term, count) in term_counts {
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "avg_doc_length uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+                )]
                 inverted
                     .entry(term.to_owned())
                     .or_default()
@@ -95,7 +101,10 @@ impl Bm25Index {
             }
         }
 
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "avg_doc_length uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let avg_doc_length = if doc_count == 0 {
             0.0
         } else {
@@ -142,7 +151,10 @@ impl Bm25Index {
         let unique_terms: HashSet<&str> = query_tokens.iter().map(String::as_str).collect();
         let mut scores = vec![0.0_f32; self.doc_count];
 
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Some uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         for term in unique_terms {
             let Some(postings) = self.inverted.get(term) else {
                 continue;
@@ -293,11 +305,17 @@ pub fn rrf_fuse(
     const K: f32 = 60.0;
     let mut scores: HashMap<usize, f32> = HashMap::new();
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "max_rrf_score uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     for (rank, m) in embedding_results.iter().enumerate() {
         *scores.entry(m.index).or_default() += 1.0 / (K + rank as f32 + 1.0);
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "max_rrf_score uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     for (rank, (idx, _)) in bm25_results.iter().enumerate() {
         *scores.entry(*idx).or_default() += 1.0 / (K + rank as f32 + 1.0);
     }
@@ -490,7 +508,10 @@ mod tests {
     }
 
     /// All normalized scores must stay in [0, 1].
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "rrf_fuse_scores_bounded_zero_to_one uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     #[test]
     fn rrf_fuse_scores_bounded_zero_to_one() {
         let emb: Vec<ScoredMatch> = (0..10)
@@ -603,14 +624,20 @@ mod tests {
 
     #[test]
     fn linear_fuse_scores_bounded_zero_to_one() {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "emb uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let emb: Vec<ScoredMatch> = (0..5)
             .map(|i| ScoredMatch {
                 index: i,
                 score: 1.0 - i as f32 * 0.2,
             })
             .collect();
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "bm25 uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let bm25: Vec<(usize, f32)> = (3..8).map(|i| (i, (i as f32) * 2.0)).collect();
         let fused = linear_fuse(&emb, &bm25, 0.7, 20);
         for m in &fused {

@@ -96,7 +96,10 @@ impl EvictionPolicy for EbbinghausPolicy {
             .unwrap_or_else(|| parse_sqlite_timestamp_secs(&entry.created_at).unwrap_or(now_secs));
 
         // Clamp t >= 0 to handle clock skew or future timestamps.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "t uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let t = now_secs.saturating_sub(reference_secs) as f64;
         let n = f64::from(entry.access_count);
 

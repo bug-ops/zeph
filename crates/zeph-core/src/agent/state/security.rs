@@ -86,7 +86,11 @@ impl SecurityState {
     /// The caller is responsible for applying metrics updates from the result.
     #[cfg_attr(
         not(feature = "classifiers"),
-        allow(clippy::unused_async, clippy::unused_async_trait_impl)
+        expect(
+            clippy::unused_async,
+            clippy::unused_async_trait_impl,
+            reason = "The classifier-disabled path completes without awaiting and has no async trait call."
+        )
     )]
     pub(crate) async fn scrub_pii(&mut self, text: &str, tool_name: &str) -> PiiScrubResult {
         use zeph_sanitizer::pii::{merge_spans, redact_spans};
@@ -100,11 +104,29 @@ impl SecurityState {
             };
         }
 
-        #[cfg_attr(not(feature = "classifiers"), allow(unused_mut))]
+        #[cfg_attr(
+            not(feature = "classifiers"),
+            expect(
+                unused_mut,
+                reason = "The exception is needed only for this narrowly scoped test or feature configuration."
+            )
+        )]
         let mut spans = self.pii_filter.detect_spans(text);
-        #[cfg_attr(not(feature = "classifiers"), allow(unused_mut))]
+        #[cfg_attr(
+            not(feature = "classifiers"),
+            expect(
+                unused_mut,
+                reason = "The exception is needed only for this narrowly scoped test or feature configuration."
+            )
+        )]
         let mut ner_timeouts: u32 = 0;
-        #[cfg_attr(not(feature = "classifiers"), allow(unused_mut))]
+        #[cfg_attr(
+            not(feature = "classifiers"),
+            expect(
+                unused_mut,
+                reason = "The exception is needed only for this narrowly scoped test or feature configuration."
+            )
+        )]
         let mut circuit_breaker_tripped = false;
 
         #[cfg(feature = "classifiers")]

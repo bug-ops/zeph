@@ -58,7 +58,6 @@
 //! ```
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
-#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 mod age;
 mod arc;
@@ -150,7 +149,10 @@ pub fn default_vault_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::doc_markdown)]
+    #![expect(
+        clippy::doc_markdown,
+        reason = "The documentation uses established project terminology."
+    )]
 
     use super::*;
 

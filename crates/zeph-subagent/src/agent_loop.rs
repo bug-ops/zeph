@@ -463,7 +463,10 @@ async fn call_provider_with_thinking_retry(
 }
 
 #[tracing::instrument(name = "subagent.agent_loop.call_provider", skip_all, err)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "call_provider_with_status This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn call_provider_with_status(
     provider: &AnyProvider,
     messages: &mut [Message],
@@ -586,7 +589,10 @@ fn emit_working_status(
 }
 
 #[tracing::instrument(name = "subagent.agent_loop.handle_secret_request", skip_all)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "handle_secret_request This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn handle_secret_request(
     transcript_writer: Option<&TranscriptWriter>,
     seq: &mut u32,
@@ -745,7 +751,10 @@ async fn init_loop_state(
     messages.extend(initial_messages);
     messages.push(make_message(Role::User, task_prompt));
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "seq narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let mut seq: u32 = history_len as u32;
 
     if let Some(writer) = transcript_writer
@@ -799,7 +808,10 @@ fn strip_dropped_thinking(messages: &mut [Message], response: &ChatResponse) {
 ///
 /// Returns a [`TurnOutcome`] that drives the loop control flow in
 /// [`run_agent_loop`].
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "run_turn This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 #[tracing::instrument(name = "subagent.agent_loop.run_turn", skip_all, fields(task_id = task_id, turn = *turns))]
 async fn run_turn(
     provider: &AnyProvider,
@@ -984,7 +996,11 @@ fn refused_call_trust(tool_name: &str, mcp_ids: &McpToolIds) -> TurnContextTrust
 
 // Returns `true` if no tool was called (loop should break).
 #[tracing::instrument(name = "subagent.agent_loop.handle_tool_step", skip_all)]
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    reason = "handle_tool_step keeps ordered steps together because they share state and control flow; This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn handle_tool_step(
     executor: &FilteredToolExecutor,
     response: ChatResponse,
@@ -1325,7 +1341,10 @@ fn trim_message_history(messages: &mut Vec<Message>, limit: usize, binding: Thin
 }
 
 #[tracing::instrument(name = "subagent.agent_loop.run", skip_all, fields(task_id = %args.task_id, agent_name = %args.agent_name))]
-#[allow(clippy::too_many_lines)] // top-level orchestration function; same precedent as handle_tool_step/spawn/resume in this crate
+#[expect(
+    clippy::too_many_lines,
+    reason = "run_agent_loop keeps ordered steps together because they share state and control flow"
+)] // top-level orchestration function; same precedent as handle_tool_step/spawn/resume in this crate
 pub(super) async fn run_agent_loop(
     args: AgentLoopArgs,
 ) -> Result<String, super::error::SubAgentError> {

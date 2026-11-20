@@ -394,7 +394,10 @@ impl<C: Channel + Send + 'static> GraphAccess for Agent<C> {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "graph_backfill keeps ordered steps together because they share state and control flow"
+    )]
     fn graph_backfill<'a>(
         &'a mut self,
         limit: Option<usize>,

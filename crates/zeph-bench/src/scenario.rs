@@ -243,11 +243,20 @@ pub fn token_f1(prediction: &str, reference: &str) -> f64 {
         return 0.0;
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "common uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let common = pred_tokens.intersection(&ref_tokens).count() as f64;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "precision uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let precision = common / pred_tokens.len() as f64;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "recall uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let recall = common / ref_tokens.len() as f64;
 
     if precision + recall == 0.0 {

@@ -332,7 +332,10 @@ impl Default for ToolFilterConfig {
 /// max_tool_retries = 3
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct AgentConfig {
     /// Human-readable agent name surfaced in the TUI and Telegram header. Default: `"Zeph"`.
     pub name: String,
@@ -463,7 +466,10 @@ fn default_max_supervisor_fail_count() -> u32 {
 /// autonomous_turn_delay_ms = 500
 /// default_token_budget = 50000
 /// ```
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "GoalConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GoalConfig {
@@ -614,7 +620,10 @@ impl Default for TaskSupervisorConfig {
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)] // independent config toggles; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent config toggles; bitflags or enum would obscure semantics without reducing complexity
 pub struct SubAgentConfig {
     /// Enable the sub-agent subsystem. Default: `false`.
     ///

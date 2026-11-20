@@ -68,6 +68,8 @@ All secrets and API keys are stored exclusively in the Zeph age vault. Never use
 - `cargo clippy --profile ci --workspace --features full -- -D warnings`: Run CI-equivalent lint checks with the full feature set.
 - `cargo llvm-cov --all-features --workspace`: Generate coverage locally.
 
+After long compilation-heavy operations, periodically check available disk space. If space is low, remove iteration-specific build artifacts from `target/`; if that is not enough, run `cargo clean` before continuing.
+
 ## Coding Style & Naming Conventions
 Use Rust 2024 edition and MSRV `1.98`. Follow `rustfmt` defaults (4-space indentation) and keep Clippy warnings at zero where practical.
 Use `snake_case` for functions/modules/files, `PascalCase` for types/traits, and `SCREAMING_SNAKE_CASE` for constants. Prefer small modules with explicit responsibilities; keep public APIs in `lib.rs` minimal and re-export intentionally.

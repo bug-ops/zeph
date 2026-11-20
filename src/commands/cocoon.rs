@@ -331,7 +331,6 @@ async fn check_vault_key(
 /// # Errors
 ///
 /// Returns an error if I/O fails at the top level.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_cocoon_doctor(
     config_path: &Path,
     json: bool,

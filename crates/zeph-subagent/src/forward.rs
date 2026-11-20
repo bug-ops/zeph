@@ -370,7 +370,10 @@ fn make_sanitized_chunk(
 /// and dispatch any resulting chunk(s). Called immediately before an explicit `Terminal`
 /// chunk or the hard-abort backstop, so buffered content is only ever delayed until the
 /// run's very end, never silently dropped.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "flush_all_pending This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 fn flush_all_pending(
     pending: &mut PendingSanitizeBuffers,
     task_id: &Arc<str>,

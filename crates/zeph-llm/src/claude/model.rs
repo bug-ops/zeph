@@ -68,7 +68,10 @@ pub(super) enum ClaudeModel {
 }
 
 /// Wire-level behaviour of a [`ClaudeModel`].
-#[allow(clippy::struct_excessive_bools)] // independent per-model facts; per-flag enums would add types, not safety
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ModelCapabilities These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent per-model facts; per-flag enums would add types, not safety
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ModelCapabilities {
     /// `Extended` thinking is converted to `effort`; `budget_tokens` is rejected or deprecated.

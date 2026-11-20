@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![allow(clippy::large_futures, clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::large_futures,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "The test exercises the concrete async path without boxing its future.; Fixture construction failures should fail the test immediately."
+)]
 #![recursion_limit = "256"]
 
 //! Acceptance tests (tests-first) for #7129 (keepalive fails closed when pings cannot be priced
@@ -65,12 +70,18 @@ impl Channel for TimelineChannel {
         }))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send implements the trait-required async signature while completing synchronously"
+    )]
     async fn send(&mut self, _text: &str) -> Result<(), ChannelError> {
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_chunk implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
         Ok(())
     }

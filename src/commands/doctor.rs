@@ -55,14 +55,26 @@ pub(crate) struct CheckResult {
     /// Remediation offered by `--fix`; set only on a mode-violation failure.
     #[serde(skip)]
     // Only read by the Unix-only `--fix` flow.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg_attr(
+        not(unix),
+        expect(
+            dead_code,
+            reason = "The permission-fix UI is available only on Unix platforms."
+        )
+    )]
     pub fix: Option<PermissionFix>,
 }
 
 /// What kind of filesystem entry a [`PermissionFix`] restricts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // Only read by the Unix-only `--fix` flow.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(
+    not(unix),
+    expect(
+        dead_code,
+        reason = "The permission-fix UI is available only on Unix platforms."
+    )
+)]
 pub(crate) enum FixTarget {
     /// A regular file, restricted to `0600`.
     File,
@@ -77,7 +89,13 @@ pub(crate) enum FixTarget {
 /// vault change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 // Only read by the Unix-only `--fix` flow.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(
+    not(unix),
+    expect(
+        dead_code,
+        reason = "The permission-fix UI is available only on Unix platforms."
+    )
+)]
 pub(crate) struct PermissionFix {
     pub path: PathBuf,
     pub target: FixTarget,
@@ -653,7 +671,10 @@ async fn check_sqlite(config: &zeph_core::config::Config, timeout_secs: u64) -> 
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "check_llm_provider keeps ordered steps together because they share state and control flow"
+)]
 async fn check_llm_provider(
     entry: &zeph_core::config::ProviderEntry,
     timeout_secs: u64,
@@ -1016,7 +1037,10 @@ fn check_url_scheme() -> CheckResult {
 /// `--vault-key` override resolution shared by checks 2-4 and 17 (#6479) — can be exercised
 /// end-to-end in tests against an in-memory [`DoctorReport`], without needing to capture the
 /// process's real stdout (`run_doctor`'s [`render`] writes there directly).
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The report builder runs the doctor checks in their documented dependency order and collects one shared result list."
+)]
 async fn build_doctor_report(
     config_path: &Path,
     llm_timeout_secs: u64,
@@ -1247,7 +1271,10 @@ async fn build_doctor_report(
 /// # Errors
 ///
 /// Returns an error if config resolution or I/O fails at the top level.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The CLI exposes each doctor check control as a distinct option, so this dispatcher receives those options directly."
+)]
 pub(crate) async fn run_doctor(
     config_path: &Path,
     json: bool,

@@ -3,7 +3,10 @@
 
 use crate::cli::{SkillCommand, SkillStateCommand};
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "handle_skill_command keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) async fn handle_skill_command(
     cmd: SkillCommand,
     config_path: Option<&std::path::Path>,
@@ -559,7 +562,10 @@ async fn registry_search_with(
 /// injection-pattern scan (NFR-002). Thin wrapper around [`registry_get_with`] — see that fn's
 /// tests for `MockRegistryClient`-driven coverage.
 #[tracing::instrument(name = "skill.registry_get", skip(config, mgr), fields(registry_id))]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "registry_get This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn registry_get(
     config: &zeph_core::config::Config,
     mgr: &zeph_skills::manager::SkillManager,
@@ -820,7 +826,10 @@ mod registry_tests {
 // `~/.config/zeph` vault via a per-test `XDG_CONFIG_HOME`, restored afterward; `#[serial]`
 // prevents concurrent env-var mutation across tests in this binary (mirrors the established
 // pattern in `src/commands/durable.rs`).
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "install_test_skill isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+)]
 #[cfg(test)]
 mod trust_promotion_tests {
     use serial_test::serial;

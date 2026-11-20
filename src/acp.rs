@@ -317,7 +317,10 @@ pub(crate) async fn build_shared_core(
 /// - **ACP-specific** (`acp_*`) — transport-level config; not agent-level.
 /// - **Scheduler runtime** (`scheduler_*`) — runtime broadcast senders; not config-derived.
 #[cfg(feature = "acp")]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "SharedAgentDeps These independent flags belong to the same configuration or state object and are set or read together"
+)]
 pub(crate) struct SharedAgentDeps {
     // Shared runtime objects
     provider: zeph_llm::any::AnyProvider,
@@ -690,7 +693,10 @@ pub(crate) struct PrebuiltAcpCore {
 /// with `zeph serve-sessions`, #5420) or a fresh build from `app` when `prebuilt_core` is `None`
 /// (standalone `--acp`/`--acp-http`, unchanged behavior).
 #[cfg(feature = "acp")]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "build_acp_deps keeps ordered steps together because they share state and control flow"
+)]
 async fn build_acp_deps(
     app: &AppBuilder,
     prebuilt_core: Option<PrebuiltAcpCore>,
@@ -1472,7 +1478,10 @@ async fn open_session_log_or_notify_locked(
 /// so every field here is an owned scalar/handle already extracted from `SharedAgentDeps`,
 /// not a `&Config` borrow.
 #[cfg(feature = "acp")]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "BuildAcpAgentParams These independent flags belong to the same configuration or state object and are set or read together"
+)]
 struct BuildAcpAgentParams<F>
 where
     F: Fn() -> Vec<PathBuf> + Send + Sync + 'static,
@@ -1670,7 +1679,10 @@ async fn seed_session_mcp(
 /// When `acp_ctx` is `Some`, ACP executors are composed on top of the local tool executor
 /// (ACP-first, local fallback). When `None`, local tools handle everything.
 #[cfg(feature = "acp")]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "spawn_acp_agent keeps ordered steps together because they share state and control flow"
+)]
 async fn spawn_acp_agent(
     d: std::sync::Arc<SharedAgentDeps>,
     mut channel: zeph_core::channel::LoopbackChannel,
@@ -2521,7 +2533,10 @@ async fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<
 /// background task that dispatches directly on the factory's output and never touches the
 /// `provider_override` slot that `Agent::apply_provider_override`/`set_provider` guard.
 #[cfg(feature = "acp")]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "build_acp_provider_factory keeps ordered steps together because they share state and control flow"
+)]
 fn build_acp_provider_factory(
     config: &zeph_core::config::Config,
     secret_registry: Option<std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
@@ -2764,7 +2779,10 @@ fn collect_project_rules(skill_paths: &[PathBuf]) -> Vec<PathBuf> {
 ///
 /// Returns an error if the agent stack cannot be built or the transport fails.
 #[cfg(feature = "acp")]
-#[allow(clippy::too_many_arguments)] // CLI/env passthrough for one session-bootstrap call; grouping into a struct would not reduce complexity
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)] // CLI/env passthrough for one session-bootstrap call; grouping into a struct would not reduce complexity
 pub(crate) async fn run_acp_server(
     config_path: Option<&std::path::Path>,
     vault_backend: Option<&str>,
@@ -2883,7 +2901,11 @@ pub(crate) async fn run_acp_server(
 ///
 /// Returns an error if the agent stack cannot be built or the server fails to bind.
 #[cfg(feature = "acp-http")]
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // CLI/env passthrough for one session-bootstrap call; grouping into a struct would not reduce complexity
+#[expect(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    reason = "The ordered protocol steps share transient state and control flow, so they remain grouped without a reusable parameter type."
+)] // CLI/env passthrough for one session-bootstrap call; grouping into a struct would not reduce complexity
 pub(crate) async fn run_acp_http_server(
     config_path: Option<&std::path::Path>,
     vault_backend: Option<&str>,
@@ -4607,7 +4629,10 @@ mod tests {
         > + Send {
             std::future::ready(Ok(None))
         }
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "execute_tool_call implements the trait-required async signature while completing synchronously"
+        )]
         async fn execute_tool_call(
             &self,
             call: &zeph_tools::ToolCall,
@@ -5024,7 +5049,10 @@ mod tests {
     /// accepted gap this test's own history already documents for `skill_group_config`.
     #[cfg(all(feature = "acp-http", feature = "session"))]
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // exhaustive field-by-field assertions across 2 deps structs
+    #[expect(
+        clippy::too_many_lines,
+        reason = "build_combined_deps_wires_skill_matching_config_from_config keeps ordered steps together because they share state and control flow"
+    )] // exhaustive field-by-field assertions across 2 deps structs
     async fn build_combined_deps_wires_skill_matching_config_from_config() {
         let mut config =
             zeph_core::config::Config::load(std::path::Path::new("/nonexistent")).unwrap();
@@ -5241,7 +5269,10 @@ mod tests {
     /// fields from `assemble_serve_deps` fails this test instead of shipping unnoticed.
     #[cfg(all(feature = "acp-http", feature = "session"))]
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // exhaustive field-by-field assertions across 2 deps structs
+    #[expect(
+        clippy::too_many_lines,
+        reason = "build_combined_deps_wires_equivalent_security_pipeline_from_config keeps ordered steps together because they share state and control flow"
+    )] // exhaustive field-by-field assertions across 2 deps structs
     async fn build_combined_deps_wires_equivalent_security_pipeline_from_config() {
         let mut config =
             zeph_core::config::Config::load(std::path::Path::new("/nonexistent")).unwrap();
@@ -5642,7 +5673,10 @@ mod tests {
         ),
     );
 
-    #[allow(clippy::too_many_lines)] // exhaustive BuildAcpAgentParams literal — one field per line
+    #[expect(
+        clippy::too_many_lines,
+        reason = "acp_test_params keeps ordered steps together because they share state and control flow"
+    )] // exhaustive BuildAcpAgentParams literal — one field per line
     fn acp_test_params(
         config: &zeph_core::config::Config,
         matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,

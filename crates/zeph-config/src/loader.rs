@@ -250,7 +250,11 @@ impl Config {
     /// `require`, which only matters if this validation is ever bypassed).
     #[cfg_attr(
         feature = "card-signing",
-        allow(clippy::unused_self, clippy::unnecessary_wraps)
+        expect(
+            clippy::unused_self,
+            clippy::unnecessary_wraps,
+            reason = "The card-signing feature validates a policy field that is absent from the disabled-feature build."
+        )
     )]
     fn validate_a2a_client_trust(&self) -> Result<(), ConfigError> {
         #[cfg(not(feature = "card-signing"))]
@@ -1048,7 +1052,10 @@ mod tests {
     /// `serde(default)` can never silently pick another field's default (cascade abort must stay
     /// disabled at 0.0).
     #[test]
-    #[allow(clippy::float_cmp)] // defaults must be exactly the documented constants
+    #[expect(
+        clippy::float_cmp,
+        reason = "omitted_unit_interval_keys_keep_their_defaults compares a deterministic value produced by the same arithmetic path"
+    )] // defaults must be exactly the documented constants
     fn omitted_unit_interval_keys_keep_their_defaults() {
         let cases = [
             float_default_cases_0(),

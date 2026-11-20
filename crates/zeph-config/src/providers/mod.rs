@@ -59,7 +59,10 @@ fn default_true() -> bool {
 }
 
 /// `skip_serializing_if` predicate that omits a boolean field when it is `true`.
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "is_true keeps the borrowed signature consistent with the surrounding API"
+)]
 fn is_true(v: &bool) -> bool {
     *v
 }

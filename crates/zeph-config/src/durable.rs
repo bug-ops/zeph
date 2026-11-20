@@ -45,7 +45,10 @@ pub enum DurableBackend {
 /// assert_eq!(cfg.journal_ack_timeout_ms, 5000);
 /// assert_eq!(cfg.max_payload_bytes, 1_048_576);
 /// ```
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "DurableConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DurableConfig {

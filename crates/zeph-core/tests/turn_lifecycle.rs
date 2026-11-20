@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Integration tests await full agent sessions; future size reflects real agent state.
-#![allow(clippy::large_futures)]
+#![expect(
+    clippy::large_futures,
+    reason = "The test exercises the concrete async path without boxing its future."
+)]
 // Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
 #![recursion_limit = "256"]
 
@@ -46,7 +49,10 @@ impl TestChannel {
 }
 
 impl Channel for TestChannel {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "recv implements the trait-required async signature while completing synchronously"
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         if self.inbox.is_empty() {
             Ok(None)
@@ -75,13 +81,19 @@ impl Channel for TestChannel {
         }
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send implements the trait-required async signature while completing synchronously"
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outbox.lock().unwrap().push(text.to_owned());
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_chunk implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.outbox.lock().unwrap().push(chunk.to_owned());
         Ok(())

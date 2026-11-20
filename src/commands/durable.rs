@@ -502,7 +502,10 @@ pub(crate) async fn handle_durable_command(
     .await
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "handle_durable_command_inner keeps ordered steps together because they share state and control flow"
+)]
 async fn handle_durable_command_inner(
     cmd: DurableCommand,
     config_path: Option<&Path>,
@@ -863,10 +866,9 @@ async fn handle_seal_integrity(
 /// three positional `bool` parameters (call sites read as named fields instead of an ambiguous
 /// run of `bool`s).
 ///
-/// The three flags are independent CLI switches (mirroring `DurableConfig`'s own
-/// `#[allow(clippy::struct_excessive_bools)]` precedent) — not state-machine variants, since any
+/// The three flags are independent CLI switches (mirroring the configuration struct's
+/// own switch fields) — not state-machine variants, since any
 /// combination is meaningful (e.g. `--dry-run --drop-previous --force`).
-#[allow(clippy::struct_excessive_bools)]
 struct RotateKeyOptions {
     /// Print intended changes without writing to the config file or vault.
     dry_run: bool,
@@ -1622,7 +1624,10 @@ mod tests {
 
     /// Regression for #5404: `--reveal` must still require `ZEPH_DURABLE_KEY` when
     /// `encrypt_payload = true` (the default, encrypted-at-rest posture).
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "open_backend_reveal_requires_key_when_encrypt_payload_enabled isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     #[tokio::test]
     #[serial]
     async fn open_backend_reveal_requires_key_when_encrypt_payload_enabled() {
@@ -1670,7 +1675,10 @@ mod tests {
     /// key, then reads the raw `durable_journal.payload` column directly (bypassing decryption)
     /// and asserts it is neither the plaintext bytes nor valid JSON — i.e., genuinely ciphertext
     /// at rest, mirroring the issue's reproduction steps.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "write_path_attaches_cipher_and_seals_payload_when_encrypt_payload_enabled isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     #[tokio::test]
     #[serial]
     async fn write_path_attaches_cipher_and_seals_payload_when_encrypt_payload_enabled() {
@@ -1877,7 +1885,10 @@ mod tests {
     /// Regression for #6043/#6044: a declared shared database must fail closed when
     /// `ZEPH_DURABLE_KEY` cannot be resolved from the vault, mirroring
     /// `open_backend_reveal_requires_key_when_encrypt_payload_enabled`'s pattern for the AEAD key.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_write_hmac_key_fails_closed_when_shared_db_declared_and_key_missing isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     #[tokio::test]
     #[serial]
     async fn load_write_hmac_key_fails_closed_when_shared_db_declared_and_key_missing() {
@@ -2054,7 +2065,10 @@ mod tests {
     /// from a seeded vault, mirroring
     /// `write_path_attaches_cipher_and_seals_payload_when_encrypt_payload_enabled`'s pattern for
     /// the AEAD cipher — this exercises the exact glue `runner.rs` and `scheduler_daemon.rs` call.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_write_hmac_key_resolves_real_key_when_shared_db_declared isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     #[tokio::test]
     #[serial]
     async fn load_write_hmac_key_resolves_real_key_when_shared_db_declared() {
@@ -2111,7 +2125,10 @@ mod tests {
     // in, it would find no key and the assertion would fail — while seeding the real
     // `ZEPH_DURABLE_KEY` at a *separate* explicit override location.
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_write_cipher_respects_explicit_override_path_not_default_vault_dir the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[tokio::test]
     #[serial]
     async fn load_write_cipher_respects_explicit_override_path_not_default_vault_dir() {
@@ -2160,7 +2177,10 @@ mod tests {
         );
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_write_hmac_key_respects_explicit_override_path_not_default_vault_dir the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[tokio::test]
     #[serial]
     async fn load_write_hmac_key_respects_explicit_override_path_not_default_vault_dir() {
@@ -2209,7 +2229,10 @@ mod tests {
         );
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_write_hwm_key_respects_explicit_override_path_not_default_vault_dir the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[tokio::test]
     #[serial]
     async fn load_write_hwm_key_respects_explicit_override_path_not_default_vault_dir() {
@@ -2257,7 +2280,10 @@ mod tests {
         );
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_integrity_seal_respects_explicit_override_path_not_default_vault_dir the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[tokio::test]
     #[serial]
     async fn load_integrity_seal_respects_explicit_override_path_not_default_vault_dir() {
@@ -2312,7 +2338,10 @@ mod tests {
     /// *empty* temp dir (via `XDG_CONFIG_HOME`), so if `handle_rotate_key` regressed back to
     /// reading it internally instead of the CLI-resolved override, it would fail with "no age
     /// vault found" instead of succeeding.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "rotate_key_respects_explicit_override_path_not_default_vault_dir the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     #[tokio::test]
     #[serial]
     async fn rotate_key_respects_explicit_override_path_not_default_vault_dir() {
@@ -2390,13 +2419,15 @@ mod tests {
     /// `zeph_core::vault::default_vault_dir()` at a fresh temp dir for the test's duration via
     /// `XDG_CONFIG_HOME`, restoring the prior value on drop. Callers must be `#[serial]` since
     /// `XDG_CONFIG_HOME` is process-global.
-    #[allow(unsafe_code)]
     struct VaultDirGuard {
         _dir: tempfile::TempDir,
         prev_xdg: Option<String>,
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "new the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     impl VaultDirGuard {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -2411,7 +2442,10 @@ mod tests {
         }
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "drop the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     impl Drop for VaultDirGuard {
         fn drop(&mut self) {
             unsafe {

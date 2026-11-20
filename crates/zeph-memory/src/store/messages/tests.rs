@@ -3,7 +3,6 @@
 
 use super::*;
 use std::assert_matches;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 async fn test_store() -> SqliteStore {
@@ -1780,7 +1779,10 @@ fn old_external_tag_summary_format_via_compat_path() {
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "legacy_compat_all_text_like_variants keeps the existing concrete type visible at the boundary where it is consumed"
+)]
 #[test]
 fn legacy_compat_all_text_like_variants() {
     let cases: &[(&str, fn(&MessagePart) -> bool)] = &[

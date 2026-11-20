@@ -14,7 +14,10 @@ use crate::context::ContextBudget;
 use zeph_llm::provider::LlmProvider as _;
 
 impl<C: Channel> Agent<C> {
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "reload_config keeps ordered steps together because they share state and control flow"
+    )]
     pub(super) fn reload_config(&mut self) {
         let Some(path) = self.runtime.lifecycle.config_path.clone() else {
             return;

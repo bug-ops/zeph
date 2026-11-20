@@ -344,7 +344,6 @@ pub(crate) fn apply_constraint_propagation(def: &mut SubAgentDef, ctx: &SpawnCon
 /// Known limitation: agents may use Read/Write/Edit beyond the memory directory.
 /// See issue #1152 for future `FilteredToolExecutor` path-restriction enhancement.
 #[tracing::instrument(name = "subagent.manager.build_system_prompt_with_memory", skip_all)]
-#[cfg_attr(test, allow(dead_code))]
 pub(crate) async fn build_system_prompt_with_memory(
     def: &mut SubAgentDef,
     scope: Option<MemoryScope>,
@@ -630,7 +629,11 @@ impl SubAgentManager {
     /// [`SubAgentError::SessionSpawnLimit`] if the session-wide cumulative spawn cap has been
     /// reached, or [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but
     /// the config does not allow it (`allow_bypass_permissions: false`).
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "spawn This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+    )]
     // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
     #[tracing::instrument(name = "subagent.manager.spawn", skip_all, fields(def_name = def_name))]
     pub async fn spawn(
@@ -1207,7 +1210,11 @@ impl SubAgentManager {
     /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
     /// [`SubAgentError::SessionSpawnLimit`] if the session-wide cumulative spawn cap has been
     /// reached.
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::too_many_arguments,
+        reason = "resume keeps ordered steps together because they share state and control flow; This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     #[tracing::instrument(name = "subagent.manager.resume", skip_all, fields(id_prefix = id_prefix))]
     pub async fn resume(
         &mut self,
@@ -1569,7 +1576,10 @@ impl SubAgentManager {
     /// Panics if the internal agent entry is missing after a successful `spawn` call.
     /// This is a programming error and should never occur in normal operation.
     #[tracing::instrument(name = "subagent.manager.spawn_for_task", skip_all)]
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn spawn_for_task<F>(
         &mut self,
         def_name: &str,

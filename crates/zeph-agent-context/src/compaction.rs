@@ -52,7 +52,10 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "term_frequencies uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+)]
 fn term_frequencies(tokens: &[String]) -> HashMap<String, f32> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for t in tokens {
@@ -158,7 +161,10 @@ pub fn score_blocks_mig(
     task_goal: Option<&str>,
     tc: &TokenCounter,
 ) -> Vec<BlockScore> {
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "scores uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let mut scores = if let Some(goal) = task_goal {
         score_blocks_task_aware(messages, goal, tc)
     } else {
@@ -213,7 +219,10 @@ pub fn score_blocks_mig(
 
 /// Score each tool-output message block by subgoal tier membership.
 #[must_use]
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "score_blocks_subgoal uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+)]
 pub fn score_blocks_subgoal(
     messages: &[Message],
     registry: &SubgoalRegistry,
@@ -458,7 +467,10 @@ pub fn classify_density(content: &str) -> ContentDensity {
                 || (line.len() >= 4 && line.starts_with("    "))
         })
         .count();
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let ratio = structured as f32 / lines.len() as f32;
     if ratio > 0.5 {
         ContentDensity::High

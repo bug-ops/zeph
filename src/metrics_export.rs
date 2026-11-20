@@ -211,7 +211,10 @@ impl PrometheusMetrics {
     /// # #[cfg(feature = "prometheus")]
     /// let pm = Arc::new(zeph::metrics_export::PrometheusMetrics::new());
     /// ```
-    #[allow(clippy::too_many_lines)] // flat registration of ~25 metric families — no meaningful split
+    #[expect(
+        clippy::too_many_lines,
+        reason = "new keeps ordered steps together because they share state and control flow"
+    )] // flat registration of ~25 metric families — no meaningful split
     #[must_use]
     pub fn new() -> Self {
         let mut registry = Registry::default();
@@ -521,7 +524,10 @@ impl PrometheusMetrics {
     /// pm.sync(&cur, &prev);
     /// # }
     /// ```
-    #[allow(clippy::too_many_lines)] // one delta update per metric family — no meaningful split
+    #[expect(
+        clippy::too_many_lines,
+        reason = "sync keeps ordered steps together because they share state and control flow"
+    )] // one delta update per metric family — no meaningful split
     pub fn sync(&self, current: &MetricsSnapshot, prev: &MetricsSnapshot) {
         // --- LLM tokens (counters with direction label) ---
         let prompt_delta = counter_delta(current.prompt_tokens, prev.prompt_tokens);
@@ -960,7 +966,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::field_reassign_with_default)]
+    #[expect(
+        clippy::field_reassign_with_default,
+        reason = "test_sync_no_double_count sets only the fields relevant to this fixture while keeping remaining defaults explicit"
+    )]
     fn test_sync_no_double_count() {
         let pm = PrometheusMetrics::new();
 
@@ -1002,7 +1011,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::field_reassign_with_default)]
+    #[expect(
+        clippy::field_reassign_with_default,
+        reason = "test_openmetrics_encoding_format sets only the fields relevant to this fixture while keeping remaining defaults explicit"
+    )]
     fn test_openmetrics_encoding_format() {
         let pm = PrometheusMetrics::new();
 
@@ -1029,7 +1041,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::field_reassign_with_default)]
+    #[expect(
+        clippy::field_reassign_with_default,
+        reason = "test_cost_budget_exhausted_metric_sync sets only the fields relevant to this fixture while keeping remaining defaults explicit"
+    )]
     fn test_cost_budget_exhausted_metric_sync() {
         let pm = PrometheusMetrics::new();
 
@@ -1047,7 +1062,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::field_reassign_with_default)]
+    #[expect(
+        clippy::field_reassign_with_default,
+        reason = "test_mcp_and_bg_metrics_sync sets only the fields relevant to this fixture while keeping remaining defaults explicit"
+    )]
     fn test_mcp_and_bg_metrics_sync() {
         let pm = PrometheusMetrics::new();
 

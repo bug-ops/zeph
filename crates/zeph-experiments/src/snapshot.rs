@@ -103,7 +103,7 @@ impl ConfigSnapshot {
                 (
                     c.generation.temperature,
                     c.generation.top_p.unwrap_or(0.9),
-                    #[allow(clippy::cast_precision_loss)]
+                    #[expect(clippy::cast_precision_loss, reason = "apply uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
                     c.generation.top_k.map_or(40.0, |k| k as f64),
                 )
             },
@@ -115,7 +115,10 @@ impl ConfigSnapshot {
             top_k,
             frequency_penalty: 0.0,
             presence_penalty: 0.0,
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "apply uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             retrieval_top_k: config.memory.semantic.recall_limit as f64,
             similarity_threshold: f64::from(config.memory.cross_session_score_threshold),
             temporal_decay: f64::from(config.memory.semantic.temporal_decay_half_life_days),
@@ -149,7 +152,10 @@ impl ConfigSnapshot {
                 if result.is_some() {
                     return None; // more than one diff
                 }
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "value narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+                )]
                 let value = if kind.is_integer() {
                     VariationValue::Int(b.round() as i64)
                 } else {
@@ -226,7 +232,11 @@ impl ConfigSnapshot {
     /// Uses `.round() as usize` for `top_k` to avoid truncation from floating-point noise.
     #[must_use]
     pub fn to_generation_overrides(&self) -> GenerationOverrides {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "default_snapshot_fields narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+        )]
         GenerationOverrides {
             temperature: Some(self.temperature),
             top_p: Some(self.top_p),
@@ -239,10 +249,11 @@ impl ConfigSnapshot {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
+    #![expect(
         clippy::field_reassign_with_default,
         clippy::semicolon_if_nothing_returned,
-        clippy::type_complexity
+        clippy::type_complexity,
+        reason = "The fixture overrides selected fields while retaining the other default values."
     )]
 
     use std::assert_matches;
@@ -447,7 +458,10 @@ mod tests {
         // variant is automatically exercised here.
         let mut s = ConfigSnapshot::default();
         for (i, kind) in ParameterKind::ALL.into_iter().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "value uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let value = i as f64 + 1.0;
             s.set(kind, value);
             assert!(

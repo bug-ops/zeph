@@ -146,7 +146,10 @@ fn is_mention_word_start(app: &App, pos: usize) -> bool {
         .is_some_and(char::is_whitespace)
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "reduce_inner keeps ordered steps together because they share state and control flow"
+)]
 fn reduce_inner(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         // ── Scroll ─────────────────────────────────────────────────────────────

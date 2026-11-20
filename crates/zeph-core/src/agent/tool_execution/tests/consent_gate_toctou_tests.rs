@@ -414,7 +414,10 @@ async fn memory_save_gated_after_process_restart_reload_from_db() {
 /// onto the summary row (S2 + S3 fixes composed), and a fresh agent reloading that summary
 /// row after a simulated restart still gates a subsequent `memory_save`.
 #[tokio::test]
-#[allow(clippy::too_many_lines)] // single cohesive scenario: persist -> compact -> reload -> gate
+#[expect(
+    clippy::too_many_lines,
+    reason = "memory_save_gated_after_compaction_persist_and_reload keeps ordered steps together because they share state and control flow"
+)] // single cohesive scenario: persist -> compact -> reload -> gate
 async fn memory_save_gated_after_compaction_persist_and_reload() {
     let provider = mock_provider(vec!["compacted summary of untrusted content".to_owned()]);
     let memory =

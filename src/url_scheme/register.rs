@@ -726,7 +726,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     mod linux {
-        #![allow(unsafe_code)]
+        #![expect(
+            unsafe_code,
+            reason = "The test isolates the unsafe operation required by the Rust 2024 or platform API."
+        )]
 
         use serial_test::serial;
         use std::assert_matches;
@@ -877,7 +880,10 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     mod macos {
-        #![allow(unsafe_code)]
+        #![expect(
+            unsafe_code,
+            reason = "The test isolates the unsafe operation required by the Rust 2024 or platform API."
+        )]
 
         use serial_test::serial;
         use std::assert_matches;

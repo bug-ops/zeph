@@ -11,7 +11,10 @@ pub(crate) use std::sync::{Arc, Mutex};
 type ToolOutputResult = Result<Option<ToolOutput>, ToolError>;
 type EnvSnapshot = Option<std::collections::HashMap<String, String>>;
 
-#[allow(unused_imports)]
+#[expect(
+    unused_imports,
+    reason = "QuickTestAgent retains an import used by other supported feature or test configurations"
+)]
 pub(crate) use sqlx::prelude::*;
 pub(crate) use tokio::sync::{Notify, mpsc, watch};
 pub(crate) use zeph_llm::any::AnyProvider;
@@ -101,7 +104,10 @@ pub(crate) struct UsageEvent {
     pub(crate) cache_write: u64,
 }
 
-#[allow(clippy::struct_excessive_bools)] // test double: independent behaviour toggles
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "MockChannel These independent flags belong to the same configuration or state object and are set or read together"
+)] // test double: independent behaviour toggles
 pub(crate) struct MockChannel {
     pub(crate) messages: Arc<Mutex<Vec<String>>>,
     pub(crate) sent: Arc<Mutex<Vec<String>>>,
@@ -228,7 +234,10 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "recv implements the trait-required async signature while completing synchronously"
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, crate::channel::ChannelError> {
         let next = {
             let mut msgs = self.messages.lock().unwrap();
@@ -265,7 +274,10 @@ impl Channel for MockChannel {
         }
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send implements the trait-required async signature while completing synchronously"
+    )]
     async fn send(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
         if self.fail_send {
             return Err(crate::channel::ChannelError::ChannelClosed);
@@ -274,7 +286,10 @@ impl Channel for MockChannel {
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_chunk implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), crate::channel::ChannelError> {
         self.chunks.lock().unwrap().push(chunk.to_string());
         Ok(())
@@ -286,7 +301,10 @@ impl Channel for MockChannel {
         std::future::ready(Ok(()))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_status implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_status(
         &mut self,
         text: &crate::channel::StatusText,
@@ -295,7 +313,10 @@ impl Channel for MockChannel {
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_usage implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_usage(
         &mut self,
         usage: zeph_llm::provider::TokenUsage,
@@ -311,13 +332,19 @@ impl Channel for MockChannel {
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_queue_count implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_queue_count(&mut self, count: usize) -> Result<(), crate::channel::ChannelError> {
         self.queue_counts.lock().unwrap().push(count);
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_tool_start implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_tool_start(
         &mut self,
         event: ToolStartEvent,
@@ -326,7 +353,10 @@ impl Channel for MockChannel {
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "confirm implements the trait-required async signature while completing synchronously"
+    )]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, crate::channel::ChannelError> {
         self.confirmed_prompts
             .lock()
@@ -352,7 +382,10 @@ impl Channel for MockChannel {
         self.input_sanitization_required
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "notify_foreground_subagent_completed implements the trait-required async signature while completing synchronously"
+    )]
     async fn notify_foreground_subagent_completed(
         &mut self,
         id: &str,
@@ -366,7 +399,10 @@ impl Channel for MockChannel {
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "notify_background_subagent_completed implements the trait-required async signature while completing synchronously"
+    )]
     async fn notify_background_subagent_completed(
         &mut self,
         id: &str,
@@ -489,7 +525,10 @@ impl MockToolExecutor {
 }
 
 impl ToolExecutor for MockToolExecutor {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "execute implements the trait-required async signature while completing synchronously"
+    )]
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         let mut outputs = self.outputs.lock().unwrap();
         if outputs.is_empty() {

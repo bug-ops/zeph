@@ -5,7 +5,10 @@ use dialoguer::{Confirm, Input, Password, Select};
 
 use super::WizardState;
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "step_memory keeps ordered steps together because they share state and control flow"
+)]
 pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 3/10: Memory ==\n");
 
@@ -272,7 +275,10 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "step_context_compression keeps ordered steps together because they share state and control flow"
+)]
 pub(super) fn step_context_compression(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Context Compression ==\n");
     println!(

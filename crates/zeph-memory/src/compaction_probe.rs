@@ -122,7 +122,10 @@ fn compute_category_scores(
         by_cat.entry(q.category).or_default().push(s);
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "category_scores uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let category_scores: Vec<CategoryScore> = by_cat
         .into_iter()
         .map(|(category, scores)| {
@@ -162,7 +165,10 @@ fn compute_category_scores(
         weighted_sum / weight_total
     } else {
         // All weights are 0 — fall back to equal weighting.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "n uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let n = category_scores.len() as f32;
         category_scores.iter().map(|cs| cs.score).sum::<f32>() / n
     };
@@ -216,7 +222,10 @@ fn jaccard(a: &[String], b: &[String]) -> f32 {
     if union == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "score_pair uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     {
         intersection as f32 / union as f32
     }
@@ -251,13 +260,19 @@ fn score_pair(expected: &str, actual: &str) -> f32 {
         .map(|s| (*s).to_owned())
         .collect();
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "j_e uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let j_e = if tokens_e.is_empty() {
         0.0_f32
     } else {
         intersection.len() as f32 / tokens_e.len() as f32
     };
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "j_a uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let j_a = if tokens_a.is_empty() {
         0.0_f32
     } else {
@@ -280,7 +295,10 @@ pub fn score_answers(questions: &[ProbeQuestion], answers: &[String]) -> (Vec<f3
         .zip(answers.iter().chain(std::iter::repeat(&String::new())))
         .map(|(q, a)| score_pair(&q.expected_answer, a))
         .collect();
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "avg uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let avg = if scores.is_empty() {
         0.0
     } else {

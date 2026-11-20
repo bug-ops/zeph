@@ -23,7 +23,6 @@ fn print_overlay_section(
 /// # Errors
 ///
 /// Returns an error if the plugin operation fails (invalid manifest, conflicts, etc.).
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_plugin_command(
     cmd: PluginCommand,
     config_path: Option<&std::path::Path>,

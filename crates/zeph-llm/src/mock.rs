@@ -47,7 +47,10 @@ struct KeepaliveScript {
     recorded: Arc<Mutex<Vec<crate::provider::KeepaliveRequest>>>,
 }
 
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 #[derive(Debug, Clone)]
 pub struct MockProvider {
     responses: Arc<Mutex<VecDeque<String>>>,
@@ -589,7 +592,10 @@ impl MockProvider {
 }
 
 impl LlmProvider for MockProvider {
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "name keeps the bound in the signature to match the surrounding trait or call contract"
+    )]
     fn name(&self) -> &str {
         self.name_override.as_deref().unwrap_or("mock")
     }

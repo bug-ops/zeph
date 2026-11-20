@@ -119,7 +119,10 @@ impl BioDecoderState {
     fn close_current(&mut self) {
         if self.current_end > self.current_start && self.current_token_count > 0 {
             // count is always small (sequence length), f32 precision loss is acceptable.
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "avg_score uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let avg_score = self.current_score_sum / self.current_token_count as f32;
             self.spans.push(NerSpan {
                 label: self.current_label.clone().unwrap_or_default(),
@@ -253,7 +256,10 @@ impl CandleNerClassifier {
         self
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_inner isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     fn load_inner(
         repo_id: &str,
         hf_token: Option<&str>,
@@ -787,7 +793,10 @@ mod tests {
     // ── [CLS]/[SEP] framing: strip-then-reframe logic ───────────────────────
 
     /// Simulate the NER `classify_sync` strip+frame logic without a real model.
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "simulate_ner_framing keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     fn simulate_ner_framing(
         ids: &[u32],
         offsets: &[(usize, usize)],

@@ -515,7 +515,10 @@ impl ErasedToolExecutor for NetworkDenyToolExecutor {
 /// let skills = filter_skills(&registry, &filter, &trust_levels).unwrap();
 /// assert!(skills.is_empty());
 /// ```
-#[allow(clippy::implicit_hasher)]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "filter_skills uses the default hasher because this collection is local and not on a custom-hasher boundary"
+)]
 pub fn filter_skills(
     registry: &SkillRegistry,
     filter: &SkillFilter,
@@ -645,7 +648,10 @@ fn glob_match(pattern: &GlobPattern, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::default_trait_access)]
+    #![expect(
+        clippy::default_trait_access,
+        reason = "The explicit default keeps the fixture type clear."
+    )]
     use std::assert_matches;
 
     use super::*;

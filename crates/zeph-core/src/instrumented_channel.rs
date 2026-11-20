@@ -112,7 +112,10 @@ impl<T> Clone for InstrumentedSender<T> {
 /// Tracks received message count when the `profiling` feature is enabled.
 pub struct InstrumentedReceiver<T> {
     inner: mpsc::Receiver<T>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "_instrumented is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     name: &'static str,
     #[cfg(feature = "profiling")]
     received: AtomicU64,

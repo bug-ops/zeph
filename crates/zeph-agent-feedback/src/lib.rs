@@ -31,7 +31,6 @@
 //!   seconds (configurable via `LearningConfig`).
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
-#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 use std::collections::VecDeque;
 use std::sync::LazyLock;

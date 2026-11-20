@@ -32,7 +32,7 @@ pub(crate) fn sections(
         .map(|s| {
             if let Some(conf) = confidence_map.get(s.as_str()) {
                 let bar = confidence_bar(conf.posterior, 8);
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "pct narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site")]
                 let pct = (conf.posterior * 100.0) as u32;
                 let color = confidence_color(conf.posterior);
                 Line::from(vec![
@@ -153,10 +153,11 @@ fn split_two_sections(first_demand: u16, second_demand: u16, available: u16) -> 
 }
 
 fn confidence_bar(posterior: f64, width: usize) -> String {
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::cast_precision_loss
+        clippy::cast_precision_loss,
+        reason = "filled narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
     )]
     let filled = ((posterior * width as f64).round() as usize).min(width);
     let empty = width - filled;

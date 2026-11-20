@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use zeph_llm::any::AnyProvider;

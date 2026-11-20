@@ -112,14 +112,20 @@ pub fn merge(ballots: &[Ballot]) -> MergeOutcome {
         .flat_map(|b| b.gaps.iter().cloned())
         .collect();
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "merged_confidence uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let merged_confidence = if winning_count == 0 {
         0.0
     } else {
         winning.iter().map(|b| b.confidence).sum::<f64>() / winning_count as f64
     };
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "agreement_ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let agreement_ratio = winning_count as f64 / total as f64;
 
     MergeOutcome {

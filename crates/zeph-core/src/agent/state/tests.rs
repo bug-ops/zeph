@@ -283,7 +283,11 @@ fn lifecycle_state_bg_metrics_tick_starts_none() {
 }
 
 #[test]
-#[allow(clippy::unchecked_time_subtraction, clippy::nonminimal_bool)]
+#[expect(
+    clippy::unchecked_time_subtraction,
+    clippy::nonminimal_bool,
+    reason = "lifecycle_state_last_no_providers_at_elapsed_check keeps this narrowly scoped lint exception at the item that requires it"
+)]
 fn lifecycle_state_last_no_providers_at_elapsed_check() {
     use std::time::{Duration, Instant};
     // Simulate the backoff gate logic used in advance_context_lifecycle_guarded.

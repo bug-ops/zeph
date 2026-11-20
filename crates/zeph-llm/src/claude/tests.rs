@@ -4323,7 +4323,10 @@ async fn any_claude_chat_typed_reaches_native_override() {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct RecursiveNode {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "chat_typed_recursive_schema_falls_back_to_the_tool_path is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     next: Option<Box<RecursiveNode>>,
 }
 

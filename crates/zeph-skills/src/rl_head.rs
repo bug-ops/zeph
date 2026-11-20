@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(clippy::doc_markdown, clippy::needless_range_loop)]
+#![expect(
+    clippy::doc_markdown,
+    reason = "The introductory prose uses the model name SkillOrchestra as a proper noun."
+)]
 //! SkillOrchestra RL routing head: 2-layer MLP for skill re-ranking.
 //!
 //! Input features per candidate:
@@ -117,7 +120,10 @@ impl RoutingHeadInner {
         input.extend_from_slice(skill_embed);
         input.push(cosine_score);
         input.push(success_rate);
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "pre_relu uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         input.push((use_count as f32 + 1.0).ln());
 
         // Hidden layer: h = relu(w1 @ input + b1)
@@ -506,7 +512,10 @@ fn sigmoid(x: f32) -> f32 {
 
 /// Xavier uniform initialization: U(-limit, limit) where limit = sqrt(6/(fan_in+fan_out)).
 fn xavier_init(fan_in: usize, fan_out: usize) -> Vec<f32> {
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "limit uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let limit = (6.0_f32 / (fan_in + fan_out) as f32).sqrt();
     let n = fan_in * fan_out;
     // Deterministic LCG seeded by dimensions for reproducibility (no rand dep).
@@ -519,7 +528,10 @@ fn xavier_init(fan_in: usize, fan_out: usize) -> Vec<f32> {
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         // Map to [0, 1)
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "u uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let u = (state >> 33) as f32 / (1u64 << 31) as f32;
         weights.push(u * 2.0 * limit - limit);
     }

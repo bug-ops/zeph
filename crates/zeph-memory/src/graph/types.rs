@@ -493,7 +493,10 @@ pub fn evolved_weight(retrieval_count: i32, base_confidence: f32) -> f32 {
     let count = f64::from(retrieval_count.max(0));
     let boost = 1.0 + 0.2 * (1.0 + count).ln();
     // cast f64 -> f32: boost is bounded, truncation is acceptable
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "boost_f32 narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let boost_f32 = boost as f32;
     (base_confidence * boost_f32).min(1.0)
 }
@@ -521,7 +524,10 @@ impl GraphFact {
     ///
     /// Formula: `entity_match_score * (1 / (1 + hop_distance)) * evolved_weight(retrieval_count, confidence) * edge_type_weight(edge_type)`
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "composite_score uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     pub fn composite_score(&self) -> f32 {
         let w = evolved_weight(self.retrieval_count, self.confidence);
         let type_w = edge_type_weight(self.edge_type);
@@ -541,7 +547,6 @@ impl GraphFact {
     /// - `temporal_decay_rate`: non-negative decay rate in units of 1/day. Default 0.0.
     /// - `now_secs`: current Unix timestamp in seconds (seconds since epoch).
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn score_with_decay(&self, temporal_decay_rate: f64, now_secs: i64) -> f32 {
         let base = self.composite_score();
         if temporal_decay_rate <= 0.0 {
@@ -554,12 +559,15 @@ impl GraphFact {
             .map_or(0.0_f64, |valid_from_secs| {
                 let age_secs = (now_secs - valid_from_secs).max(0);
                 // cast i64 → f64: precision loss acceptable for age-in-seconds computation
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(clippy::cast_precision_loss, reason = "age_days uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
                 let age_days = age_secs as f64 / 86_400.0;
                 1.0_f64 / (1.0 + age_days * temporal_decay_rate)
             });
         // boost is in [0.0, 1.0]; cast to f32 is safe (no truncation risk).
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "boost_f32 narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let boost_f32 = boost as f32;
         // Additive blend: base * (1 + boost_fraction), capped at 2x base.
         base * (1.0 + boost_f32).min(2.0)
