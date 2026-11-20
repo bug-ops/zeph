@@ -13,8 +13,6 @@
 //! 4. Calling `executor.execute_tool_call(call)` would NOT return `ConfirmationRequired`
 //!    — checked by attempting a dry-run classification (see `is_confirmation_required`).
 
-#![allow(dead_code)]
-
 use zeph_common::ToolName;
 use zeph_tools::{ToolCall, ToolError};
 

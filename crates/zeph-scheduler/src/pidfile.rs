@@ -30,9 +30,14 @@ use crate::error::SchedulerError;
 /// processes spawned via `Command` do NOT inherit the lock. If you re-exec the
 /// binary (as `zeph serve --foreground` does), the new process must call
 /// `PidFile::acquire` independently.
-// Wraps the shared guard purely for its `Drop` impl (unlinks the pid file on release).
 #[derive(Debug)]
-pub struct PidFile(#[allow(dead_code)] PidLockGuard);
+pub struct PidFile(
+    #[expect(
+        dead_code,
+        reason = "The shared guard is retained so dropping PidFile releases and unlinks the PID lock."
+    )]
+    PidLockGuard,
+);
 
 impl PidFile {
     /// Open (or create) the pid file at `path` and acquire an exclusive advisory lock.

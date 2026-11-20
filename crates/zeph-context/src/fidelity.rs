@@ -385,8 +385,7 @@ fn compute_scores(
             continue;
         }
 
-        #[allow(clippy::cast_possible_truncation)]
-        let original_tokens = tc.count_tokens(&msg.content) as u32;
+        let original_tokens = u32::try_from(tc.count_tokens(&msg.content)).unwrap_or(u32::MAX);
 
         // distance_from_end = 0 for newest (i = score_end-1), N-1 for oldest (i = 0).
         // Spec §6.1: temporal = 1.0 - distance_from_end / max_dist → newest = 1.0, oldest ≈ 0.0.
@@ -486,8 +485,7 @@ async fn apply_scores(
                 #[allow(clippy::cast_possible_truncation)]
                 let original_tokens = fs.original_tokens;
                 render_compressed(msg, config, tc, provider).await;
-                #[allow(clippy::cast_possible_truncation)]
-                let new_tokens = tc.count_tokens(&msg.content) as u32;
+                let new_tokens = u32::try_from(tc.count_tokens(&msg.content)).unwrap_or(u32::MAX);
                 tokens_saved += original_tokens.saturating_sub(new_tokens);
                 compressed_count += 1;
             }

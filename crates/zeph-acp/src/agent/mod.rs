@@ -127,7 +127,6 @@ pub struct AcpContext {
     /// `None` when the IDE did not advertise elicitation capability during `initialize()`,
     /// or when the `unstable-elicitation` feature is disabled.
     #[cfg(feature = "unstable-elicitation")]
-    #[allow(dead_code)]
     pub(crate) elicitation_bridge: Option<elicitation::ElicitationBridge>,
 }
 
@@ -384,7 +383,10 @@ impl Drop for SessionEntry {
 }
 
 impl SessionEntry {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "This item is retained for a serialization, configuration, or alternate-build path."
+    )]
     fn last_active(&self) -> std::time::Instant {
         let ms = self.last_active_ms.load(Ordering::Relaxed);
         let now_ms = u64::try_from(
@@ -509,7 +511,13 @@ impl ZephAcpAgentState {
             .map(|entry| Arc::clone(&entry.cancel_signal))
     }
 
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[cfg_attr(
+        feature = "unstable-elicitation",
+        expect(
+            clippy::too_many_arguments,
+            reason = "The optional elicitation sender joins session-owned values only when that feature is enabled."
+        )
+    )]
     pub(crate) async fn build_acp_context(
         &self,
         session_id: &acp::v1::schema::SessionId,
@@ -645,7 +653,6 @@ impl ZephAcpAgentState {
 
 /// Handler implementations — called from `run_agent` handler closures.
 impl ZephAcpAgentState {
-    #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.initialize")]
     pub(crate) async fn do_initialize(
         &self,
@@ -785,7 +792,6 @@ impl ZephAcpAgentState {
         Ok(())
     }
 
-    #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.authenticate")]
     pub(crate) async fn do_authenticate(
         &self,
@@ -794,7 +800,6 @@ impl ZephAcpAgentState {
         Ok(acp::v1::schema::AuthenticateResponse::default())
     }
 
-    #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.logout")]
     pub(crate) async fn do_logout(
         &self,
@@ -804,7 +809,6 @@ impl ZephAcpAgentState {
         Ok(acp::v1::schema::LogoutResponse::default())
     }
 
-    #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.cancel", fields(session_id = %args.session_id))]
     pub(crate) async fn do_cancel(
         &self,
@@ -1112,7 +1116,6 @@ macro_rules! notif_handler {
 /// ).await
 /// # }
 /// ```
-#[allow(clippy::too_many_lines)]
 pub async fn run_agent(
     state: Arc<ZephAcpAgentState>,
     transport: impl acp::ConnectTo<acp::Agent>,
@@ -1211,7 +1214,6 @@ pub async fn run_agent(
 
 /// Compile-time assertions that ACP state and executors are `Send + Sync`.
 const _: () = {
-    #[allow(clippy::used_underscore_items)]
     fn assert_send_sync<T: Send + Sync>() {}
     fn check_send_sync() {
         assert_send_sync::<ZephAcpAgentState>();

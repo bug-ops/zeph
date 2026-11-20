@@ -236,7 +236,10 @@ impl StreamingBuffer {
 /// Default methods [`streaming_send_chunk`](StreamingSend::streaming_send_chunk) and
 /// [`streaming_flush_chunks`](StreamingSend::streaming_flush_chunks) encode the shared
 /// accumulate-and-throttle pattern.
-#[allow(async_fn_in_trait)]
+#[expect(
+    async_fn_in_trait,
+    reason = "Native async is intentional for this trait API and its current callers."
+)]
 pub trait StreamingSend {
     /// Issue one API call: send a new message or edit the last one in place.
     async fn send_or_edit(&mut self) -> Result<(), ChannelError>;

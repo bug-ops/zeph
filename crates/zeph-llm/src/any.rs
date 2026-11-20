@@ -85,6 +85,13 @@ macro_rules! delegate_provider {
 /// The `Candle` variant is only available when the `candle` feature is enabled.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "gonka",
+    expect(
+        clippy::large_enum_variant,
+        reason = "Gonka and mock provider variants stay inline to preserve allocation-free enum dispatch."
+    )
+)]
 pub enum AnyProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),

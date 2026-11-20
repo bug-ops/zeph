@@ -142,7 +142,10 @@ impl ToolExecutor for MockMcpServer {
         std::future::ready(Ok(None))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "The implemented trait requires an async method even though this implementation completes immediately."
+    )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         // Record the call for test assertions.
         self.recorded_calls.lock().unwrap().push((

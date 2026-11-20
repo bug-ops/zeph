@@ -189,7 +189,14 @@ pub enum CardSigningError {
 /// ));
 /// ```
 #[must_use]
-#[allow(clippy::needless_return, unused_variables)]
+#[cfg_attr(
+    not(feature = "card-signing"),
+    expect(
+        clippy::needless_return,
+        unused_variables,
+        reason = "The disabled-feature branch returns early and does not use the signing inputs."
+    )
+)]
 pub fn verify_card_signatures(
     raw_card: &Value,
     signatures: &[AgentCardSignature],

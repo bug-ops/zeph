@@ -159,7 +159,9 @@ impl ToolDependencyGraph {
                 .iter()
                 .filter(|p| completed.contains(p.as_str()))
                 .count();
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss,
+    reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+)]
             let boost = met as f32 * boost_per_dep;
             boost.min(max_total_boost)
         })

@@ -40,7 +40,10 @@ impl ZephAcpAgentState {
         }
     }
 
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "The async signature is retained to keep this interface consistent with its async call path."
+    )]
     pub(crate) async fn handle_lsp_did_save(
         &self,
         params: &str,

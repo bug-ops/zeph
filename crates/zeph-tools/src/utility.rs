@@ -215,7 +215,10 @@ impl UtilityScorer {
         };
 
         let cost = if ctx.token_budget > 0 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+            )]
             (ctx.tokens_consumed as f32 / ctx.token_budget as f32).clamp(0.0, 1.0)
         } else {
             0.0
@@ -230,7 +233,10 @@ impl UtilityScorer {
 
         // Uncertainty decreases as turn progresses. At tool call 0 it equals 1.0;
         // at tool_calls_this_turn >= 10 it saturates to 0.0.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+        )]
         let uncertainty = (1.0_f32 - ctx.tool_calls_this_turn as f32 / 10.0).clamp(0.0, 1.0);
 
         let total = self.config.gain_weight * gain

@@ -107,9 +107,7 @@
 //! ```
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
-
-#[allow(unused_imports)]
-pub(crate) use zeph_db::sql;
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 pub mod attestation;
 pub mod caller;

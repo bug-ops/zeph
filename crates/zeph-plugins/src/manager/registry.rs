@@ -716,7 +716,10 @@ fn run_reputation_check(
 ///
 /// Returns a human-readable error string on any failure. The caller logs this as a warning.
 /// On success returns a warning when the integrity registry could not record the new digest.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The staged update transaction needs each filesystem path and policy input explicitly."
+)]
 pub(crate) fn apply_staged_update(
     bytes: &[u8],
     url: &str,

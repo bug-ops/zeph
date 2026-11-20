@@ -56,6 +56,7 @@
 //! ```
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 // TODO(#6935): post-v1.0 — re-evaluate splitting executor / web / shell into sub-crates if compile times degrade.
 

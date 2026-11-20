@@ -81,9 +81,10 @@ pub enum SchedulerMessage {
 ///                                                                    exit
 /// ```
 // The RTW-A defense adds 4 bool fields to track per-tick state. Grouping them into a
-// sub-struct would require passing the sub-struct through several private methods, adding
-// noise without clarity benefit. The fields are cohesively named (reentry_*, tick_*, *_check).
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "The independent re-entry, tick, and eligibility flags represent separate scheduler checks."
+)]
 pub struct Scheduler {
     tasks: Vec<ScheduledTask>,
     store: JobStore,
@@ -255,7 +256,10 @@ impl Scheduler {
     /// # Errors
     ///
     /// Returns an error if DB init, upsert, `next_run` persistence, or job listing fails.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Initialization restores persisted tasks and their next-run state in required order."
+    )]
     #[tracing::instrument(name = "sched.scheduler.init", skip_all, err)]
     pub async fn init(&mut self) -> Result<(), SchedulerError> {
         self.store.init().await?;
@@ -765,7 +769,10 @@ impl Scheduler {
         });
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "A tick applies ordered registration, gating, execution, and completion transitions."
+    )]
     async fn tick(&mut self) {
         // Mechanism 1 (write-fence): advance the tick epoch at the start of each tick.
         // Tasks written during drain_channel() above are in written_this_tick and will

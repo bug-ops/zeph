@@ -34,7 +34,10 @@ struct SnapshotEntry {
 /// On failure call `rollback()` to restore originals.
 pub(crate) struct TransactionSnapshot {
     // Kept for its Drop impl which deletes the temp directory on success path.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "This item is retained for a serialization, configuration, or alternate-build path."
+    )]
     backup_dir: tempfile::TempDir,
     entries: Vec<SnapshotEntry>,
 }

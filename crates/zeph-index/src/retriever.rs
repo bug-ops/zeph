@@ -428,7 +428,11 @@ fn has_snake_case_identifier(text: &str) -> bool {
 
 fn budget_tokens(available: usize, ratio: f32) -> usize {
     // Scale to per-mille to stay in integer arithmetic.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Retrieval ratios are validated as non-negative and bounded before per-mille conversion."
+    )]
     let per_mille = (ratio * 1000.0) as usize;
     available.saturating_mul(per_mille) / 1000
 }

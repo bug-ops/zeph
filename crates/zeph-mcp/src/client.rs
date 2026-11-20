@@ -146,7 +146,10 @@ pub struct HandlerConfig {
     ///
     /// `rmcp::model::Root` is deprecated by SEP-2577 but still functional — see
     /// [`crate::roots`] for the construction-helper boundary that isolates this.
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "This compatibility path still needs the deprecated MCP Root type exposed by rmcp."
+    )]
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
     /// When `Some`, elicitation requests are forwarded to the agent loop.
@@ -172,11 +175,20 @@ pub struct ToolListChangedHandler {
     /// Shared across all handler instances; tracks last successful refresh per server.
     last_refresh: Arc<DashMap<McpServerId, Instant>>,
     /// Configured roots to expose to the MCP server via `roots/list`.
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "This compatibility path still needs the deprecated MCP Root type exposed by rmcp."
+    )]
     roots: Arc<Vec<rmcp::model::Root>>,
     /// Configurable cap for tool description length (bytes). Retained for forward-compatibility;
     /// active sanitization is performed by `McpManager::ingest_tools`.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The configured cap is retained for forward compatibility."
+        )
+    )]
     max_description_bytes: usize,
     /// When `Some`, elicitation requests are forwarded to the agent loop.
     /// When `None`, all elicitation requests are declined.
@@ -186,7 +198,10 @@ pub struct ToolListChangedHandler {
 }
 
 impl ToolListChangedHandler {
-    #[allow(deprecated)] // `roots: Arc<Vec<rmcp::model::Root>>` — see `crate::roots`.
+    #[expect(
+        deprecated,
+        reason = "`roots: Arc<Vec<rmcp::model::Root>>` — see `crate::roots`."
+    )]
     pub(crate) fn new(
         server_id: impl Into<McpServerId>,
         tx: Sender<ToolRefreshEvent>,
@@ -288,7 +303,10 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
 
     // `ListRootsResult` is deprecated (SEP-2577) but required by the unchanged
     // `ClientHandler::list_roots` trait signature — unavoidable trait-impl boundary.
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "This compatibility path still needs the deprecated MCP Root type exposed by rmcp."
+    )]
     fn list_roots(
         &self,
         _context: rmcp::service::RequestContext<RoleClient>,
@@ -420,7 +438,7 @@ pub struct OAuthPending {
     pub timeout: Duration,
     pub tx: Sender<ToolRefreshEvent>,
     pub last_refresh: Arc<DashMap<McpServerId, Instant>>,
-    #[allow(deprecated)] // see `crate::roots`
+    #[expect(deprecated, reason = "see `crate::roots`")]
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
     pub elicitation_tx: Option<Sender<ElicitationEvent>>,
@@ -454,7 +472,10 @@ impl McpClient {
         feature = "profiling",
         tracing::instrument(name = "mcp.client.connect", skip_all, fields(server_id = %server_id))
     )]
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "function with many required inputs; a *Params struct would be more verbose without simplifying the call site"
+    )]
     pub async fn connect(
         server_id: &str,
         command: &str,
@@ -564,9 +585,11 @@ impl McpClient {
     /// `trust_level` is [`McpTrustLevel::Trusted`]),
     /// `McpError::Timeout` if the handshake exceeds `timeout`, or
     /// `McpError::Connection` if the handshake fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+    )]
     // TODO(#6935): B3 refactor into a builder or config struct to reduce argument count
-    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "mcp.client.connect_url", skip_all, fields(server_id = %server_id))
@@ -634,8 +657,11 @@ impl McpClient {
     /// # Errors
     ///
     /// Returns `McpError::OAuthError` on metadata discovery, SSRF, or authorization failures.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+    )]
+    // Complex algorithm function; the argument bundle is deferred to a future refactor.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "mcp.client.connect_url", skip_all, fields(server_id = %server_id))
@@ -1762,7 +1788,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
+    #[expect(
+        deprecated,
+        reason = "asserts on `rmcp::model::Root` fields — see `crate::roots`"
+    )]
     async fn list_roots_returns_configured_roots() {
         let root = crate::roots::make_root("file:///workspace", Some("workspace"));
         let roots = Arc::new(vec![root]);
@@ -2196,7 +2225,10 @@ mod tests {
             )
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "The implemented trait requires an async method even though this implementation completes immediately."
+        )]
         async fn list_tools(
             &self,
             _request: Option<rmcp::model::PaginatedRequestParams>,

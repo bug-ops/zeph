@@ -291,7 +291,6 @@ pub struct TelegramChannel {
     supervisor: Option<TaskSupervisor>,
     /// Handle to the guest-mode axum proxy task. Kept alive for the lifetime
     /// of the channel; dropped when `TelegramChannel` is dropped.
-    #[allow(dead_code)]
     guest_proxy_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -487,7 +486,10 @@ impl TelegramChannel {
     /// # Errors
     ///
     /// Returns an error if the bot cannot be initialized.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This function keeps one cohesive protocol flow together; splitting it would obscure the control flow."
+    )]
     pub fn start(mut self) -> Result<Self, ChannelError> {
         self.allowlist.validate(self.bot_to_bot)?;
 
@@ -1155,7 +1157,10 @@ fn compute_chain_depth(msg: &Message, cap: u32) -> u32 {
 /// via `tx`.  Returns `respond(())` in all branches so teloxide considers the
 /// update handled.
 #[tracing::instrument(name = "channels.telegram.handle_message", skip_all)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+)]
 async fn handle_telegram_message(
     bot: Bot,
     msg: Message,

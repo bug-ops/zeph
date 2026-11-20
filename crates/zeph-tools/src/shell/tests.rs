@@ -2162,7 +2162,10 @@ fn classify_exit_1_generic_returns_none() {
 // --- env_blocklist / scrubbing tests ---
 
 #[cfg(unix)]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "This test exercises Rust 2024 environment mutation and restores the prior value afterward."
+)]
 #[tokio::test]
 async fn env_blocklist_strips_sensitive_vars() {
     // Set a fake sensitive env var in the current process
@@ -2236,7 +2239,10 @@ async fn env_blocklist_extra_env_still_injected() {
 }
 
 #[cfg(unix)]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "This test exercises Rust 2024 environment mutation and restores the prior value afterward."
+)]
 #[tokio::test]
 async fn env_blocklist_multiple_prefixes() {
     unsafe {
@@ -2271,7 +2277,10 @@ async fn env_blocklist_multiple_prefixes() {
 }
 
 #[cfg(unix)]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "This test exercises Rust 2024 environment mutation and restores the prior value afterward."
+)]
 #[tokio::test]
 async fn empty_env_blocklist_passes_all_vars() {
     unsafe { std::env::set_var("ZEPH_EMPTY_BLOCKLIST_TEST", "visible") };
@@ -3387,7 +3396,10 @@ mod resolve_context {
     // --- env_blocklist filtering ---
 
     #[cfg(unix)]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "This test exercises Rust 2024 environment mutation and restores the prior value afterward."
+    )]
     #[test]
     fn blocklist_strips_process_env_in_base() {
         unsafe { std::env::set_var("SECRET_TEST_KEY", "leaked") };
@@ -3402,7 +3414,10 @@ mod resolve_context {
     }
 
     #[cfg(unix)]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "This test exercises Rust 2024 environment mutation and restores the prior value afterward."
+    )]
     #[test]
     fn untrusted_ctx_cannot_reintroduce_blocked_var() {
         // Untrusted call-site env_overrides with a blocklisted key must be stripped (step 6).

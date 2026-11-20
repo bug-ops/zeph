@@ -204,7 +204,10 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The persisted job row stores these independent schedule, payload, and provenance fields."
+    )]
     #[tracing::instrument(name = "sched.store.upsert_job_with_provenance", skip_all, fields(task = %name), err)]
     pub async fn upsert_job_with_provenance(
         &self,
@@ -447,7 +450,10 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     #[tracing::instrument(name = "sched.store.list_jobs_full", skip_all, err)]
     pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
-        #[allow(clippy::type_complexity)]
+        #[expect(
+            clippy::type_complexity,
+            reason = "The SQL tuple mirrors the selected nullable job columns before typed conversion."
+        )]
         let rows: Vec<(
             String,
             String,
@@ -541,7 +547,10 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     #[tracing::instrument(name = "sched.store.list_recent_runs", skip_all, err)]
     pub async fn list_recent_runs(&self, n: usize) -> Result<Vec<RecentRunRecord>, SchedulerError> {
-        #[allow(clippy::type_complexity)]
+        #[expect(
+            clippy::type_complexity,
+            reason = "The SQL tuple mirrors the selected nullable run-history columns before typed conversion."
+        )]
         let rows: Vec<(String, String, Option<String>, Option<String>, String)> =
             zeph_db::query_as(sql!(
                 "SELECT name, task_mode, last_run, COALESCE(next_run, run_at), status \

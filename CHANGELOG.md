@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-a2a`, `zeph-gateway`, `zeph-acp`, `zeph-mcp`, `zeph-channels`, `zeph-tools`: begin the #7150 rollout by warning on `#[allow]`, replacing active suppressions with reasoned `#[expect]` attributes, deleting stale expectations, and saturating block-count and duration conversions.
+- `zeph-core`, `zeph-bench`: remove the five module-level `dead_code` suppressions; delete an obsolete speculative JSON parser context enum that had no users.
+- `zeph-core`, `zeph-context`: group tool-failure and context-fetch scheduling inputs in context types, removing two `too_many_arguments` suppressions.
+- `zeph-context`, `zeph-memory`: saturate token-count and probe-count conversions instead of narrowing casts.
+- `zeph-agent-feedback`, `zeph-vault`, `zeph-durable`, `zeph-worktree`: extend the #7150 rollout with reasoned expectations and crate-level allow warnings; remove two stale pattern-builder expectations.
+- `zeph-agent-persistence`, `zeph-db`, `zeph-plugins`, `zeph-commands`: extend the reasoned expectation rollout; clamp oversized SQL limits and retain the range checks for thinking-token parsing.
+- `zeph-index`, `zeph-session`, `zeph-scheduler`, `zeph-sanitizer`: extend the reasoned expectation rollout; reject session counters that exceed signed database storage and remove casts for those values.
+- `zeph-mcp`, `zeph-acp`: remove stale expectations discovered by all-targets Clippy and reason the active large-future expectation.
+- `zeph-llm`: scope the large-enum expectation to Gonka builds where provider variants make it necessary.
+- `zeph-acp`, `zeph-sanitizer`: scope dead-code, large-futures, and excessive-bools expectations to the feature profiles that activate those conditions.
+- `zeph-index`, `zeph-orchestration`: move PostgreSQL testcontainers modules to dev-dependencies so test-utils builds do not report unused optional dependencies.
+- `.github/deny.toml`: document temporary exceptions for newly issued unmaintained advisories on `chrono` and `humantime`.
+
 ## [0.24.0] - 2026-11-16
 
 ### Added

@@ -521,8 +521,10 @@ fn percent_decode_url(raw: &str) -> String {
                 (bytes[i + 2] as char).to_digit(16),
             )
         {
-            // hi and lo are 0-15; combined value is at most 0xFF, fits in u8.
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Each hex nibble is at most 15, so the combined byte is at most 0xFF."
+            )]
             let byte = ((hi << 4) | lo) as u8;
             out.push(byte as char);
             i += 3;

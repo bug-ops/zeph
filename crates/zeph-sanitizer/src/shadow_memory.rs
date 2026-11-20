@@ -248,7 +248,10 @@ impl ShadowMemory {
         // Record-then-score order invariant: events are appended before this is called,
         // so window[i] precedes window[i+1] chronologically.
         let pairs = window.len() - 1;
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "The mean semantic drift is a bounded heuristic score across the event window."
+        )]
         let semantic_drift: f32 = window
             .array_windows()
             .map(|[a, b]| jaccard_distance(&a.goal_summary, &b.goal_summary))
@@ -267,7 +270,10 @@ impl ShadowMemory {
 
         // 3. Deviation accumulation: fraction of events above half the drift threshold.
         let half_threshold = self.config.drift_threshold.get() * 0.5;
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "The deviation ratio is a bounded heuristic score across the event window."
+        )]
         let deviation_ratio = window
             .iter()
             .filter(|e| e.deviation_score > half_threshold)
@@ -413,7 +419,10 @@ fn jaccard_distance(a: &str, b: &str) -> f32 {
     if union == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The Jaccard distance is a bounded heuristic score over keyword counts."
+    )]
     let score = 1.0 - (intersection as f32) / (union as f32);
     score
 }

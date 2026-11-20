@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "This integration test uses unwraps to keep setup and assertion failures concise."
+)]
 
 //! Acceptance tests (tests-first) for #7132: typed `CallAttribution { caller: Option<CallerId>,
 //! active_skills: Vec<SkillName> }` embedded once as `attribution` in `ToolCall` and `AuditEntry`.

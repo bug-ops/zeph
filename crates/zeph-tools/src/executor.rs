@@ -193,7 +193,10 @@ impl FilterStats {
     ///
     /// Returns `0.0` when there was no raw output to filter.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+    )]
     pub fn savings_pct(&self) -> f64 {
         if self.raw_chars == 0 {
             return 0.0;
@@ -1652,7 +1655,10 @@ mod tests {
     #[test]
     fn deserialize_params_missing_required_field() {
         #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)]
+        #[expect(
+            dead_code,
+            reason = "This item is retained for a serialization, configuration, or alternate-build path."
+        )]
         struct P {
             name: String,
         }
@@ -1664,7 +1670,10 @@ mod tests {
     #[test]
     fn deserialize_params_wrong_type() {
         #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)]
+        #[expect(
+            dead_code,
+            reason = "This item is retained for a serialization, configuration, or alternate-build path."
+        )]
         struct P {
             count: u32,
         }

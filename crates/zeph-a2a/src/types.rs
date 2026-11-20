@@ -305,7 +305,10 @@ pub struct AgentProvider {
 /// existing serialised cards.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent boolean flags; bitflags or enum would obscure semantics without reducing complexity"
+)]
 pub struct AgentCapabilities {
     /// Agent supports `message/stream` for real-time SSE output.
     #[serde(default)]

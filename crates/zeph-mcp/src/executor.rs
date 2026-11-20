@@ -343,8 +343,7 @@ impl ToolExecutor for McpToolExecutor {
         }
 
         let mut outputs = Vec::with_capacity(blocks.len());
-        #[allow(clippy::cast_possible_truncation)]
-        let blocks_executed = blocks.len() as u32;
+        let blocks_executed = u32::try_from(blocks.len()).unwrap_or(u32::MAX);
 
         for block in &blocks {
             let instruction: McpInstruction =

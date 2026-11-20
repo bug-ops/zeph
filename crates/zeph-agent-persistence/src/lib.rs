@@ -25,6 +25,7 @@
 //! crate; tracked separately from #3515/#3516
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 pub mod condense;
 pub mod embed;

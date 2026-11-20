@@ -176,12 +176,10 @@ impl serde::Serialize for McpTransport {
 /// - `Sandboxed` + allowlist — only listed tools; empty allowlist = no tools.
 /// - `Sandboxed` + no allowlist — no tools exposed (fail closed unconditionally;
 ///   `allow_untrusted_without_allowlist` has no effect on `Sandboxed`).
-// `roots: Vec<rmcp::model::Root>` names a type deprecated by SEP-2577 (still functional —
-// see `crate::roots`); the derive(Serialize, Deserialize) expansion below also references
-// it, which a field-level `#[allow(deprecated)]` does not silence, hence the struct-level
-// attribute.
-#[allow(deprecated)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "config struct — boolean flags are idiomatic for TOML-deserialized configuration"
+)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerEntry {
     pub id: McpServerId,
@@ -209,7 +207,7 @@ pub struct ServerEntry {
     /// `rmcp::model::Root` is deprecated by SEP-2577 but still functional — see
     /// [`crate::roots`] for the construction-helper boundary that isolates this.
     #[serde(default)]
-    pub roots: Vec<rmcp::model::Root>,
+    pub roots: Vec<McpRoot>,
     /// Per-tool security metadata overrides. Keys are tool names.
     /// When absent for a tool, metadata is inferred from the tool name via heuristics.
     #[serde(default)]
@@ -236,6 +234,13 @@ pub struct ServerEntry {
     #[serde(default)]
     pub media_passthrough: bool,
 }
+
+/// MCP filesystem root type retained for the currently supported roots protocol.
+#[expect(
+    deprecated,
+    reason = "The MCP roots protocol still uses rmcp's deprecated Root type."
+)]
+pub type McpRoot = rmcp::model::Root;
 
 /// Configurable byte caps applied during tool ingestion and server-instructions storage.
 #[derive(Debug, Clone, Copy)]

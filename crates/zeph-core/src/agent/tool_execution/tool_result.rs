@@ -10,6 +10,17 @@ use crate::agent::Agent;
 use crate::channel::{Channel, ToolOutputEvent};
 use crate::overflow_tools::OverflowToolExecutor;
 
+struct ToolFailureContext<'a> {
+    output: &'a str,
+    outcome: ToolResultKind,
+    tool_err_category: &'a mut Option<zeph_tools::error_taxonomy::ToolErrorCategory>,
+    is_quality_failure: bool,
+    pending_outcomes: &'a mut Vec<crate::agent::learning::PendingSkillOutcome>,
+    pending_reflection: &'a mut Option<String>,
+    tool_name: &'a str,
+    resolved: &'a zeph_tools::ResolvedToolSource,
+}
+
 /// Display outcome for channels: an `Err` renders as [`zeph_tools::ToolStatus::Failed`], an `Ok`
 /// keeps its typed status. Independent of the `Err`-only wire `is_error` flag.
 fn display_status(outcome: ToolResultKind) -> zeph_tools::ToolStatus {
@@ -236,18 +247,17 @@ impl<C: Channel> Agent<C> {
         d.dump_tool_output(tool_name, &dump_content);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn handle_tool_failure_outcomes(
-        &mut self,
-        output: &str,
-        outcome: ToolResultKind,
-        tool_err_category: &mut Option<zeph_tools::error_taxonomy::ToolErrorCategory>,
-        is_quality_failure: bool,
-        pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
-        pending_reflection: &mut Option<String>,
-        tool_name: &str,
-        resolved: &zeph_tools::ResolvedToolSource,
-    ) -> bool {
+    fn handle_tool_failure_outcomes(&mut self, context: ToolFailureContext<'_>) -> bool {
+        let ToolFailureContext {
+            output,
+            outcome,
+            tool_err_category,
+            is_quality_failure,
+            pending_outcomes,
+            pending_reflection,
+            tool_name,
+            resolved,
+        } = context;
         if outcome.is_failure() {
             let kind = tool_err_category.take().map_or_else(
                 || match outcome {
@@ -457,16 +467,16 @@ impl<C: Channel> Agent<C> {
         self.record_tool_execution_telemetry(tc.name.as_str(), started_at, is_error, &output);
         self.record_gate_feedback(tc.name.as_str(), tool_err_category);
 
-        let tool_succeeded = self.handle_tool_failure_outcomes(
-            &output,
+        let tool_succeeded = self.handle_tool_failure_outcomes(ToolFailureContext {
+            output: &output,
             outcome,
-            &mut tool_err_category,
+            tool_err_category: &mut tool_err_category,
             is_quality_failure,
             pending_outcomes,
             pending_reflection,
-            tc.name.as_str(),
-            &resolved,
-        );
+            tool_name: tc.name.as_str(),
+            resolved: &resolved,
+        });
         let _ = self.record_anomaly_outcome(anomaly_outcome).await;
 
         self.dump_raw_tool_output(tc.name.as_str(), is_error, &output);

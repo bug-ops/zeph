@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![cfg(feature = "mock")]
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Acceptance tests (tests-first) for #7135 (native tool ids are pre-claimed when the MCP tool
 //! list is published), #7118 (`list_servers` follows configured order) and #7138

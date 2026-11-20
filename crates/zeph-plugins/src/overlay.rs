@@ -366,11 +366,17 @@ fn merge_manifest_overlay(
         && let Some(v) = skills.get("disambiguation_threshold")
     {
         // M3: accept both float literals (`0.5`) and integer literals (`0`, `1`).
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "The config integer is validated as a bounded threshold before conversion to a comparison ratio."
+        )]
         let raw = v.as_float().or_else(|| v.as_integer().map(|i| i as f64));
         match raw {
             Some(f) if (0.0_f64..=1.0_f64).contains(&f) => {
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "The parsed threshold is checked to be within 0.0..=1.0 before conversion to f32."
+                )]
                 let f32_val = f as f32;
                 *threshold = Some(threshold.map_or(f32_val, |cur: f32| cur.max(f32_val)));
                 contributed = true;

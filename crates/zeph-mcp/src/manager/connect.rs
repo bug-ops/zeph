@@ -692,7 +692,10 @@ impl McpManager {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "These independent inputs are required together at this boundary; a parameter struct would only relocate them."
+)]
 #[tracing::instrument(name = "mcp.manager.run_oauth_handshake", skip_all, fields(server_id = %server_id))]
 async fn run_oauth_handshake(
     server_id: McpServerId,
@@ -842,7 +845,10 @@ async fn drain_oauth_results(
 // and constructs `Root` values directly, so the whole signature+body carries the allow.
 // See `crate::roots` for the construction-helper boundary used by callers that only need
 // to build a fresh `Root` without inspecting an existing one.
-#[allow(deprecated)]
+#[expect(
+    deprecated,
+    reason = "This compatibility path still needs the deprecated MCP Root type exposed by rmcp."
+)]
 #[tracing::instrument(name = "mcp.manager.validate_roots", skip_all, fields(server_id = %server_id))]
 pub(super) async fn validate_roots(
     roots: &[rmcp::model::Root],

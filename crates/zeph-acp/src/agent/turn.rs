@@ -588,7 +588,6 @@ impl ZephAcpAgentState {
     /// notification. Returns a [`DrainResult`] with cancelled flag, stop hint, and per-turn
     /// token totals for `PromptResponse.usage`. `rx` is borrowed rather than consumed, so
     /// the caller's [`PromptChannelGuard`] retains ownership across this call.
-    #[allow(clippy::too_many_lines)] // dispatcher with multiple cfg-gated feature branches
     async fn drain_agent_events(
         &self,
         session_id: &acp::v1::schema::SessionId,

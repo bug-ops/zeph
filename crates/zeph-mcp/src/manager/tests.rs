@@ -1450,7 +1450,10 @@ async fn validate_roots_empty_returns_empty() {
 }
 
 #[tokio::test]
-#[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
+#[expect(
+    deprecated,
+    reason = "asserts on `rmcp::model::Root` fields — see `crate::roots`"
+)]
 async fn validate_roots_file_uri_is_kept() {
     // Use temp_dir which exists on all platforms (Unix, macOS, Windows).
     let tmp = std::env::temp_dir();
@@ -1479,7 +1482,10 @@ async fn validate_roots_http_uri_is_filtered_out() {
 }
 
 #[tokio::test]
-#[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
+#[expect(
+    deprecated,
+    reason = "asserts on `rmcp::model::Root` fields — see `crate::roots`"
+)]
 async fn validate_roots_mixed_uris_keeps_only_file() {
     let tmp = std::env::temp_dir();
     let roots = vec![
@@ -1517,7 +1523,10 @@ async fn validate_roots_path_traversal_in_uri_is_filtered_as_non_file() {
 }
 
 #[tokio::test]
-#[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
+#[expect(
+    deprecated,
+    reason = "asserts on `rmcp::model::Root` fields — see `crate::roots`"
+)]
 async fn validate_roots_file_uri_traversal_is_canonicalized() {
     // Build a traversal path using temp_dir, which exists on all platforms.
     let tmp = std::env::temp_dir();
@@ -1630,7 +1639,10 @@ fn elicitation_channel_is_bounded_by_capacity() {
 }
 
 #[tokio::test]
-#[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
+#[expect(
+    deprecated,
+    reason = "asserts on `rmcp::model::Root` fields — see `crate::roots`"
+)]
 async fn validate_roots_preserves_name() {
     let tmp = std::env::temp_dir();
     let root = crate::roots::make_root(format!("file://{}", tmp.display()), Some("workspace"));

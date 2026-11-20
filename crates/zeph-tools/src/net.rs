@@ -62,7 +62,10 @@ pub fn is_private_host(host: &url::Host<&str>) -> bool {
         url::Host::Domain(d) => {
             // Exact match or subdomain of localhost (e.g. foo.localhost)
             // and .internal/.local TLDs used in cloud/k8s environments.
-            #[allow(clippy::case_sensitive_file_extension_comparisons)]
+            #[expect(
+                clippy::case_sensitive_file_extension_comparisons,
+                reason = "Extension matching follows the case-sensitive format contract."
+            )]
             {
                 *d == "localhost"
                     || d.ends_with(".localhost")

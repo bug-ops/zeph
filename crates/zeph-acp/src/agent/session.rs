@@ -291,7 +291,6 @@ impl ZephAcpAgentState {
             &initial_model,
             self.model_config.default_temperature_preset,
         );
-        #[cfg_attr(not(feature = "unstable-elicitation"), allow(unused_mut))]
         let mut entry = Self::make_session_entry(
             handle,
             initial_model.clone(),
@@ -691,7 +690,10 @@ impl ZephAcpAgentState {
     }
 
     #[cfg(feature = "unstable-session-fork")]
-    #[allow(dead_code, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This session handler keeps the feature-gated fork workflow in protocol order."
+    )]
     #[tracing::instrument(skip_all, name = "acp.handler.fork_session")]
     pub(crate) async fn do_fork_session(
         &self,
@@ -838,7 +840,10 @@ impl ZephAcpAgentState {
     }
 
     #[tracing::instrument(skip_all, name = "acp.handler.resume_session")]
-    #[allow(clippy::too_many_lines)] // strictly sequential session setup, mirrors do_load_session
+    #[expect(
+        clippy::too_many_lines,
+        reason = "strictly sequential session setup, mirrors do_load_session"
+    )]
     pub(crate) async fn do_resume_session(
         &self,
         args: acp::v1::schema::ResumeSessionRequest,
@@ -968,7 +973,6 @@ impl ZephAcpAgentState {
         Ok(acp::v1::schema::ResumeSessionResponse::new())
     }
 
-    #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.set_session_config_option")]
     pub(crate) async fn do_set_session_config_option(
         &self,
@@ -1193,7 +1197,13 @@ impl ZephAcpAgentState {
     /// write-path cutover's philosophy. When persistence is disabled, behavior is unchanged from
     /// before spec-068 (`SQLite` `messages`/`conversations` copy only, `acp_sessions` row created
     /// directly).
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(feature = "unstable-session-fork"),
+        expect(
+            dead_code,
+            reason = "The fork helper is only called by the unstable ACP session-fork handler."
+        )
+    )]
     async fn fork_conversation(
         &self,
         source_id: &acp::v1::schema::SessionId,
@@ -1357,7 +1367,10 @@ impl ZephAcpAgentState {
     /// `notify_tx`/`notify_rx` are created by the caller (not internally) so `notify_tx` can
     /// also be handed to `build_acp_context` for [`SessionStatusNotifier`] before the entry
     /// exists — both must share the same channel.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "function with many required inputs; a *Params struct would be more verbose without simplifying the call site"
+    )]
     pub(crate) fn make_session_entry(
         handle: LoopbackHandle,
         initial_model: String,

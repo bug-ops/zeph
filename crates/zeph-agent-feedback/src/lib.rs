@@ -31,6 +31,7 @@
 //!   seconds (configurable via `LearningConfig`).
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -64,7 +65,10 @@ static PATTERNS: LazyLock<LangPatterns> = LazyLock::new(|| LangPatterns {
     self_correction: build_self_correction_patterns(),
 });
 
-#[allow(clippy::vec_init_then_push)]
+#[expect(
+    clippy::vec_init_then_push,
+    reason = "Patterns are appended in language and priority order to keep the registry readable."
+)]
 fn build_rejection_patterns() -> Vec<(Regex, f32)> {
     let mut p = Vec::with_capacity(25);
 
@@ -206,7 +210,6 @@ fn build_rejection_patterns() -> Vec<(Regex, f32)> {
     p
 }
 
-#[allow(clippy::vec_init_then_push)]
 fn build_alternative_patterns() -> Vec<(Regex, f32)> {
     let mut p = Vec::with_capacity(20);
 
@@ -287,7 +290,6 @@ fn build_alternative_patterns() -> Vec<(Regex, f32)> {
     p
 }
 
-#[allow(clippy::vec_init_then_push)]
 fn build_self_correction_patterns() -> Vec<(Regex, f32)> {
     let mut p = Vec::with_capacity(20);
 
@@ -764,9 +766,15 @@ fn token_overlap(a: &str, b: &str) -> f32 {
     if a_tokens.is_empty() || b_tokens.is_empty() {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The overlap ratio uses floating point counts and is a heuristic confidence score."
+    )]
     let intersection = a_tokens.intersection(&b_tokens).count() as f32;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The overlap ratio uses floating point counts and is a heuristic confidence score."
+    )]
     let union = a_tokens.union(&b_tokens).count() as f32;
     intersection / union
 }

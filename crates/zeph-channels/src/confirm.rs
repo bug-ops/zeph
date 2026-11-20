@@ -112,7 +112,10 @@ impl<T> Inbox<T> {
 /// [`CONFIRM_TIMEOUT`](crate::CONFIRM_TIMEOUT) for a matching reply, and denies
 /// (`Ok(false)`) on timeout or channel close — it never returns `Err` for those
 /// conditions.
-#[allow(async_fn_in_trait)]
+#[expect(
+    async_fn_in_trait,
+    reason = "Native async is intentional for this trait API and its current callers."
+)]
 pub trait ConfirmLoop {
     /// Per-adapter incoming-message type carried on the receiver.
     type Incoming;
@@ -256,7 +259,10 @@ mod tests {
             &incoming.text
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "The implemented trait requires an async method even though this implementation completes immediately."
+        )]
         async fn confirm_send_prompt(&mut self, text: &str) -> Result<(), ChannelError> {
             self.sent.push(text.to_string());
             Ok(())

@@ -168,7 +168,8 @@ fn correction_params(cfg: Option<&crate::input::CorrectionConfig>) -> (usize, f3
 /// ordered `usize` parameters — this removes the risk of an undetected argument-order swap
 /// between same-typed budget fields (#6573).
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn schedule_context_fetchers<'r>(
+#[derive(Clone, Copy)]
+struct FetchScheduleContext<'r> {
     memory: &'r crate::input::ContextMemoryView,
     tc: &'r dyn TokenCounting,
     query: &'r str,
@@ -178,9 +179,27 @@ fn schedule_context_fetchers<'r>(
     alloc: &'r BudgetAllocation,
     recall_limit: usize,
     min_sim: f32,
-    active_levels: &[CompressionLevel],
-    active_types: &[FunctionalType],
+    active_levels: &'r [CompressionLevel],
+    active_types: &'r [FunctionalType],
+}
+
+#[allow(clippy::too_many_lines)]
+fn schedule_context_fetchers<'r>(
+    context: FetchScheduleContext<'r>,
 ) -> FuturesUnordered<CtxFuture<'r>> {
+    let FetchScheduleContext {
+        memory,
+        tc,
+        query,
+        scrub,
+        index,
+        router_ref,
+        alloc,
+        recall_limit,
+        min_sim,
+        active_levels,
+        active_types,
+    } = context;
     // episodic_active gates summaries + cross-session + recall + doc_rag together at the
     // compression-tier level. If future RetrievalPolicy variants ever drop Episodic, the cheap
     // summary fetchers will be silently disabled — split into raw vs compressed sub-tiers
@@ -515,19 +534,19 @@ impl ContextAssembler {
             "context budget allocated"
         );
 
-        let fetchers = schedule_context_fetchers(
+        let fetchers = schedule_context_fetchers(FetchScheduleContext {
             memory,
             tc,
-            input.query,
-            input.scrub,
-            input.index,
+            query: input.query,
+            scrub: input.scrub,
+            index: input.index,
             router_ref,
-            &alloc,
+            alloc: &alloc,
             recall_limit,
             min_sim,
-            input.active_levels,
-            input.active_types,
-        );
+            active_levels: input.active_levels,
+            active_types: input.active_types,
+        });
 
         let mut prepared = empty_prepared_context();
         prepared.memory_first = memory_first;
@@ -1552,19 +1571,19 @@ mod tests {
         alloc: &'r crate::budget::BudgetAllocation,
         active_types: &'r [FunctionalType],
     ) -> FuturesUnordered<CtxFuture<'r>> {
-        schedule_context_fetchers(
-            view,
+        schedule_context_fetchers(FetchScheduleContext {
+            memory: view,
             tc,
-            "query",
-            |s| s.into(),
-            None,
-            router,
+            query: "query",
+            scrub: |s| s.into(),
+            index: None,
+            router_ref: router,
             alloc,
-            10,
-            0.5,
-            &[],
+            recall_limit: 10,
+            min_sim: 0.5,
+            active_levels: &[],
             active_types,
-        )
+        })
     }
 
     #[test]

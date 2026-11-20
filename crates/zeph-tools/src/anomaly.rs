@@ -87,7 +87,10 @@ impl AnomalyDetector {
 
     /// Check the current window for anomalies.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "This approximate metric or heuristic score tolerates floating-point rounding."
+    )]
     pub fn check(&self) -> Option<Anomaly> {
         if self.window.len() < 3 {
             return None;

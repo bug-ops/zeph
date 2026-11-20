@@ -106,7 +106,10 @@ fn register_ws_session(state: &AcpHttpState, session_id: &str) {
 }
 
 #[cfg(feature = "acp-http")]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This function keeps one cohesive protocol flow together; splitting it would obscure the control flow."
+)]
 async fn handle_ws(socket: WebSocket, state: AcpHttpState, owner_key: String) {
     let session_id = uuid::Uuid::new_v4().to_string();
     register_ws_session(&state, &session_id);

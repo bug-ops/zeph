@@ -75,7 +75,10 @@ pub fn should_embed_message(
 /// - `source_kind`/`trust_level` — write-time provenance tag (issue #6490); the `as_str()`
 ///   output of `zeph_sanitizer::ContentSourceKind`/`ContentTrustLevel`. `None` leaves both
 ///   columns `NULL` ("provenance not recorded").
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The persistence write API carries separate message, embedding, and provenance fields."
+)]
 #[tracing::instrument(name = "persistence.write_message", skip_all, fields(cid = %cid, role = ?role, should_embed))]
 pub async fn write_message_to_memory(
     memory: &SemanticMemory,

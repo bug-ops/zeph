@@ -19,7 +19,6 @@
 //! The Qdrant collection is always named `"zeph_code_chunks"`. The `SQLite` table is
 //! `chunk_metadata`, created by the `zeph-db` migration layer at startup.
 
-#[allow(unused_imports)]
 use zeph_db::sql;
 use zeph_memory::{FieldCondition, FieldValue, QdrantOps, VectorFilter, VectorPoint, VectorStore};
 
