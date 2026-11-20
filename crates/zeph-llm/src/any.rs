@@ -86,10 +86,10 @@ macro_rules! delegate_provider {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 #[cfg_attr(
-    any(test, feature = "testing"),
+    feature = "gonka",
     expect(
         clippy::large_enum_variant,
-        reason = "Provider variants stay inline to preserve allocation-free enum dispatch; only router wrappers are boxed."
+        reason = "Gonka and mock provider variants stay inline to preserve allocation-free enum dispatch."
     )
 )]
 pub enum AnyProvider {

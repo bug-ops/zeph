@@ -1197,6 +1197,13 @@ impl ZephAcpAgentState {
     /// write-path cutover's philosophy. When persistence is disabled, behavior is unchanged from
     /// before spec-068 (`SQLite` `messages`/`conversations` copy only, `acp_sessions` row created
     /// directly).
+    #[cfg_attr(
+        not(feature = "unstable-session-fork"),
+        expect(
+            dead_code,
+            reason = "The fork helper is only called by the unstable ACP session-fork handler."
+        )
+    )]
     async fn fork_conversation(
         &self,
         source_id: &acp::v1::schema::SessionId,

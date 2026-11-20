@@ -74,9 +74,12 @@ static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
 /// assert!(!result.was_truncated);
 /// ```
 #[derive(Clone)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "Each flag independently controls a separate sanitization policy."
+#[cfg_attr(
+    feature = "classifiers",
+    expect(
+        clippy::struct_excessive_bools,
+        reason = "Each flag independently controls a separate sanitization policy."
+    )
 )]
 pub struct ContentSanitizer {
     max_content_size: usize,

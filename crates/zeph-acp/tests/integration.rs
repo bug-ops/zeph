@@ -2330,10 +2330,6 @@ async fn create_owned_session(
 /// created by one connection's owner must not appear in a different owner's list, even when
 /// both connections share the same `sqlite_path`.
 #[tokio::test(flavor = "current_thread")]
-#[expect(
-    clippy::large_futures,
-    reason = "The test drives the shared-store owner isolation flow as one local-session future."
-)]
 async fn list_sessions_isolated_by_owner_across_stdio_connections() {
     let local = tokio::task::LocalSet::new();
     local
