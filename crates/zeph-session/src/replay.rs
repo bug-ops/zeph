@@ -588,7 +588,10 @@ mod tests {
     /// trailing `ForkPoint`/`SessionEnded`/`ModelChanged` (the first two are no-ops in
     /// `fold_step`; included for completeness). Returns the opened log so the caller can read it
     /// back either whole-file or chunked.
-    #[allow(clippy::too_many_lines)] // exhaustive fixture covering every SessionEvent variant
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The fixture seeds every SessionEvent variant to exercise replay folding and range replacement."
+    )]
     async fn seed_large_synthetic_log(dir: &Path, n_turns: u64) -> SessionEventLog {
         use crate::event::CompactionTier;
         use zeph_common::memory::AnchoredSummary;

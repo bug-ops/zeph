@@ -55,8 +55,12 @@
 //! ```
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
-#[allow(unused_imports)]
+#[expect(
+    unused_imports,
+    reason = "The SQL macro re-export is used by downstream index modules through the crate root."
+)]
 pub(crate) use zeph_db::sql;
 
 pub mod chunker;

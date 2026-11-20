@@ -32,7 +32,10 @@ pub struct GraphSummary {
 /// All graph data is stored as an opaque JSON blob. The orchestration layer in
 /// `zeph-core` / `zeph-orchestration` is responsible for serializing and
 /// deserializing `TaskGraph` values.
-#[allow(async_fn_in_trait)]
+#[expect(
+    async_fn_in_trait,
+    reason = "The raw graph store trait keeps async methods for its statically-dispatched backend API."
+)]
 pub trait RawGraphStore: Send + Sync {
     /// Persist a graph (upsert by `id`).
     ///

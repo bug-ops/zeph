@@ -62,7 +62,10 @@ fn is_gitignored(gitignore: &Gitignore, root: &Path, path: &Path) -> bool {
 }
 
 /// Opaque handle keeping the background watcher task alive.
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "The enum value owns the watcher task handle for its lifetime."
+)]
 enum WatcherHandle {
     Supervised(zeph_common::task_supervisor::BlockingHandle<()>),
     Unsupervised(tokio::task::JoinHandle<()>),

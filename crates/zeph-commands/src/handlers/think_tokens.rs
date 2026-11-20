@@ -68,7 +68,11 @@ pub fn parse_token_budget(arg: &str) -> Result<Option<u32>, String> {
         return Err(format!("'{trimmed}' is too large for a token budget"));
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "The parsed budget is finite, non-negative, and bounded by u32::MAX before rounding."
+    )]
     let rounded = scaled.round() as u32;
     if rounded == 0 {
         return Ok(None);

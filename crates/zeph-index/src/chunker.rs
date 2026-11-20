@@ -81,7 +81,6 @@ pub struct CodeChunk {
 /// let config = ChunkerConfig { target_size: 300, max_size: 600, min_size: 50 };
 /// ```
 #[derive(Debug, Clone)]
-#[allow(clippy::struct_field_names)]
 pub struct ChunkerConfig {
     /// Target chunk size in non-whitespace characters (default: 600).
     ///

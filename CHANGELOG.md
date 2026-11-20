@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`, `zeph-context`: group tool-failure and context-fetch scheduling inputs in context types, removing two `too_many_arguments` suppressions.
 - `zeph-context`, `zeph-memory`: saturate token-count and probe-count conversions instead of narrowing casts.
 - `zeph-agent-feedback`, `zeph-vault`, `zeph-durable`, `zeph-worktree`: extend the #7150 rollout with reasoned expectations and crate-level allow warnings; remove two stale pattern-builder expectations.
+- `zeph-agent-persistence`, `zeph-db`, `zeph-plugins`, `zeph-commands`: extend the reasoned expectation rollout; clamp oversized SQL limits and retain the range checks for thinking-token parsing.
+- `zeph-index`, `zeph-session`, `zeph-scheduler`, `zeph-sanitizer`: extend the reasoned expectation rollout; reject session counters that exceed signed database storage and remove casts for those values.
+- `zeph-mcp`, `zeph-acp`: remove stale expectations discovered by all-targets Clippy and reason the active large-future expectation.
+- `zeph-llm`: scope the large-enum expectation to builds that include the mock provider, avoiding an unfulfilled expectation in feature-matrix builds.
+- `.github/deny.toml`: document temporary exceptions for newly issued unmaintained advisories on `chrono` and `humantime`.
 
 ## [0.24.0] - 2026-11-16
 

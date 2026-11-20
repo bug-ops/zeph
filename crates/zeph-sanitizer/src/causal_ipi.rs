@@ -286,7 +286,10 @@ fn normalized_levenshtein(a: &str, b: &str) -> f32 {
         return 0.0;
     }
     let dist = levenshtein(&a_chars, &b_chars);
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The normalized character-distance score is a bounded heuristic ratio."
+    )]
     let score = (dist as f32) / (max_len as f32);
     score.min(1.0)
 }
@@ -319,7 +322,10 @@ fn jaccard_distance(a: &str, b: &str) -> f32 {
     if union == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The keyword-set distance is a bounded heuristic ratio."
+    )]
     let score = 1.0 - (intersection as f32) / (union as f32);
     score
 }

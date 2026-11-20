@@ -19,6 +19,7 @@
 //! - Skill name conflicts with managed, bundled, or other plugin skills are hard-errors at install.
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 pub mod error;
 pub(crate) mod integrity;

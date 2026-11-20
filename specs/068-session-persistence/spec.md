@@ -726,6 +726,7 @@ A channel that owns its own display buffer (`CliChannel`, `TuiChannel`) MUST NOT
 - **NEVER** materialize the full reconstructed history in `/history` before bounding to last-N — bound before formatting (INV-SP-6).
 - **NEVER** push backfilled display history into `input_history` — display-only hydration is a separate code path from readline recall population (§13.7).
 - **NEVER** elevate the resume-visibility invariant (INV-SP-5) to `specs/001-system-invariants/spec.md` — it is conditional on display ownership, not universal.
+- **NEVER** wrap session sequence or event counters when storing them in signed SQLite `INTEGER` or PostgreSQL `BIGINT` columns — reject values outside the signed database range with an integrity error.
 
 ---
 

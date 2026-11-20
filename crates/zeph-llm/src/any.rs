@@ -85,9 +85,12 @@ macro_rules! delegate_provider {
 /// The `Candle` variant is only available when the `candle` feature is enabled.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Provider variants stay inline to preserve allocation-free enum dispatch; only router wrappers are boxed."
+#[cfg_attr(
+    any(test, feature = "testing"),
+    expect(
+        clippy::large_enum_variant,
+        reason = "Provider variants stay inline to preserve allocation-free enum dispatch; only router wrappers are boxed."
+    )
 )]
 pub enum AnyProvider {
     Ollama(OllamaProvider),

@@ -396,7 +396,6 @@ impl CodeIndexer {
     }
 
     #[tracing::instrument(name = "index.indexer.index_batch", skip_all)]
-    #[allow(clippy::too_many_arguments)]
     async fn index_batch(
         &self,
         batch: &[ignore::DirEntry],

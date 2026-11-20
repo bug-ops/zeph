@@ -117,7 +117,10 @@ pub fn resume_budget_fraction(
         .iter()
         .map(|m| token_counter.count_message_tokens(m))
         .sum();
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "The budget-use fraction is a heuristic ratio used to decide whether to condense."
+    )]
     let fraction = tokens as f64 / window as f64;
     fraction
 }
@@ -146,7 +149,10 @@ pub fn resume_budget_fraction(
 /// Returns [`PersistenceError`] under the same conditions as
 /// [`crate::hydrate_from_event_log`] — condensation failures are logged and swallowed, not
 /// propagated.
-#[allow(clippy::too_many_arguments)] // hydrate_from_event_log's 6 params + condenser/token_counter/context_window
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This helper combines the six hydration inputs with the condenser and budget inputs."
+)]
 #[tracing::instrument(
     name = "persistence.condense.hydrate_and_condense",
     skip_all,

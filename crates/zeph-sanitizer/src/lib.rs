@@ -62,6 +62,7 @@
 //!   See `ContentSanitizer::with_classifier`] and `ContentSanitizer::with_pii_detector`].
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 pub mod audit;
 pub mod causal_ipi;

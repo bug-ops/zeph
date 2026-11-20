@@ -74,7 +74,10 @@ static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
 /// assert!(!result.was_truncated);
 /// ```
 #[derive(Clone)]
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each flag independently controls a separate sanitization policy."
+)]
 pub struct ContentSanitizer {
     max_content_size: usize,
     flag_injections: bool,

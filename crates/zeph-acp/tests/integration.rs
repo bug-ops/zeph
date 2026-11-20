@@ -1253,10 +1253,6 @@ async fn delete_session_aborts_agent_loop_task() {
 /// `session/fork` creates a new session with a distinct id from the source (#5367).
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
-#[expect(
-    clippy::large_futures,
-    reason = "The integration test intentionally exercises the ACP session flow as one end-to-end future."
-)]
 async fn fork_session_creates_distinct_session_id() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1321,10 +1317,6 @@ async fn fork_session_creates_distinct_session_id() {
 /// `ForkEngine::fork` wiring under test without needing the full agent-loop integration.
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
-#[expect(
-    clippy::large_futures,
-    reason = "The integration test intentionally exercises the ACP session flow as one end-to-end future."
-)]
 async fn fork_session_copies_event_log_when_persistence_enabled() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1719,10 +1711,6 @@ async fn load_session_succeeds_from_event_log_with_no_legacy_rows() {
 /// defaults (#5373).
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
-#[expect(
-    clippy::large_futures,
-    reason = "The integration test intentionally exercises the ACP session flow as one end-to-end future."
-)]
 async fn fork_session_inherits_config_from_in_memory_source() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2342,6 +2330,10 @@ async fn create_owned_session(
 /// created by one connection's owner must not appear in a different owner's list, even when
 /// both connections share the same `sqlite_path`.
 #[tokio::test(flavor = "current_thread")]
+#[expect(
+    clippy::large_futures,
+    reason = "The test drives the shared-store owner isolation flow as one local-session future."
+)]
 async fn list_sessions_isolated_by_owner_across_stdio_connections() {
     let local = tokio::task::LocalSet::new();
     local

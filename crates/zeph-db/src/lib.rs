@@ -18,6 +18,7 @@
 //! for a `PostgreSQL` build.
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 #[cfg(all(feature = "sqlite", feature = "postgres"))]
 compile_error!("features `sqlite` and `postgres` are mutually exclusive for `zeph-db`");
@@ -247,8 +248,7 @@ pub fn limit_clause(limit: u64) -> (&'static str, Option<i64>) {
     if limit == 0 {
         ("", None)
     } else {
-        #[allow(clippy::cast_possible_wrap)]
-        (" LIMIT ?", Some(limit as i64))
+        (" LIMIT ?", Some(i64::try_from(limit).unwrap_or(i64::MAX)))
     }
 }
 

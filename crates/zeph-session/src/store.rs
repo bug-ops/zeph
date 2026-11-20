@@ -17,6 +17,12 @@ use zeph_db::{ActiveDialect, DbPool, dialect::Dialect, sql};
 
 use crate::error::SessionError;
 
+fn to_database_counter(value: u64) -> Result<i64, SessionError> {
+    i64::try_from(value).map_err(|_| {
+        SessionError::Integrity("session counter exceeds the signed database range".to_owned())
+    })
+}
+
 /// Lifecycle status of a conversation-session, mirroring the `acp_sessions.status` CHECK
 /// constraint added in migration 106.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -128,7 +134,6 @@ impl SessionStore {
     /// # Errors
     ///
     /// Returns [`SessionError::Db`] if the write fails.
-    #[allow(clippy::cast_possible_wrap)]
     #[tracing::instrument(name = "session.store.update_seq", skip_all, level = "debug")]
     pub async fn update_seq(
         &self,
@@ -136,13 +141,15 @@ impl SessionStore {
         last_seq: u64,
         event_count: u64,
     ) -> Result<(), SessionError> {
+        let last_seq = to_database_counter(last_seq)?;
+        let event_count = to_database_counter(event_count)?;
         let stmt = zeph_db::rewrite_placeholders(&format!(
             "UPDATE acp_sessions SET last_seq = ?, event_count = ?, updated_at = {} WHERE id = ?",
             <ActiveDialect as Dialect>::NOW,
         ));
         zeph_db::query(sqlx::AssertSqlSafe(stmt))
-            .bind(last_seq as i64)
-            .bind(event_count as i64)
+            .bind(last_seq)
+            .bind(event_count)
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -173,17 +180,17 @@ impl SessionStore {
     /// # Errors
     ///
     /// Returns [`SessionError::Db`] if the write fails.
-    #[allow(clippy::cast_possible_wrap)]
     #[tracing::instrument(name = "session.store.set_condensed_seq", skip_all, level = "debug")]
     pub async fn set_condensed_seq(
         &self,
         session_id: &str,
         last_condensed_seq: u64,
     ) -> Result<(), SessionError> {
+        let last_condensed_seq = to_database_counter(last_condensed_seq)?;
         zeph_db::query(sql!(
             "UPDATE acp_sessions SET last_condensed_seq = ? WHERE id = ?"
         ))
-        .bind(last_condensed_seq as i64)
+        .bind(last_condensed_seq)
         .bind(session_id)
         .execute(&self.pool)
         .await?;
@@ -319,7 +326,6 @@ impl SessionStore {
     /// # Errors
     ///
     /// Returns [`SessionError::Db`] if either write fails.
-    #[allow(clippy::cast_possible_wrap)]
     #[tracing::instrument(name = "session.store.record_fork", skip_all, level = "debug")]
     pub async fn record_fork(
         &self,
@@ -328,6 +334,7 @@ impl SessionStore {
         forked_at_seq: u64,
         owner: Option<&str>,
     ) -> Result<(), SessionError> {
+        let forked_at_seq = to_database_counter(forked_at_seq)?;
         let stmt = zeph_db::rewrite_placeholders(&format!(
             "{} INTO acp_sessions (id, status, forked_from, forked_at_seq, owner_key) \
              VALUES (?, 'active', ?, ?, ?){}",
@@ -337,7 +344,7 @@ impl SessionStore {
         zeph_db::query(sqlx::AssertSqlSafe(stmt))
             .bind(new_session_id)
             .bind(src_session_id)
-            .bind(forked_at_seq as i64)
+            .bind(forked_at_seq)
             .bind(owner)
             .execute(&self.pool)
             .await?;
@@ -401,6 +408,17 @@ impl TryFrom<SessionRow> for SessionMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_counter_rejects_values_outside_signed_range() {
+        let max = i64::MAX.unsigned_abs();
+
+        assert!(matches!(to_database_counter(max), Ok(i64::MAX)));
+        assert!(matches!(
+            to_database_counter(max + 1),
+            Err(SessionError::Integrity(_))
+        ));
+    }
 
     async fn make_pool() -> DbPool {
         let config = zeph_db::DbConfig {

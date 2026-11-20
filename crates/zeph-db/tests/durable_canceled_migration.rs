@@ -22,7 +22,10 @@ use std::str::FromStr as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This regression test keeps migration setup, seeded foreign keys, and post-migration assertions together."
+)]
 async fn migration_112_preserves_fk_linked_child_rows_across_the_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("durable.db");

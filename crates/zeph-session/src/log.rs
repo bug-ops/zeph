@@ -169,7 +169,6 @@ pub struct SessionEventLog {
     /// Captured once at open time, like `ring` (issue #6449) — `None` if no anchor store is
     /// configured, or none is on file for this session yet.
     anchor: Option<Anchor>,
-    #[allow(dead_code)] // held only for its Drop (releases the flock, if taken)
     lock: Option<AdvisoryLock>,
 }
 
@@ -1109,7 +1108,13 @@ pub(crate) async fn set_permissions(path: &Path, mode: u32) -> Result<(), Sessio
 /// **Invariant**: `session_dir` MUST reside on a local filesystem. NFS/network mounts do not
 /// guarantee reliable exclusive locking with `flock(2)` (#6378).
 #[cfg(unix)]
-struct AdvisoryLock(#[allow(dead_code)] rustix::fd::OwnedFd);
+struct AdvisoryLock(
+    #[expect(
+        dead_code,
+        reason = "The descriptor stays owned for the lifetime of the flock advisory lock."
+    )]
+    rustix::fd::OwnedFd,
+);
 
 #[cfg(unix)]
 impl AdvisoryLock {

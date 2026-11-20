@@ -186,8 +186,10 @@ fn normalized_similarity(a: &str, b: &str) -> f32 {
     if max_len == 0 {
         return 1.0;
     }
-    #[allow(clippy::cast_precision_loss)]
-    // name lengths are tiny (<= 64 chars, see MAX_DEPENDENCIES-adjacent bound)
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Plugin names are capped at 64 characters and the result is a heuristic similarity ratio."
+    )]
     let ratio = 1.0 - levenshtein(a, b) as f32 / max_len as f32;
     ratio
 }

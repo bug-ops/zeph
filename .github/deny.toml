@@ -37,6 +37,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # libsqlite3-sys 0.37.0 bundles SQLite < 3.54.0 (RUSTSEC-2026-0459, #6884): a crafted db + mismatched-page-size -wal file
 # can leak uninitialized memory; local attack vector, needs opening untrusted db files. sqlx-sqlite 0.9.0 (latest)
 # caps libsqlite3-sys <0.38, so the fixed >=0.39.0 cannot be resolved; remove once sqlx-sqlite allows libsqlite3-sys >=0.39
+# chrono unmaintained (RUSTSEC-2026-0543): used directly across scheduling, session, memory, and TUI crates;
+# migrate the shared date/time API to jiff or time separately from this lint rollout
+# humantime unmaintained (RUSTSEC-2026-0542): transitive through hf-hub -> hf-xet; remove once hf-hub no longer depends on it
 ignore = [
     "RUSTSEC-2024-0436",
     "RUSTSEC-2026-0173",
@@ -46,6 +49,8 @@ ignore = [
     "RUSTSEC-2026-0440",
     "RUSTSEC-2026-0441",
     "RUSTSEC-2026-0459",
+    "RUSTSEC-2026-0542",
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
