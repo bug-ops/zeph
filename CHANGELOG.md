@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Workspace: fix the isolated `profiling-alloc` build and synchronize the debug dump redaction test with completion of the asynchronous file write.
 - Workspace: fix lint compatibility for isolated features and Rust 1.98, and compile the context budget doctest with its new input type.
 - `zeph-bench`: replace the tau2 tool schema module-wide dead-code suppression with item-level expectations that explain the schema-only fields.
 - Workspace: complete the #7150 reasoned suppression rollout, enforce `#[expect(..., reason = "...")]` via workspace Clippy gates, and replace unsafe narrowing casts in counters and durations.

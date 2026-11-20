@@ -103,10 +103,6 @@ mod alloc_counter {
 }
 
 #[cfg(feature = "profiling-alloc")]
-#[expect(
-    unsafe_code,
-    reason = "frames isolates a narrowly scoped unsafe operation required by the platform API or test harness"
-)]
 #[global_allocator]
 static GLOBAL: alloc_counter::CountingAllocator = alloc_counter::CountingAllocator;
 

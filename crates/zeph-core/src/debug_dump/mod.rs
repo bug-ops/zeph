@@ -1113,6 +1113,23 @@ struct TestWriteGate {
 
 #[cfg(test)]
 impl TestWriteGate {
+    fn new() -> (
+        Self,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        (
+            Self {
+                started_tx: std::sync::Mutex::new(Some(started_tx)),
+                release_rx: std::sync::Mutex::new(release_rx),
+            },
+            started_rx,
+            release_tx,
+        )
+    }
+
     fn block_until_released(&self) {
         if let Some(tx) = self.started_tx.lock().unwrap().take() {
             let _ = tx.send(());
@@ -1570,12 +1587,8 @@ mod tests {
         let mut dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
         let dump_dir = dumper.dir().to_path_buf();
 
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        dumper.test_write_gate = Some(Arc::new(TestWriteGate {
-            started_tx: std::sync::Mutex::new(Some(started_tx)),
-            release_rx: std::sync::Mutex::new(release_rx),
-        }));
+        let (gate, started_rx, release_tx) = TestWriteGate::new();
+        dumper.test_write_gate = Some(Arc::new(gate));
 
         let messages = sample_messages();
         let tools = sample_tools();
@@ -1981,8 +1994,8 @@ mod tests {
     /// of each real provider — the exact code path `raw_dump`'s primary branch consumes in
     /// production via `RequestDebugDump::provider_request` — through the real `dump_request`
     /// write path, and asserts no raw base64 image data survives.
-    #[tokio::test]
-    async fn raw_dump_redacts_real_provider_debug_request_json_for_every_provider() {
+    #[test]
+    fn raw_dump_redacts_real_provider_debug_request_json_for_every_provider() {
         use zeph_llm::provider::LlmProvider;
 
         let messages = sample_image_messages();
@@ -2031,16 +2044,36 @@ mod tests {
             );
 
             let dir = tempdir().unwrap();
-            let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).unwrap();
-            let _ = dumper.dump_request(&RequestDebugDump {
-                model_name: name,
-                messages: &messages,
-                tools: &[],
-                provider_request,
-                memcot_state: None,
-            });
+            let mut dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).unwrap();
+            let (gate, started_rx, release_tx) = TestWriteGate::new();
+            dumper.test_write_gate = Some(Arc::new(gate));
+            let id = {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap();
+                let _entered = runtime.enter();
+                let id = dumper.dump_request(&RequestDebugDump {
+                    model_name: name,
+                    messages: &messages,
+                    tools: &[],
+                    provider_request,
+                    memcot_state: None,
+                });
+                // A queued task may be canceled on shutdown. Wait until it starts first.
+                started_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap_or_else(|error| {
+                        panic!("{name} request dump task did not start: {error}")
+                    });
+                release_tx.send(()).unwrap();
+                id
+            };
 
-            let payload = read_request_dump(dir.path()).await;
+            let path = dumper.dir().join(format!("{id:04}-request.json"));
+            let contents = std::fs::read(&path).unwrap_or_else(|error| {
+                panic!("{name} request dump at {}: {error}", path.display())
+            });
+            let payload: serde_json::Value = serde_json::from_slice(&contents).unwrap();
             assert!(
                 !payload.to_string().contains(&b64),
                 "{name}'s real debug_request_json output must not contain raw base64 image \
