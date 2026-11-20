@@ -58,6 +58,7 @@
 //! ```
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
+#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 mod age;
 mod arc;
@@ -201,13 +202,18 @@ mod tests {
         assert_eq!(format!("{secret}"), "[REDACTED]");
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "Test-only environment mutation is an exception listed in spec 010."
+    )]
     #[tokio::test]
     async fn env_vault_returns_set_var() {
         let key = "ZEPH_TEST_VAULT_SECRET_SET";
+        // SAFETY: This test mutates only a unique test key and runs in the isolated nextest process.
         unsafe { std::env::set_var(key, "test-value") };
         let vault = EnvVaultProvider;
         let result = vault.get_secret(key).await.unwrap();
+        // SAFETY: This test removes only the unique key it created above.
         unsafe { std::env::remove_var(key) };
         assert_eq!(result.as_deref(), Some("test-value"));
     }
@@ -275,14 +281,19 @@ mod tests {
         assert_eq!(vault.list_keys(), [] as [String; 0]);
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "Test-only environment mutation is an exception listed in spec 010."
+    )]
     #[test]
     fn env_vault_list_keys_filters_zeph_secret_prefix() {
         let key = "ZEPH_SECRET_TEST_LISTKEYS_UNIQUE_9999";
+        // SAFETY: This test mutates only a unique test key and runs in the isolated nextest process.
         unsafe { std::env::set_var(key, "v") };
         let vault = EnvVaultProvider;
         let keys = vault.list_keys();
         assert!(keys.contains(&key.to_owned()));
+        // SAFETY: This test removes only the unique key it created above.
         unsafe { std::env::remove_var(key) };
     }
 }

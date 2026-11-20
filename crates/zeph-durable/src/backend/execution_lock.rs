@@ -41,7 +41,13 @@ use crate::ids::ExecutionId;
 /// `SessionEventLog::open_exclusive`'s degrade.
 #[cfg(unix)]
 #[derive(Debug)]
-pub struct ExecutionLock(#[allow(dead_code)] rustix::fd::OwnedFd);
+pub struct ExecutionLock(
+    #[expect(
+        dead_code,
+        reason = "The file descriptor stays owned so dropping the guard releases the advisory lock."
+    )]
+    rustix::fd::OwnedFd,
+);
 
 #[cfg(unix)]
 impl ExecutionLock {

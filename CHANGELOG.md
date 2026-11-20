@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`, `zeph-bench`: remove the five module-level `dead_code` suppressions; delete an obsolete speculative JSON parser context enum that had no users.
 - `zeph-core`, `zeph-context`: group tool-failure and context-fetch scheduling inputs in context types, removing two `too_many_arguments` suppressions.
 - `zeph-context`, `zeph-memory`: saturate token-count and probe-count conversions instead of narrowing casts.
+- `zeph-agent-feedback`, `zeph-vault`, `zeph-durable`, `zeph-worktree`: extend the #7150 rollout with reasoned expectations and crate-level allow warnings; remove two stale pattern-builder expectations.
 
 ## [0.24.0] - 2026-11-16
 
