@@ -6,10 +6,6 @@
 //! Each domain exposes a set of structured tools the agent can invoke.
 //! Definitions follow the schemars 1.x pattern used by `zeph-tools`.
 
-// Param structs exist solely for schemars schema derivation; their fields are
-// intentionally not read by Rust code — they are read by the LLM via JSON schema.
-#![allow(dead_code)]
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zeph_tools::registry::{InvocationHint, ToolDef};
@@ -39,12 +35,20 @@ pub struct Passenger {
 // ─── Retail shared params ────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct CalculateParams {
     /// Mathematical expression to evaluate (e.g. `"1 + 2 * 3"`).
     pub expression: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct CancelPendingOrderParams {
     /// Order id (e.g. `"#W1234567"`).
     pub order_id: String,
@@ -53,6 +57,10 @@ pub(super) struct CancelPendingOrderParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct ExchangeDeliveredOrderItemsParams {
     /// Order id (e.g. `"#W1234567"`).
     pub order_id: String,
@@ -65,12 +73,20 @@ pub(super) struct ExchangeDeliveredOrderItemsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct FindUserIdByEmailParams {
     /// User's email address.
     pub email: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct FindUserIdByNameZipParams {
     /// User's first name.
     pub first_name: String,
@@ -81,30 +97,50 @@ pub(super) struct FindUserIdByNameZipParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct GetOrderDetailsParams {
     /// Order id (e.g. `"#W1234567"`).
     pub order_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct GetProductDetailsParams {
     /// Product id.
     pub product_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct GetItemDetailsParams {
     /// Item id (variant id).
     pub item_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct GetUserDetailsParams {
     /// User id.
     pub user_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct ModifyPendingOrderAddressParams {
     /// Order id.
     pub order_id: String,
@@ -123,6 +159,10 @@ pub(super) struct ModifyPendingOrderAddressParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct ModifyPendingOrderItemsParams {
     /// Order id.
     pub order_id: String,
@@ -135,6 +175,10 @@ pub(super) struct ModifyPendingOrderItemsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct ModifyPendingOrderPaymentParams {
     /// Order id.
     pub order_id: String,
@@ -143,6 +187,10 @@ pub(super) struct ModifyPendingOrderPaymentParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct ModifyUserAddressParams {
     /// User id.
     pub user_id: String,
@@ -161,6 +209,10 @@ pub(super) struct ModifyUserAddressParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct ReturnDeliveredOrderItemsParams {
     /// Order id.
     pub order_id: String,
@@ -171,6 +223,10 @@ pub(super) struct ReturnDeliveredOrderItemsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct TransferToHumanAgentsParams {
     /// Reason for transfer.
     pub summary: String,
@@ -187,7 +243,10 @@ fn empty_object_schema() -> schemars::Schema {
 
 /// Return all tool definitions for the retail domain.
 #[must_use]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "retail_definitions keeps ordered steps together because they share state and control flow"
+)]
 pub fn retail_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -324,6 +383,10 @@ pub fn retail_definitions() -> Vec<ToolDef> {
 // ─── Airline params ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct BookReservationParams {
     /// User id of the passenger.
     pub user_id: String,
@@ -350,24 +413,40 @@ pub(super) struct BookReservationParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct CancelReservationParams {
     /// Reservation id.
     pub reservation_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct GetReservationDetailsParams {
     /// Reservation id.
     pub reservation_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct GetAirlineUserDetailsParams {
     /// User id.
     pub user_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct SearchDirectFlightParams {
     /// Origin airport code.
     pub origin: String,
@@ -378,6 +457,10 @@ pub(super) struct SearchDirectFlightParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct SearchOnestopFlightParams {
     /// Origin airport code.
     pub origin: String,
@@ -388,6 +471,10 @@ pub(super) struct SearchOnestopFlightParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct SendCertificateParams {
     /// User id to send the certificate to.
     pub user_id: String,
@@ -396,6 +483,10 @@ pub(super) struct SendCertificateParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct UpdateReservationBaggagesParams {
     /// Reservation id.
     pub reservation_id: String,
@@ -408,6 +499,10 @@ pub(super) struct UpdateReservationBaggagesParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct UpdateReservationFlightsParams {
     /// Reservation id.
     pub reservation_id: String,
@@ -420,6 +515,10 @@ pub(super) struct UpdateReservationFlightsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct UpdateReservationPassengersParams {
     /// Reservation id.
     pub reservation_id: String,
@@ -428,6 +527,10 @@ pub(super) struct UpdateReservationPassengersParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "These fields are consumed by the benchmark agent through the derived JSON Schema, not by Rust code."
+)]
 pub(super) struct GetFlightStatusParams {
     /// Flight number.
     pub flight_number: String,
@@ -437,7 +540,10 @@ pub(super) struct GetFlightStatusParams {
 
 /// Return all tool definitions for the airline domain.
 #[must_use]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "airline_definitions keeps ordered steps together because they share state and control flow"
+)]
 pub fn airline_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {

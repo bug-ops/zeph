@@ -11,7 +11,10 @@
 // blocks exist elsewhere in the workspace (e.g. `zeph-llm`'s candle-backed embedders and
 // classifiers, `src/runner.rs`), each documented with its own `// SAFETY:` comment.
 #[cfg(feature = "profiling-alloc")]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "CountingAllocator isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+)]
 mod alloc_counter {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::RefCell;
@@ -100,7 +103,6 @@ mod alloc_counter {
 }
 
 #[cfg(feature = "profiling-alloc")]
-#[allow(unsafe_code)]
 #[global_allocator]
 static GLOBAL: alloc_counter::CountingAllocator = alloc_counter::CountingAllocator;
 
@@ -173,7 +175,10 @@ fn url_open_depth(marker: Option<&str>) -> UrlOpenDepth {
 /// the environment so child processes launched by the dispatch see the marker.
 ///
 /// Must run on the main thread before any other thread (including the tokio runtime) exists.
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "guard_url_open_depth isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+)]
 fn guard_url_open_depth() {
     let marker = std::env::var(URL_OPEN_DEPTH_VAR).ok();
     if url_open_depth(marker.as_deref()) == UrlOpenDepth::Reentrant {
@@ -182,7 +187,7 @@ fn guard_url_open_depth() {
     }
     // SAFETY: called from `main` before `zeph-main` or the tokio runtime is spawned, so no
     // other thread exists that could read or write the process environment concurrently.
-    #[allow(clippy::disallowed_methods)]
+
     unsafe {
         std::env::set_var(URL_OPEN_DEPTH_VAR, "1");
     }

@@ -63,7 +63,10 @@ impl EmaTracker {
         let entry = state.stats.entry(provider_name.to_owned()).or_default();
         let success_val = if success { 1.0 } else { 0.0 };
         entry.success_ema = self.alpha * success_val + (1.0 - self.alpha) * entry.success_ema;
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "latency_f uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let latency_f = latency_ms as f64;
         entry.latency_ema_ms = self.alpha * latency_f + (1.0 - self.alpha) * entry.latency_ema_ms;
         entry.total_calls += 1;

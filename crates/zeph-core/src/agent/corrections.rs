@@ -489,7 +489,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "evaluate_with_llm_classifier This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn evaluate_with_llm_classifier(
     llm_classifier: zeph_llm::classifier::llm::LlmClassifier,
     user_msg: String,
@@ -536,7 +539,10 @@ async fn evaluate_with_llm_classifier(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "evaluate_with_judge This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn evaluate_with_judge(
     judge_provider: zeph_llm::any::AnyProvider,
     user_msg: String,

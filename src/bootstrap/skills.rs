@@ -13,7 +13,6 @@ use zeph_skills::qdrant_matcher::QdrantSkillMatcher;
 
 use zeph_core::config::Config;
 
-#[allow(unused_variables)]
 pub async fn create_skill_matcher(
     config: &Config,
     provider: &AnyProvider,

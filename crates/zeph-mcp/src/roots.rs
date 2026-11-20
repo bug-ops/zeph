@@ -9,17 +9,18 @@
 //! not expected to finalize before 2026-07-28. Until then the types remain fully
 //! functional and zeph continues to advertise static filesystem roots to MCP servers.
 //!
-//! This module is the single `#[expect(deprecated)]` boundary for *constructing* these
+//! This module is the single `#[expect(deprecated, reason = "The adapter still constructs the rmcp Roots types it advertises.")]` boundary for *constructing* these
 //! values — callers elsewhere never need to name `Root`/`ListRootsResult` to build one,
 //! which keeps the deprecated surface auditable from one place instead of scattered
-//! `#[expect(deprecated)]` attributes. Positions that must still name the deprecated types
+//! `#[expect(deprecated, reason = "The adapter must name the rmcp types in these API positions.")]` attributes. Positions that must still name the deprecated types
 //! directly (struct fields, function signatures, the `ClientHandler::list_roots` trait
-//! return type) carry their own narrowly-scoped `#[expect(deprecated)]`, since the
+//! return type) carry their own narrowly-scoped
+//! `#[expect(deprecated, reason = "The rmcp trait signature still exposes the deprecated roots types.")]`, since the
 //! deprecated path appears in rmcp's own trait signature and cannot be hidden by a wrapper.
 
 #![expect(
     deprecated,
-    reason = "This module is the compatibility boundary for the MCP roots API still exposed by rmcp."
+    reason = "The rmcp Roots types remain the protocol surface advertised by this adapter until rmcp removes them."
 )]
 
 use rmcp::model::{ListRootsResult, Root};
@@ -29,7 +30,7 @@ use rmcp::model::{ListRootsResult, Root};
 /// # Examples
 ///
 /// ```
-/// # #![expect(deprecated, reason = "The example exercises the deprecated MCP roots API.")]
+/// # #![expect(deprecated, reason = "The example demonstrates the rmcp roots API still exposed by this adapter.")]
 /// use zeph_mcp::roots::make_root;
 ///
 /// let root = make_root("file:///workspace", Some("workspace"));

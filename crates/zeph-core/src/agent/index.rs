@@ -4,7 +4,6 @@
 #[cfg(test)]
 mod tests {
     use super::super::Agent;
-    #[allow(clippy::wildcard_imports)]
     use crate::agent::agent_tests::*;
 
     /// GAP-1554-A: repo map fields are populated even when retriever is None.

@@ -168,7 +168,6 @@ pub fn scope_label(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::cloned_ref_to_slice_refs)]
 
     use super::*;
 

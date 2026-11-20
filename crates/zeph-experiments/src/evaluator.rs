@@ -584,7 +584,10 @@ async fn score_case_with_provider(
             });
         }
     };
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "latency_ms narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let latency_ms = start.elapsed().as_millis() as u64;
 
     // Read usage from the cloned provider — no race since this clone is task-local.
@@ -695,9 +698,11 @@ fn build_report(
     let mean_score = if cases_scored == 0 {
         f64::NAN
     } else {
-        #[allow(clippy::cast_precision_loss)]
         let sum: f64 = scores.iter().map(|s| s.score).sum();
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "compute_percentiles uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         {
             sum / cases_scored as f64
         }
@@ -729,10 +734,11 @@ fn compute_percentiles(scores: &[CaseScore]) -> (u64, u64) {
     let p50 = latencies[(n - 1) / 2];
     // Use ceiling index for p95 to avoid underestimating worst-case latency.
     // The ceiling of (n * 0.95) fits in usize: n is already usize, and the result ≤ n.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        reason = "p95_idx uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
     )]
     let p95_idx = ((n as f64 * 0.95).ceil() as usize)
         .saturating_sub(1)
@@ -743,7 +749,10 @@ fn compute_percentiles(scores: &[CaseScore]) -> (u64, u64) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::doc_markdown)]
+    #![expect(
+        clippy::doc_markdown,
+        reason = "The documentation uses established project terminology."
+    )]
     use std::assert_matches;
 
     use super::*;

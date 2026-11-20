@@ -13,7 +13,13 @@ use crate::bootstrap::VaultCredentialStore;
 use zeph_core::config::{Config, OAuthTokenStorage};
 use zeph_core::vault::AgeVaultProvider;
 
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The default manager constructor is retained for callers that do not provide a shared vault"
+    )
+)]
 pub fn create_mcp_manager(config: &Config, suppress_stderr: bool) -> zeph_mcp::McpManager {
     create_mcp_manager_with_vault(config, suppress_stderr, None)
 }

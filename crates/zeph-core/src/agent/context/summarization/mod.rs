@@ -16,11 +16,11 @@ impl<C: Channel> Agent<C> {
     pub(super) fn build_summarization_deps(&self) -> SummarizationDeps {
         let debug_dumper = self.runtime.debug.debug_dumper.clone();
         let token_counter = Arc::clone(&self.runtime.metrics.token_counter);
-        #[allow(clippy::type_complexity)]
+        #[expect(clippy::type_complexity, reason = "on_anchored_summary keeps the existing concrete type visible at the boundary where it is consumed")]
         let on_anchored_summary: Option<Arc<dyn Fn(&AnchoredSummary, bool) + Send + Sync>> =
             debug_dumper.map(|d| {
                 let tc = Arc::clone(&self.runtime.metrics.token_counter);
-                #[allow(clippy::type_complexity)]
+                #[expect(clippy::type_complexity, reason = "cb keeps the existing concrete type visible at the boundary where it is consumed")]
                 let cb: Arc<dyn Fn(&AnchoredSummary, bool) + Send + Sync> =
                     Arc::new(move |summary: &AnchoredSummary, fallback: bool| {
                         d.dump_anchored_summary(summary, fallback, &tc);

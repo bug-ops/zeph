@@ -422,7 +422,10 @@ impl SubAgentDef {
         Self::parse_with_path(content, "<unknown>")
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "parse_with_path keeps ordered steps together because they share state and control flow"
+    )]
     fn parse_with_path(content: &str, path: &str) -> Result<Self, SubAgentError> {
         let (frontmatter_str, body, format) = split_frontmatter(content, path)?;
 
@@ -960,7 +963,6 @@ impl SubAgentDef {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::cloned_ref_to_slice_refs)]
     use std::assert_matches;
 
     use indoc::indoc;

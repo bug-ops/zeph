@@ -37,7 +37,10 @@ struct AirlineUser {
     _rest: serde_json::Map<String, serde_json::Value>,
 }
 
-#[allow(clippy::struct_field_names)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "Reservation uses field names that preserve the domain terminology at this public boundary"
+)]
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 struct Reservation {
     reservation_id: String,
@@ -667,7 +670,10 @@ mod tests {
         AirlineEnv::new_from_seed(&db_path).unwrap()
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "call takes ownership because the value is consumed by the operation"
+    )]
     fn call(tool: &str, params: serde_json::Value) -> ToolCall {
         use zeph_common::ToolName;
         ToolCall {

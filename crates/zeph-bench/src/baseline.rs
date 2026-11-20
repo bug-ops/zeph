@@ -124,7 +124,10 @@ impl BaselineComparison {
 
         deltas.sort_by(|a, b| a.scenario_id.cmp(&b.scenario_id));
 
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "aggregate_delta uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let aggregate_delta = if deltas.is_empty() {
             0.0
         } else {

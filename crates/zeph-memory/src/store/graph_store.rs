@@ -7,7 +7,6 @@
 //! dependency cycle (`zeph-core` → `zeph-memory` → `zeph-core`). `zeph-core` wraps
 //! this trait in `GraphPersistence<S>` which handles typed serialization.
 
-#[allow(unused_imports)]
 use zeph_db::sql;
 use zeph_db::{DbError, DbPool};
 

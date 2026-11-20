@@ -279,7 +279,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::large_futures)]
     async fn reset_session_counters_clears_state() {
         let cfg = MemCotConfig {
             enabled: true,

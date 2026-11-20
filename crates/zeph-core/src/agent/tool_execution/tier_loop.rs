@@ -134,7 +134,6 @@ impl<C: Channel> Agent<C> {
         pre_exec_blocked: &[bool],
         pending_system_hints: &mut Vec<String>,
     ) -> (Vec<zeph_tools::UtilityAction>, bool) {
-        #[allow(clippy::cast_possible_truncation)]
         let tokens_consumed =
             usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
         // token_budget = 0 signals "unknown" to UtilityContext — cost component is zeroed.
@@ -440,7 +439,10 @@ impl<C: Channel> Agent<C> {
             .then(|| self.services.skill.active_skill_names.clone())
     }
 
-    #[allow(clippy::too_many_lines)] // unmask-miss telemetry aggregation (#5437 S1) crossed the 100-line limit
+    #[expect(
+        clippy::too_many_lines,
+        reason = "prepare_tool_dispatch keeps ordered steps together because they share state and control flow"
+    )] // unmask-miss telemetry aggregation (#5437 S1) crossed the 100-line limit
     fn prepare_tool_dispatch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -630,7 +632,11 @@ impl<C: Channel> Agent<C> {
         fields(tool_count = tool_calls.len()),
         err
     )]
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "run_tier_execution_loop This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+    )]
     async fn run_tier_execution_loop(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -1051,7 +1057,10 @@ impl<C: Channel> Agent<C> {
         Some((idx, Box::pin(std::future::ready(r.result))))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "check_call_gates This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     async fn check_call_gates(
         &mut self,
         idx: usize,
@@ -1119,7 +1128,11 @@ impl<C: Channel> Agent<C> {
         fields(tier_size = tier_indices.len()),
         err
     )]
-    #[allow(clippy::too_many_arguments, clippy::ptr_arg, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "build_tier_call_futures assembles a single ordered tier of tool futures while sharing mutable agent state."
+    )]
     async fn build_tier_call_futures(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -1395,7 +1408,10 @@ impl<C: Channel> Agent<C> {
     }
 
     #[tracing::instrument(name = "core.tool.execute_tier_join", skip_all, level = "debug", err)]
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "execute_tier_join keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     async fn execute_tier_join(
         &mut self,
         futs: Vec<ToolExecFut>,
@@ -1431,7 +1447,11 @@ impl<C: Channel> Agent<C> {
         Ok(Some(result))
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "apply_tier_results This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+    )]
     async fn apply_tier_results(
         &mut self,
         indices: Vec<usize>,
@@ -1601,7 +1621,11 @@ impl<C: Channel> Agent<C> {
         fields(batch_size = tool_calls.len()),
         err
     )]
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "process_tool_result_batch This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+    )]
     async fn process_tool_result_batch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],

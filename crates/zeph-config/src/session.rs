@@ -13,7 +13,11 @@ use crate::providers::ProviderName;
 /// Top-level `[session]` config block.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+// config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "SessionConfig groups independent persistence and lifecycle switches for one config section."
+)]
 pub struct SessionConfig {
     /// Recap-on-resume settings.
     pub recap: RecapConfig,
@@ -79,7 +83,6 @@ impl Default for SessionConfig {
 /// sessions, which are exempt from the automatic banner in v1 (spec-068 §13.2, §13.8).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct ResumeConfig {
     /// Show the neutral resume banner on display-owning channels (CLI/TUI) when
     /// resuming a non-empty prior conversation. Default: `true`.

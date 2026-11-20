@@ -82,7 +82,10 @@ pub fn noisy_or(p_existing: f32, p_new: f32) -> f32 {
 #[inline]
 #[must_use]
 pub fn time_decayed_prob(prob: f32, days_since_update: f64, decay_rate: f32) -> f32 {
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "multiplier narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let multiplier = (-f64::from(decay_rate) * days_since_update).exp() as f32;
     (prob * multiplier).clamp(f32::MIN_POSITIVE, 1.0 - f32::EPSILON)
 }
@@ -233,7 +236,10 @@ impl BeliefStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] for database failures.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "record_evidence This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     #[instrument(
         name = "memory.graph.belief.record_evidence",
         skip(self, fact, episode_id),
@@ -323,7 +329,10 @@ impl BeliefStore {
         canonical_relation: &str,
         top_k: Option<usize>,
     ) -> Result<Vec<PendingBelief>, MemoryError> {
-        #[allow(clippy::cast_possible_wrap)]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "limit converts a value bounded to the destination range by the domain invariant"
+        )]
         let limit = top_k.unwrap_or(self.config.retrieval_top_k) as i64;
 
         let rows: Vec<BeliefRow> = zeph_db::query_as(sql!(
@@ -392,7 +401,10 @@ impl BeliefStore {
         source_entity_id: EntityId,
         canonical_relation: &str,
     ) -> Result<usize, MemoryError> {
-        #[allow(clippy::cast_possible_wrap)]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "cap converts a value bounded to the destination range by the domain invariant"
+        )]
         let cap = self.config.max_candidates_per_group as i64;
 
         // NOT IN (subquery) is safe here because `cap` is bounded by
@@ -422,7 +434,10 @@ impl BeliefStore {
         .await?
         .rows_affected();
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "find_existing narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         Ok(deleted as usize)
     }
 
@@ -463,7 +478,10 @@ impl BeliefStore {
     ) -> Result<PendingBelief, MemoryError> {
         let prior_prob = if self.config.belief_decay_rate > 0.0 {
             let now_secs = now_unix();
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "days_elapsed uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let days_elapsed = (now_secs - row.updated_at) as f64 / 86_400.0;
             time_decayed_prob(
                 row.prob,
@@ -511,7 +529,10 @@ impl BeliefStore {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "insert_new_belief This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     async fn insert_new_belief(
         &self,
         source_entity_id: EntityId,
@@ -609,7 +630,10 @@ fn belief_from_row(row: BeliefRow) -> Result<PendingBelief, MemoryError> {
 
 fn now_unix() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    #[allow(clippy::cast_possible_wrap)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "noisy_or_combines_correctly converts a value bounded to the destination range by the domain invariant"
+    )]
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)

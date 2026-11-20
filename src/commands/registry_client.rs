@@ -187,7 +187,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_registry_token_resolves_from_env_backend() {
         let key = "ZEPH_TEST_REGISTRY_TOKEN_RESOLVE";
-        #[allow(unsafe_code)] // scoped env mutation; nextest isolates tests per-process
+        #[expect(
+            unsafe_code,
+            reason = "config the test uses Edition 2024 environment mutation inside a controlled test fixture"
+        )] // scoped env mutation; nextest isolates tests per-process
         unsafe {
             std::env::set_var(key, "test-token-value");
         }
@@ -201,7 +204,10 @@ mod tests {
             .await
             .unwrap();
 
-        #[allow(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "resolve_registry_token_age_backend_uses_vault_override_paths the test uses Edition 2024 environment mutation inside a controlled test fixture"
+        )]
         unsafe {
             std::env::remove_var(key);
         }
@@ -238,7 +244,10 @@ mod tests {
             .expect("seed secret");
         vault.save_async().await.expect("persist vault");
 
-        #[allow(unsafe_code)] // scoped env mutation; #[serial] avoids cross-test races
+        #[expect(
+            unsafe_code,
+            reason = "config the test uses Edition 2024 environment mutation inside a controlled test fixture"
+        )] // scoped env mutation; #[serial] avoids cross-test races
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", default_dir.path());
         }
@@ -251,7 +260,10 @@ mod tests {
         let result =
             resolve_registry_token(&config, None, Some(&key_path), Some(&vault_path)).await;
 
-        #[allow(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "secret the test uses Edition 2024 environment mutation inside a controlled test fixture"
+        )]
         unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
@@ -271,7 +283,10 @@ mod tests {
     async fn resolve_registry_token_age_backend_falls_back_to_default_vault_dir_without_override() {
         let default_dir = tempfile::tempdir().expect("default tempdir");
 
-        #[allow(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "config the test uses Edition 2024 environment mutation inside a controlled test fixture"
+        )]
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", default_dir.path());
         }
@@ -283,7 +298,10 @@ mod tests {
 
         let result = resolve_registry_token(&config, None, None, None).await;
 
-        #[allow(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "print_search_results_handles_empty_slice the test uses Edition 2024 environment mutation inside a controlled test fixture"
+        )]
         unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
         }

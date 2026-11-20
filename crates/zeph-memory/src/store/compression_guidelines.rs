@@ -3,7 +3,6 @@
 
 //! SQLite-backed store for ACON compression guidelines and failure pairs.
 
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use zeph_common::secret_redact::scrub_secrets;

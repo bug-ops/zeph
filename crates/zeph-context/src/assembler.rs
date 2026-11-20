@@ -167,7 +167,6 @@ fn correction_params(cfg: Option<&crate::input::CorrectionConfig>) -> (usize, f3
 /// `'r` from the caller's local `BudgetAllocation`, rather than passed as five individually
 /// ordered `usize` parameters — this removes the risk of an undetected argument-order swap
 /// between same-typed budget fields (#6573).
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 #[derive(Clone, Copy)]
 struct FetchScheduleContext<'r> {
     memory: &'r crate::input::ContextMemoryView,
@@ -183,7 +182,10 @@ struct FetchScheduleContext<'r> {
     active_types: &'r [FunctionalType],
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "schedule_context_fetchers keeps ordered steps together because they share state and control flow"
+)]
 fn schedule_context_fetchers<'r>(
     context: FetchScheduleContext<'r>,
 ) -> FuturesUnordered<CtxFuture<'r>> {
@@ -474,15 +476,15 @@ impl ContextAssembler {
             .cached_session_digest
             .as_ref()
             .map_or(0, |(_, tokens)| *tokens);
-        let allocation = budget.allocate_with_mode(
+        let allocation = budget.allocate_with_mode(crate::budget::BudgetAllocationInput {
             system_prompt,
             skills_prompt,
-            tc,
-            memory.graph_config.enabled,
+            token_counter: tc,
+            graph_enabled: memory.graph_config.enabled,
             digest_tokens,
             memory_first,
             mode,
-        );
+        });
         TurnAllocation {
             allocation,
             memory_first,
@@ -584,7 +586,10 @@ fn untrusted_label(trust: zeph_common::trust_level::TurnContextTrust) -> String 
 }
 
 #[tracing::instrument(name = "context.graph_facts", skip_all)]
-#[allow(clippy::too_many_lines)] // single-pass view-aware enrichment pipeline
+#[expect(
+    clippy::too_many_lines,
+    reason = "fetch_graph_facts keeps ordered steps together because they share state and control flow"
+)] // single-pass view-aware enrichment pipeline
 pub(crate) async fn fetch_graph_facts(
     memory: &ContextMemoryView,
     query: &str,

@@ -355,12 +355,18 @@ impl<C: Channel> Agent<C> {
         configured_name: &str,
     ) {
         // Precision loss from f64→f32 is acceptable for display purposes.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "provider_temperature narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let provider_temperature = entry
             .candle
             .as_ref()
             .map(|c| c.generation.temperature as f32);
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "provider_top_p narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let provider_top_p = entry
             .candle
             .as_ref()

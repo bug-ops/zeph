@@ -73,7 +73,10 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "recv implements the trait-required async signature while completing synchronously"
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         let mut msgs = self.messages.lock().unwrap();
         if msgs.is_empty() {
@@ -104,13 +107,19 @@ impl Channel for MockChannel {
         }
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send implements the trait-required async signature while completing synchronously"
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sent.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_chunk implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.chunks.lock().unwrap().push(chunk.to_string());
         Ok(())
@@ -122,7 +131,10 @@ impl Channel for MockChannel {
         std::future::ready(Ok(()))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "confirm implements the trait-required async signature while completing synchronously"
+    )]
     async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
         let mut confs = self.confirmations.lock().unwrap();
         Ok(if confs.is_empty() {
@@ -190,7 +202,10 @@ impl MockToolExecutor {
 }
 
 impl zeph_tools::executor::ToolExecutor for MockToolExecutor {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "execute implements the trait-required async signature while completing synchronously"
+    )]
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         let mut outputs = self.outputs.lock().unwrap();
         if outputs.is_empty() {

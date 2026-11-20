@@ -248,7 +248,10 @@ impl<C: Channel> Agent<C> {
             // Bridge secret requests from sub-agent to channel.confirm().
             // Fetch the pending request first, then release the borrow before
             // calling channel.confirm() (which requires &mut self).
-            #[allow(clippy::redundant_closure_for_method_calls)]
+            #[expect(
+                clippy::redundant_closure_for_method_calls,
+                reason = "pending keeps the closure to make the adapted argument explicit"
+            )]
             let pending = self
                 .services
                 .orchestration
@@ -2690,7 +2693,10 @@ mod tests {
             std::future::ready(Ok(None))
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "execute_tool_call implements the trait-required async signature while completing synchronously"
+        )]
         async fn execute_tool_call(
             &self,
             call: &ToolCall,

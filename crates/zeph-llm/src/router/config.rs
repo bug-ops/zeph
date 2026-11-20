@@ -30,7 +30,6 @@ pub enum RouterStrategy {
 ///
 /// See [`bandit`](super::bandit) module for the algorithm details and trade-offs.
 #[derive(Debug, Clone)]
-#[allow(clippy::doc_markdown)] // PILOT, LinUCB, Thompson are proper nouns/acronyms
 pub struct BanditRouterConfig {
     /// `LinUCB` exploration parameter. Higher = more exploration. Default: 1.0.
     pub alpha: f32,

@@ -20,11 +20,11 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-#[allow(unused_imports)]
-use zeph_db::sql;
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
+#[cfg(test)]
+use zeph_db::sql;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 

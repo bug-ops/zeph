@@ -873,7 +873,6 @@ fn default_task_ttl_secs() -> u64 {
 /// The `AgentCard` served at `/.well-known/agent.json` is built from these settings combined
 /// with runtime-detected capabilities (`images`, `audio`) and the opt-in `advertise_files` flag.
 #[derive(Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic here
 pub struct A2aServerConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -1212,7 +1211,11 @@ impl Default for ToolDiscoveryConfig {
 
 /// Trust calibration configuration, nested under `[mcp.trust_calibration]`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+// config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "TrustCalibrationConfig keeps independent calibration switches in one TOML section."
+)]
 pub struct TrustCalibrationConfig {
     /// Enable trust calibration (default: false — opt-in).
     #[serde(default)]
@@ -1311,7 +1314,11 @@ where
     Ok(v)
 }
 
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+// config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "McpConfig groups independent server and policy switches under the MCP section."
+)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     #[serde(default)]

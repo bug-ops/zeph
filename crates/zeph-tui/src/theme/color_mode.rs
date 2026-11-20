@@ -325,7 +325,10 @@ fn rgb_to_ansi16(r: u8, g: u8, b: u8) -> u8 {
         let d = dist_sq(r, g, b, pr, pg, pb);
         if d < best_dist {
             best_dist = d;
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "no_color_strips_all_colors narrows a value whose domain-specific range is bounded at this conversion site"
+            )]
             {
                 best_idx = i as u8;
             } // 16 entries — always fits u8
@@ -427,7 +430,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "auto_with_no_color_env_resolves_to_never isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     fn auto_with_no_color_env_resolves_to_never() {
         // Temporarily set NO_COLOR. Per no-color.org, presence alone (even empty) disables colour.
         // serial guards against parallel tests mutating the same env var.
@@ -443,7 +449,10 @@ mod tests {
     ///
     /// SAFETY: caller runs under `#[serial_test::serial]`, so no other test observes env state
     /// concurrently.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "clear_unicode_env the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     unsafe fn clear_unicode_env() {
         unsafe {
             std::env::remove_var("TERM");
@@ -454,7 +463,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "unicode_capable_term_dumb_returns_false_even_with_utf8_lang the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     fn unicode_capable_term_dumb_returns_false_even_with_utf8_lang() {
         // TERM=dumb short-circuits before LANG/LC_ALL are consulted (detection order #1).
         // SAFETY: single-threaded via #[serial].
@@ -470,7 +482,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "unicode_capable_lang_utf8_returns_true the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     fn unicode_capable_lang_utf8_returns_true() {
         // SAFETY: single-threaded via #[serial].
         unsafe {
@@ -485,7 +500,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "unicode_capable_lc_all_utf8_returns_true the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     fn unicode_capable_lc_all_utf8_returns_true() {
         // Exercises the LC_ALL branch specifically (checked before LANG in the detection loop).
         // SAFETY: single-threaded via #[serial].
@@ -501,7 +519,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "unicode_capable_lowercase_utf8_is_still_detected the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     fn unicode_capable_lowercase_utf8_is_still_detected() {
         // Detection uppercases before matching, so lowercase "utf-8" must also count.
         // SAFETY: single-threaded via #[serial].
@@ -517,7 +538,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "unicode_capable_unset_env_defaults_to_true isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     fn unicode_capable_unset_env_defaults_to_true() {
         // No TERM/LANG/LC_ALL at all — default is Unicode-capable (opt-in to ASCII, not opt-out).
         // SAFETY: single-threaded via #[serial].
@@ -529,7 +553,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "unicode_capable_non_utf8_lang_without_dumb_defaults_to_true isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     fn unicode_capable_non_utf8_lang_without_dumb_defaults_to_true() {
         // Ambiguous case: TERM set but not "dumb", LANG/LC_ALL present but not UTF-8 — falls
         // through to the same opt-in-to-ASCII default as the fully-unset case.

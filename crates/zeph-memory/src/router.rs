@@ -358,7 +358,10 @@ fn starts_with_question(words: &[&str]) -> bool {
 
 /// Classification signals computed once per query and shared by `route()` and
 /// `route_with_confidence()`, so neither has to recompute the same six checks.
-#[allow(clippy::struct_excessive_bools)] // independent classification flags, not state — each is checked separately in the priority chain
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "RouteSignals These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent classification flags, not state — each is checked separately in the priority chain
 struct RouteSignals {
     temporal: bool,
     relationship: bool,
@@ -436,7 +439,10 @@ impl HeuristicRouter {
     /// - Exactly one route pattern matches → confidence `1.0` (clear signal)
     /// - Zero patterns match → confidence `0.0` (pure default fallback)
     /// - More than one pattern matches → confidence `1.0 / matched_count` (ambiguous, decreasing)
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "decide_confidence uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     fn decide_confidence(signals: &RouteSignals) -> f32 {
         let mut matched: u32 = 0;
         if signals.temporal {
@@ -566,7 +572,10 @@ impl LlmRouter {
 
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
             let route_str = v.get("route").and_then(|r| r.as_str()).unwrap_or("hybrid");
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "confidence narrows a value whose domain-specific range is bounded at this conversion site"
+            )]
             let confidence = v
                 .get("confidence")
                 .and_then(serde_json::Value::as_f64)

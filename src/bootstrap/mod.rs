@@ -124,14 +124,23 @@ fn build_qdrant_ops(config: &Config) -> Result<Option<QdrantOps>, BootstrapError
 pub struct AppBuilder {
     config: Config,
     config_path: PathBuf,
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(any(feature = "acp", feature = "a2a", feature = "session")),
+        expect(
+            dead_code,
+            reason = "ACP, A2A, and the session server use this provider to resolve credentials."
+        )
+    )]
     vault: Box<dyn VaultProvider>,
     /// Present when the vault backend is `age`. Used to pass to `create_mcp_manager_with_vault`
     /// for OAuth credential persistence across sessions.
     age_vault: Option<Arc<RwLock<AgeVaultProvider>>>,
     qdrant_ops: Option<QdrantOps>,
     /// Overlay resolved from installed plugins at startup. Available for TUI and CLI diagnostics.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "The resolved overlay is retained for the CLI and TUI diagnostic surface."
+    )]
     resolved_overlay: zeph_plugins::ResolvedOverlay,
     /// PAAC secret mask registry, populated during `resolve_secrets_masked` when
     /// `security.content_isolation.secret_masking.enabled = true`. `None` when disabled.
@@ -328,16 +337,16 @@ impl AppBuilder {
     }
 
     /// Returns the plugin config overlay resolved at startup.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "The overlay accessor is retained for diagnostic consumers outside the current binary path."
+    )]
     pub fn resolved_overlay(&self) -> &zeph_plugins::ResolvedOverlay {
         &self.resolved_overlay
     }
 
     /// Returns the vault provider used for secret resolution.
-    ///
-    /// Retained as part of the public `Bootstrap` API for external callers
-    /// that may inspect or override vault behavior at runtime.
-    #[allow(dead_code)]
+    #[cfg(any(feature = "acp", feature = "a2a", feature = "session"))]
     pub fn vault(&self) -> &dyn VaultProvider {
         self.vault.as_ref()
     }
@@ -431,7 +440,10 @@ impl AppBuilder {
     /// Returns [`BootstrapError`] if `SQLite` cannot be initialized or if `vector_backend = "Qdrant"`
     /// but `qdrant_ops` is `None` (invariant violation — should not happen if `AppBuilder::new`
     /// succeeded).
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "build_memory keeps ordered steps together because they share state and control flow"
+    )]
     pub async fn build_memory(
         &self,
         provider: &AnyProvider,
@@ -1322,7 +1334,13 @@ impl AppBuilder {
     ///
     /// This is the directory where bundled and plugin-installed skills are written by Zeph
     /// itself. It is always included in the skill watcher and registry paths.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "External bootstrap consumers use this helper to locate managed skills"
+        )
+    )]
     pub fn managed_skills_dir() -> PathBuf {
         managed_skills_dir()
     }
@@ -1458,7 +1476,10 @@ impl AppBuilder {
     ///
     /// Returns `None` when guardrail is disabled or provider resolution fails.
     /// Emits a `tracing::warn` on resolution failure (guardrail silently disabled).
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "The guardrail builder remains available to bootstrap consumers that assemble the filter directly."
+    )]
     pub fn build_guardrail_filter(&self) -> Option<zeph_sanitizer::guardrail::GuardrailFilter> {
         let (provider, config) = self.build_guardrail_provider()?;
         match zeph_sanitizer::guardrail::GuardrailFilter::new(provider, &config) {

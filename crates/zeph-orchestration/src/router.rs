@@ -136,7 +136,6 @@ fn agent_has_tool(def: &SubAgentDef, tool_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::default_trait_access)]
 
     use super::*;
     use crate::graph::{TaskId, TaskNode, TaskStatus};

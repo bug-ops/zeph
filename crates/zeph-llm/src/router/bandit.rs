@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // LinUCB and PCA/OpenAI are external proper nouns; skip backtick lint for identifiers in doc comments.
-#![allow(clippy::doc_markdown)]
+#![expect(
+    clippy::doc_markdown,
+    reason = "The documentation uses established project terminology."
+)]
 
 //! PILOT (Provider Intelligence via Learned Online Tuning) — LinUCB contextual bandit routing.
 //!
@@ -239,7 +242,10 @@ impl BanditState {
     /// `memory_hit_confidence`: MAR signal. When `>= memory_confidence_threshold`, cheap
     /// providers receive a boost proportional to `(1 - cost_estimate) * confidence * cost_weight`.
     #[must_use]
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub fn select(
         &self,
         providers: &[String],
@@ -338,7 +344,7 @@ impl BanditState {
             .map(|(name, arm)| {
                 let mean = if arm.n > 0 {
                     // n is bounded by total request count; precision loss acceptable here.
-                    #[allow(clippy::cast_precision_loss)]
+                    #[expect(clippy::cast_precision_loss, reason = "n_f32 uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
                     let n_f32 = arm.n as f32;
                     arm.total_reward / n_f32
                 } else {

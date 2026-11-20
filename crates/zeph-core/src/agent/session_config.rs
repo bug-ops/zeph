@@ -46,7 +46,10 @@ pub const CONTEXT_BUDGET_RESERVE_RATIO: f32 = 0.20;
 /// - **Scheduler runtime objects** (`scheduler_executor`, broadcast senders) — runtime state,
 ///   not config-derived values.
 #[derive(Clone)]
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct AgentSessionConfig {
     // Tool behavior
     pub max_tool_iterations: usize,
@@ -268,7 +271,10 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "from_config_maps_all_fields keeps ordered steps together because they share state and control flow"
+    )]
     fn from_config_maps_all_fields() {
         let config = Config::default();
         let budget = 100_000;

@@ -97,7 +97,10 @@ pub fn text_similarity(a: &str, b: &str) -> f32 {
     if union == 0 {
         0.0
     } else {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "result uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let result = intersection as f32 / union as f32;
         result
     }

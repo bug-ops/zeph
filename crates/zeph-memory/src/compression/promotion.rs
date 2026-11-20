@@ -224,7 +224,10 @@ impl PromotionEngine {
                 let sim = cosine_similarity(emb, &cluster.centroid);
                 if sim >= self.config.cluster_threshold {
                     // Update centroid (running average).
-                    #[allow(clippy::cast_precision_loss)]
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "n uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+                    )]
                     let n = cluster.member_ids.len() as f32;
                     for (c, v) in cluster.centroid.iter_mut().zip(emb.iter()) {
                         *c = (*c * n + v) / (n + 1.0);

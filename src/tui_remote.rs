@@ -187,7 +187,10 @@ async fn hardened_discovery_client(
 }
 
 #[cfg(all(feature = "tui", feature = "a2a"))]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "run_tui_remote keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) async fn run_tui_remote(
     url: String,
     config_path: Option<&std::path::Path>,

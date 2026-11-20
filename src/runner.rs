@@ -211,7 +211,10 @@ where
 /// Only the core `Agent::new_with_registry_arc(...)...await` wiring lives here — feature-gated
 /// post-processing (MCP wiring, provider pool, debug dumper, preloaded history, etc.) stays in
 /// `run()`, matching how `build_agent_factory`'s returned closure covers only the core wiring too.
-#[allow(clippy::too_many_lines)] // strictly sequential AgentBuilder chain — one call per config field, splitting would not reduce complexity
+#[expect(
+    clippy::too_many_lines,
+    reason = "build_agent keeps ordered steps together because they share state and control flow"
+)] // strictly sequential AgentBuilder chain — one call per config field, splitting would not reduce complexity
 async fn build_agent<C, F>(deps: BuildAgentDeps<'_, F>, channel: C) -> Agent<C>
 where
     C: zeph_core::channel::Channel,
@@ -321,9 +324,9 @@ where
     .await
 }
 
-#[allow(dead_code)]
+#[cfg(any(feature = "acp", test))]
 fn cli_requested_any_acp_mode(cli: &Cli) -> bool {
-    #[cfg(not(any(feature = "acp", feature = "acp-http")))]
+    #[cfg(not(feature = "acp"))]
     let _ = cli;
 
     #[cfg(feature = "acp")]
@@ -368,7 +371,10 @@ fn configured_acp_autostart_transport(config: &Config, cli: &Cli) -> Option<AcpT
 }
 
 #[cfg(feature = "acp")]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "run_configured_acp_autostart keeps ordered steps together because they share state and control flow"
+)]
 async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let vault_backend = cli.vault.clone();
@@ -804,7 +810,11 @@ fn configure_history_integrity(key_path: &std::path::Path, vault_path: &std::pat
     }
 }
 
-#[allow(clippy::too_many_lines, clippy::large_futures)]
+#[expect(
+    clippy::too_many_lines,
+    clippy::large_futures,
+    reason = "run keeps ordered steps together because they share state and control flow; keeps the composed async path concrete to preserve static dispatch without adding boxing"
+)]
 pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // Early-exit flags that do not require config loading.
     if cli.dump_config_defaults {
@@ -3662,7 +3672,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // Gateway is spawned after the metrics channel is created (lines ~1835 below).
     // The actual spawn_gateway_server call is deferred to after metrics wiring.
 
-    #[allow(unused_variables)]
     let agent = {
         let language = config
             .llm
@@ -3730,7 +3739,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         let self_learning_enabled = config.skills.learning.enabled;
         let token_budget = u64::try_from(budget_tokens).ok();
         let compaction_threshold = u32::try_from(budget_tokens).ok().map(|b| {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "threshold narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site")]
             let threshold =
                 (f64::from(b) * f64::from(config.memory.soft_compaction_threshold.get())) as u32;
             threshold

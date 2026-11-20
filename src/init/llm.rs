@@ -14,7 +14,6 @@ pub(super) fn supports_embeddings(provider_type: &str) -> bool {
     !matches!(provider_type, "claude" | "candle")
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 2/10: LLM Provider ==\n");
 
@@ -147,7 +146,10 @@ fn probe_url_reachable(url: &str) -> bool {
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)).is_ok()
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The provider wizard gathers a single provider's related settings in a fixed interactive sequence."
+)]
 pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyhow::Result<()> {
     let providers = [
         "Ollama (local)",

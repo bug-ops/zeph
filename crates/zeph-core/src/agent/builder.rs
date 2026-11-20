@@ -123,7 +123,10 @@ pub(super) fn build_pre_execution_verifiers(
 /// across `src/runner.rs`, `src/daemon.rs`, `src/serve/agent_factory.rs`, and `src/acp.rs` — each
 /// site had shipped a swapped- or missing-argument regression at some point (#5819, #5867,
 /// #5827) because the mapping had to be kept in sync by hand in four places.
-#[allow(clippy::struct_excessive_bools)] // independent config flags mirrored from `[skills]`
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "SkillConfigParams These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent config flags mirrored from `[skills]`
 #[derive(Debug, Clone)]
 pub struct SkillConfigParams {
     /// See [`Agent::with_skill_matching_config`]'s `disambiguation_threshold` parameter.
@@ -155,7 +158,10 @@ pub struct SkillConfigParams {
 /// Returned by [`Agent::security_wiring_snapshot`] — see that method's doc comment for which
 /// setters are (and are deliberately not) represented here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)] // independent wiring flags, one per setter; mirrors serve/deps.rs's ServeAgentDeps
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "SecurityWiringSnapshot These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent wiring flags, one per setter; mirrors serve/deps.rs's ServeAgentDeps
 pub struct SecurityWiringSnapshot {
     /// `true` when [`Agent::with_risk_chain_accumulator`] has been called.
     pub risk_chain_accumulator: bool,
@@ -2853,7 +2859,10 @@ impl<C: Channel> Agent<C> {
     /// Per-session wiring (`cancel_signal`, `provider_override`, `memory`, `debug_dumper`, etc.)
     /// must still be applied separately after this call, since those depend on runtime state.
     #[must_use]
-    #[allow(clippy::too_many_lines)] // flat struct literal — adding three small config fields crossed the 100-line limit
+    #[expect(
+        clippy::too_many_lines,
+        reason = "literal keeps ordered steps together because they share state and control flow"
+    )] // flat struct literal — adding three small config fields crossed the 100-line limit
     pub fn apply_session_config(mut self, cfg: AgentSessionConfig) -> Self {
         let AgentSessionConfig {
             max_tool_iterations,
@@ -3292,7 +3301,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::default_trait_access)]
     fn with_compression_sets_proactive_strategy() {
         let compression = CompressionConfig {
             strategy: CompressionStrategy::Proactive {

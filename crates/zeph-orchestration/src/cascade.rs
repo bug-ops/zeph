@@ -74,7 +74,10 @@ impl RegionHealth {
         if failed {
             self.failed_tasks += 1;
         }
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "CascadeConfig uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         {
             self.failure_rate = self.failed_tasks as f32 / self.total_tasks as f32;
         }

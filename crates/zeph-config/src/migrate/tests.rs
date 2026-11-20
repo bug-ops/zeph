@@ -2312,7 +2312,10 @@ fn registry_is_idempotent_on_empty_input() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // a flat ordered list of every migration step name; grows by
+#[expect(
+    clippy::too_many_lines,
+    reason = "registry_preserves_order_matches_dispatch keeps ordered steps together because they share state and control flow"
+)] // a flat ordered list of every migration step name; grows by
 // one line per new step and does not benefit from decomposition
 fn registry_preserves_order_matches_dispatch() {
     // Names must follow the documented step order (steps 1–99).

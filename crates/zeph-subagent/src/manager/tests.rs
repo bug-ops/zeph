@@ -3,10 +3,11 @@
 
 //! Unit tests for sub-agent lifecycle management.
 
-#![allow(
+#![expect(
     clippy::await_holding_lock,
     clippy::field_reassign_with_default,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    reason = "The fixture overrides selected fields while retaining the other default values."
 )]
 
 use std::assert_matches;

@@ -73,7 +73,10 @@ pub fn normalized_similarity(a: &str, b: &str) -> f64 {
     }
     let dist = levenshtein_distance(a, b);
     let max_len = len_a.max(len_b);
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "result uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let result = 1.0 - (dist as f64 / max_len as f64);
     result
 }

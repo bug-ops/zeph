@@ -34,7 +34,10 @@ use std::io::{self, Write};
 use std::path::Path;
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "f isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+)]
 mod windows;
 
 /// Create or truncate `path` with owner-read/write-only permissions on Unix (0o600).
@@ -347,9 +350,10 @@ pub fn restrict_to_owner(path: &Path) -> io::Result<u32> {
     }
     let new_mode = Mode::from_raw_mode(stat.st_mode).difference(Mode::RWXG | Mode::RWXO);
     rustix::fs::fchmod(&fd, new_mode).map_err(io::Error::from)?;
-    // mode_t is u16 on macOS and u32 on Linux, so the widening is a no-op on Linux only.
-    #[allow(clippy::useless_conversion)]
+    #[cfg(target_os = "macos")]
     let raw = u32::from(new_mode.as_raw_mode());
+    #[cfg(not(target_os = "macos"))]
+    let raw = new_mode.as_raw_mode();
     Ok(raw)
 }
 
@@ -437,9 +441,10 @@ pub fn restrict_dir_to_owner(path: &Path) -> io::Result<u32> {
         let stat = rustix::fs::fstat(&fd).map_err(io::Error::from)?;
         let new_mode = Mode::from_raw_mode(stat.st_mode).difference(Mode::RWXG | Mode::RWXO);
         rustix::fs::fchmod(&fd, new_mode).map_err(io::Error::from)?;
-        // mode_t is u16 on macOS and u32 on Linux, so the widening is a no-op on Linux only.
-        #[allow(clippy::useless_conversion)]
+        #[cfg(target_os = "macos")]
         let raw = u32::from(new_mode.as_raw_mode());
+        #[cfg(not(target_os = "macos"))]
+        let raw = new_mode.as_raw_mode();
         Ok(raw & 0o7777)
     }
     #[cfg(windows)]

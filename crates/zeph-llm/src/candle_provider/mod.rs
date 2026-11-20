@@ -184,7 +184,10 @@ impl CandleProvider {
     /// # Errors
     ///
     /// Returns an error if model loading or embedding model initialization fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "new_with_timeout This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     pub fn new_with_timeout(
         source: &ModelSource,
         template: ChatTemplate,

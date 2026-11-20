@@ -228,7 +228,10 @@ async fn spawn_warmup_with_backfill_status(
 #[cfg(feature = "tui")]
 // Cannot split: all arguments configure the App before the thread is spawned and there is
 // no natural grouping that would not create an ad-hoc builder used only here.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "spawn_tui_thread This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 fn spawn_tui_thread(
     user_tx: tokio::sync::mpsc::Sender<String>,
     agent_rx: tokio::sync::mpsc::Receiver<zeph_tui::AgentEvent>,
@@ -331,7 +334,10 @@ fn tui_command_context(config: &zeph_core::config::Config, cli_tafc: bool) -> Tu
 }
 
 #[cfg(feature = "tui")]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "run_tui_agent keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     agent: zeph_core::agent::Agent<C>,
     mut params: TuiRunParams<'_>,

@@ -208,7 +208,10 @@ pub struct ResolvedSecrets {
 }
 
 impl Default for Config {
-    #[allow(clippy::too_many_lines)] // flat struct literal with one field per config section — no meaningful split exists
+    #[expect(
+        clippy::too_many_lines,
+        reason = "literal keeps ordered steps together because they share state and control flow"
+    )] // flat struct literal with one field per config section — no meaningful split exists
     fn default() -> Self {
         Self {
             agent: AgentConfig {

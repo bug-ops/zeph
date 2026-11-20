@@ -737,7 +737,10 @@ mod tests {
 
     /// Verify that an engine without a supervisor has no sweeper handle and drops cleanly.
     #[tokio::test]
-    #[allow(clippy::used_underscore_binding)] // inspects the Drop-only guard field
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "sweeper_none_without_supervisor retains the underscore-prefixed name to mark an intentionally ignored binding"
+    )] // inspects the Drop-only guard field
     async fn sweeper_none_without_supervisor() {
         let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
         let config = SpeculativeConfig {
@@ -757,7 +760,10 @@ mod tests {
 
     /// Verify sweeper abort via the supervised path (`AbortOnDrop`).
     #[tokio::test]
-    #[allow(clippy::used_underscore_binding)] // inspects the Drop-only guard field
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "sweeper_supervised_aborted_on_drop retains the underscore-prefixed name to mark an intentionally ignored binding"
+    )] // inspects the Drop-only guard field
     async fn sweeper_supervised_aborted_on_drop() {
         let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
         let config = SpeculativeConfig {

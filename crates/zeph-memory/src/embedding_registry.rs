@@ -602,7 +602,6 @@ fn build_work_set<'a, T: Embeddable>(
     err,
     level = "debug"
 )]
-#[allow(clippy::too_many_arguments)]
 async fn embed_and_collect_points(
     work_items: Vec<(String, String, EmbedFuture, String, serde_json::Value)>,
     on_progress: Option<Box<dyn Fn(usize, usize) + Send>>,

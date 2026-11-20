@@ -1,7 +1,9 @@
 // std::env::set_var / remove_var are unsafe in Rust 2024 edition; all callers are #[serial].
-#![allow(unsafe_code)]
+#![expect(
+    unsafe_code,
+    reason = "The test isolates the unsafe operation required by the Rust 2024 or platform API."
+)]
 // Integration tests await full agent sessions; the future size reflects real agent state.
-#![allow(clippy::large_futures)]
 // Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
 #![recursion_limit = "256"]
 
@@ -108,7 +110,10 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "recv implements the trait-required async signature while completing synchronously"
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage {
             text,
@@ -119,7 +124,10 @@ impl Channel for MockChannel {
         }))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send implements the trait-required async signature while completing synchronously"
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outputs.lock().unwrap().push(text.to_string());
         Ok(())
@@ -147,7 +155,10 @@ struct ConfirmMockChannel {
 }
 
 impl Channel for ConfirmMockChannel {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "recv implements the trait-required async signature while completing synchronously"
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage {
             text,
@@ -158,7 +169,10 @@ impl Channel for ConfirmMockChannel {
         }))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send implements the trait-required async signature while completing synchronously"
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outputs.lock().unwrap().push(text.to_string());
         Ok(())
@@ -177,7 +191,10 @@ impl Channel for ConfirmMockChannel {
         std::future::ready(Ok(()))
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "confirm implements the trait-required async signature while completing synchronously"
+    )]
     async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
         *self.confirm_called.lock().unwrap() = true;
         Ok(self.confirm_result)
@@ -2633,7 +2650,10 @@ mod self_learning {
     }
 
     impl Channel for MockChannel {
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "recv implements the trait-required async signature while completing synchronously"
+        )]
         async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
             Ok(self.inputs.pop_front().map(|text| ChannelMessage {
                 text,
@@ -2644,7 +2664,10 @@ mod self_learning {
             }))
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "send implements the trait-required async signature while completing synchronously"
+        )]
         async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
             self.outputs.lock().unwrap().push(text.to_string());
             Ok(())

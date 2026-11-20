@@ -300,7 +300,7 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHashe
         };
         let health_attrs = health_map.get(skill.name()).and_then(|&(posterior, uses)| {
             if uses >= HEALTH_MIN_USES {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "pct narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site")]
                 let pct = (posterior * 100.0).round() as u32;
                 Some(format!(" reliability=\"{pct}%\" uses=\"{uses}\""))
             } else {
@@ -466,7 +466,7 @@ fn format_active_skill_tag<S: std::hash::BuildHasher, S2: std::hash::BuildHasher
     };
     let health_attrs = health_map.get(skill.name()).and_then(|&(posterior, uses)| {
         if uses >= HEALTH_MIN_USES {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "pct narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site")]
             let pct = (posterior * 100.0).round() as u32;
             Some(format!(" reliability=\"{pct}%\" uses=\"{uses}\""))
         } else {

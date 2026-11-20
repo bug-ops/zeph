@@ -378,7 +378,10 @@ async fn probe_all_nodes(
 /// # Errors
 ///
 /// Returns an error if config parsing or I/O fails at the top level.
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "run_gonka_doctor keeps ordered steps together because they share state and control flow; This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 pub(crate) async fn run_gonka_doctor(
     config_path: &Path,
     json: bool,

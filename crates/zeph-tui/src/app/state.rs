@@ -1508,7 +1508,10 @@ impl App {
         // MCP, egress, background shell). Rendered in violet so concurrent background
         // activity is visually distinct from the agent's own foreground turn.
         if bg >= 1 {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "background_inflight narrows a value whose domain-specific range is bounded at this conversion site"
+            )]
             return WaveState::Network {
                 sines: (bg as u8).clamp(1, 3),
             };

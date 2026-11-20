@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
-#[allow(unused_imports)]
+#[cfg(test)]
 use zeph_db::sql;
 
 use crate::embedding_store::EmbeddingStore;
@@ -37,7 +37,11 @@ use super::types::{EdgeType, GraphFact};
 ///
 /// Returns an error if any database query fails.
 #[tracing::instrument(name = "memory.graph.retrieval.graph_recall", skip_all, err)]
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "graph_recall This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 pub async fn graph_recall(
     store: &GraphStore,
     embeddings: Option<&crate::embedding_store::EmbeddingStore>,
@@ -264,7 +268,11 @@ async fn seed_embedding_fallback(
     err,
     level = "debug"
 )]
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "find_seed_entities This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) async fn find_seed_entities(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,
@@ -415,7 +423,10 @@ pub(crate) async fn find_seed_entities(
 ///
 /// Returns an error if any database query fails.
 #[tracing::instrument(name = "memory.graph.retrieval.graph_recall_activated", skip_all, err)]
-#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 pub async fn graph_recall_activated(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,

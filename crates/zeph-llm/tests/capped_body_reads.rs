@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::expect_used,
+    reason = "Fixture construction failures should fail the test immediately.; Fixture construction failures should fail the test immediately."
+)]
 
 //! Acceptance tests (tests-first) for #7131: response bodies are read through the capped helpers
 //! and error bodies are sanitized before they reach `LlmError`.

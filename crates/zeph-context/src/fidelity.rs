@@ -248,7 +248,10 @@ impl FidelityScorer {
     /// The two providers may be the same instance or different ones (e.g. a fast embedding
     /// model for `embed_provider` and a generative model for `compress_provider`).
     #[tracing::instrument(name = "context.fidelity.score_and_apply", skip_all)]
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The scorer's shared context is passed explicitly at its call sites, which are concentrated in this crate's scoring tests and assembler."
+    )]
     pub async fn score_and_apply(
         &self,
         messages: &mut Vec<Message>,
@@ -333,7 +336,14 @@ impl FidelityScorer {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compute_scores This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The scoring pass applies message eligibility, similarity, and budget rules in order while sharing one score vector."
+)]
 fn compute_scores(
     messages: &[Message],
     query: &str,
@@ -374,7 +384,10 @@ fn compute_scores(
         weight_sum = 1.0;
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "max_dist uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let max_dist = score_end.saturating_sub(1) as f32;
 
     let mut scores: Vec<Option<FidelityScore>> = (0..n).map(|_| None).collect();
@@ -389,7 +402,10 @@ fn compute_scores(
 
         // distance_from_end = 0 for newest (i = score_end-1), N-1 for oldest (i = 0).
         // Spec §6.1: temporal = 1.0 - distance_from_end / max_dist → newest = 1.0, oldest ≈ 0.0.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "temporal uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let temporal = if max_dist > 0.0 {
             let distance_from_end = (score_end - 1 - i) as f32;
             1.0 - distance_from_end / max_dist
@@ -482,7 +498,6 @@ async fn apply_scores(
         let Some(ref fs) = scores[i] else { continue };
         match fs.level {
             ContextFidelity::Compressed => {
-                #[allow(clippy::cast_possible_truncation)]
                 let original_tokens = fs.original_tokens;
                 render_compressed(msg, config, tc, provider).await;
                 let new_tokens = u32::try_from(tc.count_tokens(&msg.content)).unwrap_or(u32::MAX);
@@ -557,7 +572,10 @@ fn keyword_overlap(content: &str, query_words: &std::collections::HashSet<&str>)
     if min_len == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "result uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let result = content_words.intersection(query_words).count() as f32 / min_len as f32;
     result.clamp(0.0, 1.0)
 }
@@ -582,7 +600,10 @@ fn plan_relevance(content: &str, planned_tools: &[PlannedToolHint]) -> f32 {
         if min_len == 0 {
             continue;
         }
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "overlap uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let overlap = content_words.intersection(&hint_words).count() as f32 / min_len as f32;
         weighted_sum += weight * overlap.clamp(0.0, 1.0);
     }
@@ -833,7 +854,10 @@ fn merge_consecutive_placeholders(messages: &mut Vec<Message>) -> usize {
             importance_sum += parse_placeholder_importance(&msg.content);
         }
         debug_assert!(count >= 2, "placeholder merge triggered with count={count}");
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "avg_importance uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let avg_importance = if count > 0 {
             importance_sum / count as f32
         } else {

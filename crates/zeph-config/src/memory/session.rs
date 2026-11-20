@@ -193,7 +193,10 @@ impl Default for DocumentConfig {
 /// mmr_lambda = 0.7
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "SemanticConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct SemanticConfig {
     /// Enable vector-based semantic recall. Default: `true`.
     #[serde(default = "default_semantic_enabled")]

@@ -46,7 +46,10 @@ async fn start_pg() -> (zeph_db::DbPool, impl Drop) {
 fn make_graph(goal: &str, tasks: &[(&str, &str, &[u32])]) -> TaskGraph {
     let mut graph = TaskGraph::new(goal);
     for (i, (title, desc, deps)) in tasks.iter().enumerate() {
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "node narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let mut node = TaskNode::new(i as u32, *title, *desc);
         node.depends_on = deps.iter().map(|&d| TaskId(d)).collect();
         graph.tasks.push(node);

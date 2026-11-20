@@ -12,7 +12,6 @@
 
 pub use qdrant_client::qdrant::Filter;
 use zeph_db::DbPool;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use crate::db_vector_store::DbVectorStore;
@@ -261,7 +260,10 @@ impl EmbeddingStore {
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
     #[tracing::instrument(name = "memory.embed_store.store_with_tool_context", skip_all)]
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store_with_tool_context(
         &self,
         message_id: MessageId,
@@ -305,7 +307,10 @@ impl EmbeddingStore {
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
     #[tracing::instrument(name = "memory.embed_store.store", skip_all)]
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store(
         &self,
         message_id: MessageId,
@@ -345,7 +350,10 @@ impl EmbeddingStore {
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
     #[tracing::instrument(name = "memory.embed_store.store_with_category", skip_all)]
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store_with_category(
         &self,
         message_id: MessageId,
@@ -378,7 +386,10 @@ impl EmbeddingStore {
     /// `trust_level` is the write-time provenance tier (issue #6490); `None` omits the payload
     /// field entirely rather than writing a placeholder, matching the `category` field's
     /// no-silent-false-positive convention.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn store_impl(
         &self,
         message_id: MessageId,

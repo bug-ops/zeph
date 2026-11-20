@@ -196,7 +196,6 @@ pub(crate) struct TuiHandle {
 /// also install a [`zeph_core::json_event_layer::JsonEventLayer`] on the agent.
 /// When `supervisor` is `Some`, it is forwarded to channel adapters that support
 /// supervised task registration (Telegram, Discord, Slack).
-#[allow(clippy::unused_async)]
 pub(crate) async fn create_channel_inner(
     config: &Config,
     history: Option<CliHistory>,

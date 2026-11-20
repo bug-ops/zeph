@@ -634,7 +634,10 @@ pub fn parse_grandfather_set(value: &str) -> HashSet<zeph_durable::ExecutionId> 
 /// the module docs on `zeph_durable::backend::local::LocalBackend::with_grandfather` for the
 /// accepted residual this carries).
 #[must_use]
-#[allow(clippy::implicit_hasher)]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "render_grandfather_set uses the default hasher because this collection is local and not on a custom-hasher boundary"
+)]
 pub fn render_grandfather_set(
     existing: &str,
     new_ids: &HashSet<zeph_durable::ExecutionId>,

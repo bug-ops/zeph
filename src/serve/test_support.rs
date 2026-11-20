@@ -78,7 +78,10 @@ impl ServeTestHarness {
         Self::build(false).await
     }
 
-    #[allow(clippy::too_many_lines)] // exhaustive ServeAgentDeps test fixture literal
+    #[expect(
+        clippy::too_many_lines,
+        reason = "build keeps ordered steps together because they share state and control flow"
+    )] // exhaustive ServeAgentDeps test fixture literal
     async fn build(persistence_enabled: bool) -> Self {
         let memory = Arc::new(
             SemanticMemory::new(

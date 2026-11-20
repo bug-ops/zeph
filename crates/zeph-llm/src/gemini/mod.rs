@@ -187,7 +187,7 @@ impl GeminiProvider {
         self.thinking_level.map(|level| {
             // GeminiThinkingLevel is #[non_exhaustive]; fall back to "medium" rather than
             // fail to compile on a future upstream variant.
-            #[allow(clippy::match_same_arms)]
+            #[expect(clippy::match_same_arms, reason = "with_include_thoughts keeps this narrowly scoped lint exception at the item that requires it")]
             match level {
                 ThinkingLevel::Minimal => "minimal",
                 ThinkingLevel::Low => "low",

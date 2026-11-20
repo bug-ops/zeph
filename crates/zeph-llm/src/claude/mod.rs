@@ -114,7 +114,10 @@ use crate::sse::claude_sse_to_tool_stream;
 /// - [`with_cache_user_messages`](Self::with_cache_user_messages) — prompt caching
 /// - [`with_status_tx`](Self::with_status_tx) — real-time status events for the UI
 /// - [`with_generation_overrides`](Self::with_generation_overrides) — temperature / top-p
-#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These independent flags belong to the same configuration or state object and are set or read together"
+)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct ClaudeProvider {
     client: reqwest::Client,
     api_key: String,
@@ -930,7 +933,10 @@ impl ClaudeProvider {
             Some(ThinkingConfig::Adaptive { effort }) => Some(
                 // ThinkingEffort is #[non_exhaustive]; fall back to "medium" for any future
                 // variant rather than failing to compile on an upstream addition.
-                #[allow(clippy::match_same_arms)]
+                #[expect(
+                    clippy::match_same_arms,
+                    reason = "list_models_remote keeps this narrowly scoped lint exception at the item that requires it"
+                )]
                 match effort.unwrap_or_default() {
                     ThinkingEffort::Low => "low",
                     ThinkingEffort::Medium => "medium",

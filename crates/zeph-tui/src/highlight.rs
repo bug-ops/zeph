@@ -152,7 +152,10 @@ pub struct SyntaxHighlighter {
 }
 
 impl SyntaxHighlighter {
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "new keeps ordered steps together because they share state and control flow"
+    )]
     fn new() -> Self {
         let mut configs = HashMap::new();
 

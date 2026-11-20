@@ -676,7 +676,10 @@ impl<C: Channel> Agent<C> {
     /// applies the returned [`ContextDelta`] (injects code context via
     /// [`Self::inject_code_context`] which stays on `Agent<C>` per scope decision).
     #[tracing::instrument(name = "core.context.prepare_context", skip_all, level = "debug", err)]
-    #[allow(clippy::too_many_lines)] // view construction: all fields are required by ContextAssemblyView; splitting would reduce readability
+    #[expect(
+        clippy::too_many_lines,
+        reason = "prepare_context keeps ordered steps together because they share state and control flow"
+    )] // view construction: all fields are required by ContextAssemblyView; splitting would reduce readability
     pub(in crate::agent) async fn prepare_context(
         &mut self,
         query: &str,
@@ -862,7 +865,10 @@ impl<C: Channel> Agent<C> {
     }
 
     #[tracing::instrument(name = "core.context.rebuild_system_prompt", skip_all, level = "debug")]
-    #[allow(clippy::too_many_lines)] // sequential per-turn setup: skill match + stats/embed cache fetch + MCP/schema filter dispatch
+    #[expect(
+        clippy::too_many_lines,
+        reason = "rebuild_system_prompt keeps ordered steps together because they share state and control flow"
+    )] // sequential per-turn setup: skill match + stats/embed cache fetch + MCP/schema filter dispatch
     pub(in crate::agent) async fn rebuild_system_prompt(&mut self, query: &str) {
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
             .services
@@ -1183,7 +1189,6 @@ impl<C: Channel> Agent<C> {
     /// stable/semi-stable/volatile cache-marker sections (MCP prompt, project context,
     /// repo map, learned preferences, active goal, guest context, caveman directive,
     /// budget hint), then writes the result into `self.msg.messages[0]`.
-    #[allow(clippy::too_many_lines)] // strictly sequential prompt-section assembly: stable + semi-stable + volatile blocks, in order
     async fn assemble_final_system_prompt(
         &mut self,
         query: &str,
@@ -1438,7 +1443,10 @@ impl<C: Channel> Agent<C> {
     ///   forced injecting the full, unscored skill set.
     /// - `skills_to_record` — names of skills genuinely scored by the embedding matcher
     ///   (for usage-stats recording); empty in fallback mode.
-    #[allow(clippy::too_many_lines)] // embedding match + BM25 fusion + trust rerank + RL rerank + disambiguation: one cohesive retrieval pipeline
+    #[expect(
+        clippy::too_many_lines,
+        reason = "match_and_rank_skills keeps ordered steps together because they share state and control flow"
+    )] // embedding match + BM25 fusion + trust rerank + RL rerank + disambiguation: one cohesive retrieval pipeline
     async fn match_and_rank_skills(
         &mut self,
         query: &str,
@@ -1599,7 +1607,7 @@ impl<C: Channel> Agent<C> {
                                 let rate = if total == 0 {
                                     0.5
                                 } else {
-                                    #[allow(clippy::cast_precision_loss)]
+                                    #[expect(clippy::cast_precision_loss, reason = "candidate_refs uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
                                     {
                                         succ as f32 / total as f32
                                     }
@@ -2161,7 +2169,10 @@ impl<C: Channel> Agent<C> {
     /// filter steps; an explicitly configured distinct `discovery_provider` always issues its
     /// own fresh `embed()` call instead, since reusing an embedding from a different provider
     /// would silently mix embedding spaces.
-    #[allow(clippy::too_many_lines)] // strategy dispatch (Embedding/Llm/None) with per-strategy fallback handling
+    #[expect(
+        clippy::too_many_lines,
+        reason = "discover_mcp_tools_for_turn keeps ordered steps together because they share state and control flow"
+    )] // strategy dispatch (Embedding/Llm/None) with per-strategy fallback handling
     async fn discover_mcp_tools_for_turn(
         &mut self,
         query: &str,

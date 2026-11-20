@@ -219,7 +219,10 @@ impl CandleClassifier {
             }))
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_inner isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     fn load_inner(
         repo_id: &str,
         hf_token: Option<&str>,

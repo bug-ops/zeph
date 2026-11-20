@@ -75,7 +75,10 @@ impl<C: Channel> Agent<C> {
     /// # Errors
     ///
     /// Propagates unrecoverable [`AgentError`]s from the underlying turn machinery.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "run_autonomous_turn keeps ordered steps together because they share state and control flow"
+    )]
     #[tracing::instrument(name = "core.agent.autonomous_turn", skip_all, level = "debug", err)]
     pub(crate) async fn run_autonomous_turn(&mut self) -> Result<(), AgentError> {
         // Ensure a running session exists; return silently if not.

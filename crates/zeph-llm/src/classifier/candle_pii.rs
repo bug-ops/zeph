@@ -124,7 +124,10 @@ impl CandlePiiClassifier {
         self
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load_inner isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     fn load_inner(
         repo_id: &str,
         expected_sha256: Option<&str>,

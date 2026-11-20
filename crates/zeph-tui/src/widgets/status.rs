@@ -443,7 +443,10 @@ fn build_uptime_spans(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Span<'sta
     )]
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "push_extra_low_segments keeps ordered steps together because they share state and control flow"
+)]
 fn push_extra_low_segments(
     list: &mut SegmentList,
     app: &App,
@@ -525,7 +528,11 @@ fn push_extra_low_segments(
         if app.is_agent_busy()
             && let Some(rate) = app.stream_rate.tokens_per_sec()
         {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "rate_int narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+            )]
             let rate_int = rate as u32;
             list.push_abbrev_styled(
                 Priority::Low,
@@ -668,7 +675,10 @@ fn plan_mode_segment<'a>(app: &App, metrics: &MetricsSnapshot) -> &'a str {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "build_filter_text uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+)]
 fn build_filter_text(metrics: &MetricsSnapshot) -> String {
     let savings = if metrics.filter_raw_tokens > 0 {
         metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0

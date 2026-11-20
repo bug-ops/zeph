@@ -135,7 +135,10 @@ impl RouterProvider {
     ///
     /// Returns the best-seen response if all providers fail or budget is exhausted.
     #[tracing::instrument(name = "llm.router.cascade_chat", skip_all)]
-    #[allow(clippy::too_many_lines)] // cascade loop: per-provider error/ok/budget/escalation branches are tightly coupled — extracting would obscure the control flow
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cascade_chat keeps ordered steps together because they share state and control flow"
+    )] // cascade loop: per-provider error/ok/budget/escalation branches are tightly coupled — extracting would obscure the control flow
     pub(crate) async fn cascade_chat(
         &self,
         providers: &[AnyProvider],
@@ -290,7 +293,10 @@ impl RouterProvider {
     /// TTFT. This is strictly worse than direct routing to the expensive model for
     /// hard queries. Acceptable for v1; see CRIT-01 in critic handoff for alternatives.
     #[tracing::instrument(name = "llm.router.cascade.chat_stream", skip_all)]
-    #[allow(clippy::too_many_lines)] // sequential cascade semantics: buffer→classify→escalate
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cascade_chat_stream keeps ordered steps together because they share state and control flow"
+    )] // sequential cascade semantics: buffer→classify→escalate
     pub(crate) async fn cascade_chat_stream(
         &self,
         providers: &[AnyProvider],

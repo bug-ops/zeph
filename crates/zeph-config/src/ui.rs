@@ -456,7 +456,10 @@ pub enum Motion {
 /// smooth_scroll    = true   # eased multi-frame scroll on page jumps
 /// splash_shimmer   = true   # one-shot gradient sweep across the wordmark
 /// ```
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "DelightsConfig These independent flags belong to the same configuration or state object and are set or read together"
+)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DelightsConfig {
     /// Show tok/s during streaming and TTFT after each turn in the status bar.

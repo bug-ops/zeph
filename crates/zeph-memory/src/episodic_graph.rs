@@ -288,7 +288,7 @@ fn parse_links_response(raw: &str) -> Vec<CausalLink> {
         .filter_map(|v| {
             let cause_id = v.get("cause_id")?.as_i64()?;
             let effect_id = v.get("effect_id")?.as_i64()?;
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation, reason = "strength narrows a value whose domain-specific range is bounded at this conversion site")]
             let strength = v
                 .get("strength")
                 .and_then(serde_json::Value::as_f64)

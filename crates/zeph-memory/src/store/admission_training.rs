@@ -7,7 +7,6 @@
 //! bias in the logistic regression model (critic fix C3). `was_recalled` is set to 1
 //! when `SemanticMemory::recall()` returns the message, providing positive training signal.
 
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use crate::error::MemoryError;
@@ -196,7 +195,10 @@ impl SqliteStore {
                         conversation_id: ConversationId(cid),
                         content_hash: hash,
                         role,
-                        #[expect(clippy::cast_possible_truncation)]
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "Admission scores are normalized to the unit interval before storage as f32."
+                        )]
                         composite_score: score as f32,
                         was_admitted: admitted != 0,
                         was_recalled: recalled != 0,

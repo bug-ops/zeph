@@ -55,9 +55,15 @@ fn relation_similarity(a: &str, b: &str) -> f32 {
     }
     let dist = levenshtein_distance(a, b);
     // max_len <= string byte length, bounded by MAX_RELATION_BYTES (256); cast is safe.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "max_len_f uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let max_len_f = max_len as f32;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "dist_f uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let dist_f = dist as f32;
     1.0 - dist_f / max_len_f
 }

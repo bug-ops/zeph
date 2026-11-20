@@ -3,7 +3,6 @@
 
 use super::SqliteStore;
 use crate::error::MemoryError;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 #[derive(Debug, Clone)]

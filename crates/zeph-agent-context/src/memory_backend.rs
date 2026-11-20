@@ -247,7 +247,10 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
         })
     }
 
-    #[allow(clippy::too_many_lines)] // one match arm per GraphRetrievalStrategy variant
+    #[expect(
+        clippy::too_many_lines,
+        reason = "recall_graph_facts keeps ordered steps together because they share state and control flow"
+    )] // one match arm per GraphRetrievalStrategy variant
     fn recall_graph_facts<'a>(
         &'a self,
         query: &'a str,

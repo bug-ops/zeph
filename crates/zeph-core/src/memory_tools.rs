@@ -364,7 +364,6 @@ impl ToolExecutor for MemoryToolExecutor {
         std::future::ready(Ok(None))
     }
 
-    #[allow(clippy::too_many_lines)] // two tools with validation, search, and multi-source aggregation
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         match call.tool_id.as_str() {
             "memory_search" => {

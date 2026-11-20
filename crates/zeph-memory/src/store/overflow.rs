@@ -4,7 +4,6 @@
 use uuid::Uuid;
 use zeph_common::trust_level::{NativeToolKind, ToolResultSource, UntrustedTier};
 use zeph_common::types::McpServerId;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use crate::error::MemoryError;

@@ -229,7 +229,10 @@ impl VariationValue {
     pub fn as_f64(&self) -> f64 {
         match self {
             Self::Float(f) => f.into_inner(),
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "from uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             Self::Int(i) => *i as f64,
         }
     }
@@ -337,7 +340,10 @@ impl std::fmt::Display for ExperimentSource {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::approx_constant)]
+    #![expect(
+        clippy::approx_constant,
+        reason = "The fixture deliberately uses an approximate value."
+    )]
     use std::assert_matches;
 
     use super::*;

@@ -377,7 +377,10 @@ fn render_row(entry: &MentionEntry, active_tab: MentionTab, theme: &Theme) -> Li
     let mut buf = String::new();
     let mut highlighted = false;
     for (i, c) in entry.display.chars().enumerate() {
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "is_hl narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let is_hl = entry.indices.binary_search(&(i as u32)).is_ok();
         if is_hl != highlighted && !buf.is_empty() {
             let style = if highlighted {
@@ -425,7 +428,10 @@ pub(crate) fn render(
         crate::widgets::input::caret_xy(app, input_area, state.at_char_index);
 
     let visible_rows = state.filtered.len().clamp(1, MAX_RESULTS);
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "list_h narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let list_h = visible_rows as u16;
     let height = list_h + TAB_BAR_H + BORDER_H;
 

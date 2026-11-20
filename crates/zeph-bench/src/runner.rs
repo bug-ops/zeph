@@ -404,7 +404,7 @@ impl BenchRunner {
     ///
     /// Called by both [`BenchRunner::run_dataset`] (with `NoopExecutor` + `TerseAnswer`) and
     /// [`BenchRunner::run_dataset_with_env_factory`] (with the domain env + `ToolUse`).
-    #[allow(clippy::too_many_lines)] // sequential setup steps; splitting adds indirection without clarity
+    // sequential setup steps; splitting adds indirection without clarity
     #[tracing::instrument(skip_all, fields(scenario_id = %scenario.id, mode = ?mode), name = "bench.run_one")]
     async fn run_one_with_executor<X: ToolExecutor + Send + Sync + 'static>(
         &self,

@@ -705,7 +705,10 @@ impl LlmProvider for TriageRouter {
     // `LlmFuture` instead of `impl Future + Send` erases the concrete type at this
     // boundary; an opaque RPIT return here is self-referential and overflows the
     // compiler's opaque-type auto-trait check (see `LlmFuture` docs).
-    #[allow(refining_impl_trait_reachable)]
+    #[expect(
+        refining_impl_trait_reachable,
+        reason = "embed keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     fn embed(&self, text: &str) -> LlmFuture<Vec<f32>> {
         let embed_provider = self.select_embed_provider();
 
@@ -720,7 +723,10 @@ impl LlmProvider for TriageRouter {
     }
 
     // See the `embed` doc comment above — same recursive-call-graph rationale applies.
-    #[allow(refining_impl_trait_reachable)]
+    #[expect(
+        refining_impl_trait_reachable,
+        reason = "embed_batch keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     fn embed_batch(&self, texts: &[&str]) -> LlmFuture<Vec<Vec<f32>>> {
         let embed_provider = self.select_embed_provider();
 
@@ -739,7 +745,10 @@ impl LlmProvider for TriageRouter {
 
     /// Classify + delegate: each method independently performs triage (MF-2).
     // See the `embed` doc comment above — same recursive-call-graph rationale applies.
-    #[allow(refining_impl_trait_reachable)]
+    #[expect(
+        refining_impl_trait_reachable,
+        reason = "chat keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     fn chat(&self, messages: &[Message]) -> LlmFuture<String> {
         let router = self.clone();
         let messages = messages.to_vec();
@@ -761,7 +770,10 @@ impl LlmProvider for TriageRouter {
 
     /// Classify + delegate: each method independently performs triage (MF-2).
     // See the `embed` doc comment above — same recursive-call-graph rationale applies.
-    #[allow(refining_impl_trait_reachable)]
+    #[expect(
+        refining_impl_trait_reachable,
+        reason = "chat_stream keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     fn chat_stream(&self, messages: &[Message]) -> LlmFuture<ChatStream> {
         let router = self.clone();
         let messages = messages.to_vec();
@@ -789,7 +801,10 @@ impl LlmProvider for TriageRouter {
     /// so the request never reaches an incapable tier as a 400/422 (C3, AC-6) — the text
     /// placeholder remains as the guaranteed fallback.
     // See the `embed` doc comment above — same recursive-call-graph rationale applies.
-    #[allow(refining_impl_trait_reachable)]
+    #[expect(
+        refining_impl_trait_reachable,
+        reason = "chat_with_tools keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     fn chat_with_tools(
         &self,
         messages: &[Message],

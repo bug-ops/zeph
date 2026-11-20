@@ -45,7 +45,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 // The struct is a few words long, so the cast cannot truncate.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Disposition narrows a value whose domain-specific range is bounded at this conversion site"
+)]
 const SECURITY_ATTRIBUTES_LEN: u32 = size_of::<SECURITY_ATTRIBUTES>() as u32;
 
 /// How [`open_private`] opens or creates the file; mirrors the matching `OpenOptions` combinations.
@@ -162,7 +165,10 @@ pub(super) fn restrict_dir_to_owner(path: &Path) -> io::Result<()> {
     };
     if status != 0 {
         // Win32 error codes fit in i32; `from_raw_os_error` takes the signed form.
-        #[allow(clippy::cast_possible_wrap)]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "create_dir converts a value bounded to the destination range by the domain invariant"
+        )]
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     Ok(())

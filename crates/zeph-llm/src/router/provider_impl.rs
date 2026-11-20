@@ -69,14 +69,20 @@ impl LlmProvider for RouterProvider {
             .and_then(LlmProvider::context_window)
     }
 
-    #[allow(refining_impl_trait)]
+    #[expect(
+        refining_impl_trait,
+        reason = "to keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     // deliberate: erase the opaque type to break router recursion, see `LlmFuture` docs
     // `RouterProvider::chat` dispatches into `AnyProvider`, which can itself hold a
     // nested `Router`/`Triage` variant — a recursive call graph. Returning a boxed
     // `LlmFuture` instead of `impl Future + Send` erases the concrete type at this
     // boundary; an opaque RPIT return here is self-referential and overflows the
     // compiler's opaque-type auto-trait check (see `LlmFuture` docs).
-    #[allow(clippy::too_many_lines)] // CoE + quality-gate inline logic; extracting would obscure the control flow
+    #[expect(
+        clippy::too_many_lines,
+        reason = "chat keeps ordered steps together because they share state and control flow"
+    )] // CoE + quality-gate inline logic; extracting would obscure the control flow
     fn chat(&self, messages: &[Message]) -> LlmFuture<String> {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
@@ -252,7 +258,10 @@ impl LlmProvider for RouterProvider {
         ))
     }
 
-    #[allow(refining_impl_trait)] // see `chat`'s `LlmFuture` allow above
+    #[expect(
+        refining_impl_trait,
+        reason = "chat_stream keeps this narrowly scoped lint exception at the item that requires it"
+    )] // see `chat`'s `LlmFuture` allow above
     // See the `chat` doc comment above — same recursive-call-graph rationale applies.
     fn chat_stream(&self, messages: &[Message]) -> LlmFuture<ChatStream> {
         let status_tx = self.status_tx.clone();
@@ -354,10 +363,10 @@ impl LlmProvider for RouterProvider {
             .any(LlmProvider::supports_vision)
     }
 
-    #[allow(refining_impl_trait)]
-    // see `chat`'s `LlmFuture` allow above
-    // See the `chat` doc comment above — same recursive-call-graph rationale applies.
-    #[allow(clippy::too_many_lines)] // retry + timeout + fallback + availability tracking: splitting would break the shared `last_err` accumulator
+    #[expect(
+        refining_impl_trait,
+        reason = "embed keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     fn embed(&self, text: &str) -> LlmFuture<Vec<f32>> {
         let providers = self.embed_candidates();
         let status_tx = self.status_tx.clone();
@@ -465,10 +474,16 @@ impl LlmProvider for RouterProvider {
         ))
     }
 
-    #[allow(refining_impl_trait)]
+    #[expect(
+        refining_impl_trait,
+        reason = "embed_batch keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     // see `chat`'s `LlmFuture` allow above
     // See the `chat` doc comment above — same recursive-call-graph rationale applies.
-    #[allow(clippy::too_many_lines)] // retry + timeout + fallback + availability tracking: splitting would break the shared `last_err` accumulator
+    #[expect(
+        clippy::too_many_lines,
+        reason = "embed_batch keeps ordered steps together because they share state and control flow"
+    )] // retry + timeout + fallback + availability tracking: splitting would break the shared `last_err` accumulator
     fn embed_batch(&self, texts: &[&str]) -> LlmFuture<Vec<Vec<f32>>> {
         let providers = self.embed_candidates();
         let status_tx = self.status_tx.clone();
@@ -596,12 +611,18 @@ impl LlmProvider for RouterProvider {
             .any(LlmProvider::supports_embeddings)
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "name keeps the bound in the signature to match the surrounding trait or call contract"
+    )]
     fn name(&self) -> &str {
         "router"
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "model_identifier keeps the bound in the signature to match the surrounding trait or call contract"
+    )]
     fn model_identifier(&self) -> &str {
         "router"
     }
@@ -639,10 +660,16 @@ impl LlmProvider for RouterProvider {
             .collect()
     }
 
-    #[allow(refining_impl_trait)]
+    #[expect(
+        refining_impl_trait,
+        reason = "chat_with_tools keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     // see `chat`'s `LlmFuture` allow above
     // See the `chat` doc comment above — same recursive-call-graph rationale applies.
-    #[allow(clippy::too_many_lines)] // fallback loop + bandit branch + spec-072 vision safety net
+    #[expect(
+        clippy::too_many_lines,
+        reason = "chat_with_tools keeps ordered steps together because they share state and control flow"
+    )] // fallback loop + bandit branch + spec-072 vision safety net
     fn chat_with_tools(
         &self,
         messages: &[Message],
@@ -836,7 +863,10 @@ impl LlmProvider for RouterProvider {
             })
     }
 
-    #[allow(refining_impl_trait)]
+    #[expect(
+        refining_impl_trait,
+        reason = "to keeps this narrowly scoped lint exception at the item that requires it"
+    )]
     // deliberate: erase the opaque type to break router recursion, see `LlmFuture` docs
     fn keepalive_ping(
         &self,

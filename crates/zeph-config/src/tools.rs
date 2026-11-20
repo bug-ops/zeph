@@ -1029,7 +1029,10 @@ fn default_max_checkpoints() -> usize {
 
 /// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ShellConfig These independent flags belong to the same configuration or state object and are set or read together"
+)]
 pub struct ShellConfig {
     /// Shell command timeout in seconds. Default: `30`.
     #[serde(default = "default_timeout")]
@@ -1380,7 +1383,10 @@ impl Default for SpeculativeConfig {
 /// Configuration for egress network event logging.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "EgressConfig These independent flags belong to the same configuration or state object and are set or read together"
+)]
 pub struct EgressConfig {
     /// Master switch for egress event emission. Default: `true`.
     pub enabled: bool,

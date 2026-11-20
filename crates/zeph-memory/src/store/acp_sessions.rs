@@ -5,7 +5,6 @@ use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
 use zeph_db::ActiveDialect;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 pub struct AcpSessionEvent {

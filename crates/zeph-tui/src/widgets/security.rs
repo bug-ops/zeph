@@ -258,7 +258,10 @@ fn append_event_items(
 }
 
 fn format_hm(ts: u64) -> String {
-    #[allow(clippy::cast_possible_wrap)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "renders_no_events_message_when_all_zero converts a value bounded to the destination range by the domain invariant"
+    )]
     chrono::DateTime::from_timestamp(ts as i64, 0).map_or_else(
         || "??:??".to_owned(),
         |dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string(),

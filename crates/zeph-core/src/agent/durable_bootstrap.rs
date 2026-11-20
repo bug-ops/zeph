@@ -199,11 +199,14 @@ impl<C: Channel> Agent<C> {
     /// the session journals as a step within the *same* execution and a crash mid-session can
     /// resume from any prior turn's journal state.
     ///
-    /// `#[allow(clippy::too_many_lines)]`: the `open_execution` / advisory-lock / `DurableContext`
+    /// `#[expect(clippy::too_many_lines, reason = "ensure_session_durable_ctx keeps ordered steps together because they share state and control flow")]`: the `open_execution` / advisory-lock / `DurableContext`
     /// construction sequence in this function's body is a single linear bootstrap that stays
     /// past the line budget regardless of how the key-material parameters are threaded;
     /// splitting it into sub-functions would add indirection with no readability gain.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ensure_session_durable_ctx keeps ordered steps together because they share state and control flow"
+    )]
     pub(crate) async fn ensure_session_durable_ctx(&mut self) {
         if self.services.session.durable_ctx.is_some()
             || self.services.session.durable_ctx_init_attempted

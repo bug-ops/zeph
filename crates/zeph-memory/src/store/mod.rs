@@ -54,7 +54,7 @@ pub mod trajectory;
 mod trust;
 pub mod usage_records;
 
-#[allow(unused_imports)]
+#[cfg(test)]
 use zeph_db::sql;
 use zeph_db::{DbConfig, DbPool};
 

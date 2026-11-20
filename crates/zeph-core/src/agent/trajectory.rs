@@ -406,7 +406,10 @@ impl TrajectorySentinel {
         let mut score: f32 = 0.0;
         let decay = self.cfg.decay_per_turn.get();
         for &(turn, signal) in &self.buf {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "age uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let age =
                 u32::try_from(self.current_turn.saturating_sub(turn)).unwrap_or(u32::MAX) as f32;
             let contribution = decay.powf(age) * signal.default_weight();
@@ -436,7 +439,11 @@ impl TrajectorySentinel {
         // correct in terms of decay behavior.
         let weight = RiskSignal::PolicyDeny.default_weight();
         // Use floor to avoid overshooting the parent's score (P2 requirement).
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "reps narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+        )]
         let reps = (score / weight).floor() as usize;
         for _ in 0..reps {
             self.buf.push_back((0, RiskSignal::PolicyDeny));

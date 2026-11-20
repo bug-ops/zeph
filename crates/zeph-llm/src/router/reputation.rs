@@ -153,10 +153,11 @@ impl ReputationTracker {
             entry.dist.beta = 1.0 + (entry.dist.beta - 1.0) * d;
             // Decay observations proportionally so threshold check stays calibrated.
             // f64 represents integers exactly up to 2^53; observation counts never approach that.
-            #[allow(
+            #[expect(
                 clippy::cast_precision_loss,
                 clippy::cast_possible_truncation,
-                clippy::cast_sign_loss
+                clippy::cast_sign_loss,
+                reason = "decayed uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
             )]
             {
                 let decayed = (entry.observations as f64) * d;

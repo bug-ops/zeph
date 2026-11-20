@@ -83,7 +83,10 @@ impl ProviderQualityHistory {
         if self.scores.is_empty() {
             return 0.5;
         }
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "len uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let len = self.scores.len() as f64;
         self.scores.iter().sum::<f64>() / len
     }
@@ -214,7 +217,10 @@ fn repetition_ratio(response: &str) -> f64 {
     if total == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let ratio = repeated as f64 / total as f64;
     ratio.clamp(0.0, 1.0)
 }
@@ -244,7 +250,10 @@ fn coherence_signal(response: &str) -> f64 {
     }
 
     // Avg words per sentence.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "avg_sentence_len uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let avg_sentence_len = if sentence_count > 0 {
         word_count as f64 / sentence_count as f64
     } else {

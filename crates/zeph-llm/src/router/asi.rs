@@ -95,7 +95,10 @@ fn mean_embedding(window: &VecDeque<Vec<f32>>) -> Vec<f32> {
     if dim == 0 || window.iter().any(|e| e.len() != dim) {
         return vec![];
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "n uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let n = window.len() as f32;
     let mut mean = vec![0.0_f32; dim];
     for emb in window {

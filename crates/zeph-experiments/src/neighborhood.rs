@@ -118,11 +118,9 @@ impl VariationGenerator for Neighborhood {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::collapsible_if,
+    #![expect(
         clippy::field_reassign_with_default,
-        clippy::manual_midpoint,
-        clippy::manual_range_contains
+        reason = "The asymmetric branch boundaries are part of this domain rule.; The fixture overrides selected fields while retaining the other default values."
     )]
 
     use std::collections::HashSet;

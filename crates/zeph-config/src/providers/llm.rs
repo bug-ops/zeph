@@ -317,7 +317,10 @@ impl Default for LlmConfig {
     }
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "is_routing_none keeps the borrowed signature consistent with the surrounding API"
+)]
 fn is_routing_none(s: &LlmRoutingStrategy) -> bool {
     *s == LlmRoutingStrategy::None
 }

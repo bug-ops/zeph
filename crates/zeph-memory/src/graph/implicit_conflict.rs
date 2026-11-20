@@ -140,7 +140,10 @@ impl ImplicitConflictDetector {
             return Ok(());
         }
 
-        #[allow(clippy::cast_possible_wrap)]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "now converts a value bounded to the destination range by the domain invariant"
+        )]
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

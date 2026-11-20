@@ -140,7 +140,10 @@ pub(super) fn infer_preferences(
 
     // Verbosity: require 3:1 dominance and minimum evidence.
     // Allow precision loss: evidence counts fit easily in f64 mantissa at realistic values.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "total uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     if c.concise >= MIN_EVIDENCE && c.concise >= c.verbose * 3 {
         let total = c.concise + c.verbose;
         out.push(InferredPreference {
@@ -150,7 +153,6 @@ pub(super) fn infer_preferences(
             evidence_count: c.concise,
         });
     } else if c.verbose >= MIN_EVIDENCE && c.verbose >= c.concise * 3 {
-        #[allow(clippy::cast_precision_loss)]
         let total = c.concise + c.verbose;
         out.push(InferredPreference {
             key: "verbosity".to_string(),
@@ -172,7 +174,10 @@ pub(super) fn infer_preferences(
         .filter(|(_, e)| *e >= MIN_EVIDENCE)
         .max_by_key(|(_, e)| *e)
     {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "conf uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let conf = (*evidence as f64 / (*evidence as f64 + 1.0)).min(0.95);
         out.push(InferredPreference {
             key: "format_preference".to_string(),
@@ -186,7 +191,10 @@ pub(super) fn infer_preferences(
     if let Some((lang, &count)) = c.lang.iter().max_by_key(|(_, v)| *v)
         && count >= MIN_EVIDENCE
     {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "conf uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let conf = (count as f64 / (count as f64 + 1.0)).min(0.95);
         out.push(InferredPreference {
             key: "response_language".to_string(),

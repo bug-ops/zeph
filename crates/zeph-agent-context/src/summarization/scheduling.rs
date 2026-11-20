@@ -29,10 +29,11 @@ use super::pruning::prune_tool_outputs;
 /// Never triggers Hard tier (no LLM call), never increments `turns_since_last_hard_compaction`,
 /// and never decrements the cooldown counter. Returns immediately when `compacted_this_turn`
 /// is set or when context usage is below the soft threshold.
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    reason = "maybe_soft_compact_mid_iteration uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract; narrows a value whose domain-specific range is bounded at this conversion site"
 )]
 pub(crate) fn maybe_soft_compact_mid_iteration(summ: &mut ContextSummarizationView<'_>) {
     if summ

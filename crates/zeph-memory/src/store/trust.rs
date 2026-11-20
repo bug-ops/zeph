@@ -3,7 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 use zeph_common::SkillTrustLevel;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use super::SqliteStore;
@@ -136,7 +135,10 @@ impl SqliteStore {
     ///
     /// Returns an error if the database operation fails.
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "upsert_skill_trust_with_git_hash This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     #[tracing::instrument(name = "memory.trust.upsert_with_git_hash", skip_all, fields(skill = %skill_name))]
     pub async fn upsert_skill_trust_with_git_hash(
         &self,

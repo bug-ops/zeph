@@ -202,7 +202,10 @@ fn blob_to_embedding(blob: &[u8]) -> Option<Vec<f32>> {
 }
 
 fn unix_now() -> i64 {
-    #[allow(clippy::cast_possible_wrap)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "for converts a value bounded to the destination range by the domain invariant"
+    )]
     {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -471,7 +474,10 @@ impl PlanCache {
 /// # Errors
 ///
 /// Returns `OrchestrationError` from the planner on full-decomposition fallback.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "plan_with_cache This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 #[tracing::instrument(name = "orchestration.plan_cache.plan", skip_all, fields(goal_len = goal.len()))]
 pub async fn plan_with_cache<P>(
     planner: &P,
@@ -541,7 +547,6 @@ where
 /// Returns `OrchestrationError::PlanningFailed` if the LLM call fails, times out, or the
 /// adapted graph fails DAG validation.
 #[tracing::instrument(name = "orchestration.plan_cache.adapt", skip_all, fields(goal_len = goal.len()))]
-#[allow(clippy::too_many_arguments)]
 async fn adapt_plan(
     provider: &impl LlmProvider,
     goal: &str,
@@ -641,7 +646,10 @@ mod tests {
     fn make_graph(goal: &str, tasks: &[(&str, &str, &[u32])]) -> TaskGraph {
         let mut graph = TaskGraph::new(goal);
         for (i, (title, desc, deps)) in tasks.iter().enumerate() {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "node narrows a value whose domain-specific range is bounded at this conversion site"
+            )]
             let mut node = TaskNode::new(i as u32, *title, *desc);
             node.depends_on = deps.iter().map(|&d| TaskId(d)).collect();
             graph.tasks.push(node);

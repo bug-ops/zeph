@@ -336,7 +336,10 @@ impl<C: Channel> Agent<C> {
         }
 
         let mut output = String::from("Skill outcome statistics:\n\n");
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "rate uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         for row in &stats {
             let rate = if row.total == 0 {
                 0.0

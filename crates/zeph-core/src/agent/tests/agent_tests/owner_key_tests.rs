@@ -6,7 +6,6 @@
 //! non-`Message` `LoopEvent`) exits the `Agent::run` loop iteration before ever reaching
 //! `process_user_message`/`end_turn`.
 
-#[allow(unused_imports)]
 use super::*;
 
 use std::collections::VecDeque;
@@ -38,18 +37,27 @@ impl OwnerKeyChannel {
 }
 
 impl Channel for OwnerKeyChannel {
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "recv implements the trait-required async signature while completing synchronously"
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, crate::channel::ChannelError> {
         Ok(self.inbox.pop_front())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send implements the trait-required async signature while completing synchronously"
+    )]
     async fn send(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
         self.sent.lock().unwrap().push(text.to_owned());
         Ok(())
     }
 
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "send_chunk implements the trait-required async signature while completing synchronously"
+    )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), crate::channel::ChannelError> {
         self.sent.lock().unwrap().push(chunk.to_owned());
         Ok(())

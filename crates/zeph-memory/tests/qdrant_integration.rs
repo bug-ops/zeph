@@ -379,7 +379,10 @@ async fn setup_registry_with_qdrant(
     (registry, container)
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "embed_fn_fixed uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+)]
 fn embed_fn_fixed(dim: usize) -> impl Fn(&str) -> EmbedFuture {
     move |text: &str| -> EmbedFuture {
         // Deterministic per-text vector so distinct skills get distinct (but stable) vectors.

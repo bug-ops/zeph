@@ -16,7 +16,6 @@
 
 use tracing::Instrument as _;
 use zeph_db::ActiveDialect;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use super::SqliteStore;

@@ -53,7 +53,6 @@
 //! ```
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
-#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 
 mod error;
 mod handlers;

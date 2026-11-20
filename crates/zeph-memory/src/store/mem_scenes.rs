@@ -5,7 +5,6 @@
 
 use crate::scenes::MemScene;
 use crate::types::{MemSceneId, MessageId};
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use zeph_db::ActiveDialect;

@@ -204,7 +204,11 @@ impl ParameterRange {
         if step <= 0.0 {
             return None;
         }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "r narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site"
+        )]
         Some(((self.max - self.min) / step).floor() as usize + 1)
     }
 

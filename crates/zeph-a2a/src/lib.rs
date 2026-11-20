@@ -65,7 +65,6 @@
 //! ```
 
 #![cfg_attr(not(test), warn(clippy::string_slice))]
-#![cfg_attr(not(test), warn(clippy::allow_attributes))]
 #![forbid(unsafe_code)]
 
 pub mod body_limit;

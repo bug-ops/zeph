@@ -253,7 +253,10 @@ impl<C: Channel> Agent<C> {
         }
     }
     #[tracing::instrument(name = "core.agent.reload_skills", skip_all, level = "debug")]
-    #[allow(clippy::too_many_lines)] // gate check + matcher rebuild + trust refresh + catalog prompt: one cohesive reload pipeline
+    #[expect(
+        clippy::too_many_lines,
+        reason = "reload_skills keeps ordered steps together because they share state and control flow"
+    )] // gate check + matcher rebuild + trust refresh + catalog prompt: one cohesive reload pipeline
     pub(super) async fn reload_skills(&mut self) {
         // #6031: single DRY choke point for the skill-hot-reload gate — covers every entry
         // point (runner/daemon/acp/serve) at once, instead of patching each `SkillWatcher`

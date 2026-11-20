@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-#[allow(unused_imports)]
+#[cfg(test)]
 use zeph_db::sql;
 
 use futures::TryStreamExt as _;

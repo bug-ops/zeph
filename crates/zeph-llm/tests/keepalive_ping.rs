@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "Fixture construction failures should fail the test immediately.; Fixture construction failures should fail the test immediately."
+)]
 
 //! Acceptance tests (tests-first) for `LlmProvider::keepalive_ping` (spec 101, plan r2 Track B
 //! with r4): trait default, forwarding through `AnyProvider`, and the Claude minimum-cacheable

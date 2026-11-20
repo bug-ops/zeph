@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 /// effect on Telegram, Discord, Slack, or ACP sessions.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "CliConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct CliConfig {
     /// Enable bare mode (skip skills, memory, MCP, scheduler, watchers).
     pub bare: bool,

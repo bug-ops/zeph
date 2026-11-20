@@ -126,7 +126,10 @@ pub fn rerank(
     let posterior_factor = 1.0 - cosine_weight;
     for m in scored.iter_mut() {
         let (successes, failures) = metrics_fn(m.index);
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "posterior narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let posterior = posterior_weight(successes, failures) as f32;
         m.score = cosine_weight * m.score + posterior_factor * posterior;
     }

@@ -158,7 +158,10 @@ impl TraceExtractor {
     ///     None,
     /// );
     /// ```
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "new This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     pub fn new(
         extract_provider: AnyProvider,
         embed_provider: AnyProvider,

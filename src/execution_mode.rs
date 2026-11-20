@@ -13,7 +13,10 @@ use crate::cli::Cli;
 /// falls back to the config value. A config value of `true` therefore activates
 /// the mode even when the flag is not passed — useful for scripting environments.
 #[derive(Clone, Copy, Debug, Default)]
-#[allow(clippy::struct_excessive_bools)] // runtime state — boolean flags are idiomatic here
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ExecutionMode These independent flags belong to the same configuration or state object and are set or read together"
+)] // runtime state — boolean flags are idiomatic here
 pub(crate) struct ExecutionMode {
     pub(crate) bare: bool,
     pub(crate) safe_mode: bool,
@@ -131,7 +134,10 @@ mod tests {
     #[serial_test::serial(zeph_safe_mode_env)]
     // std::env::set_var / remove_var are unsafe in Rust 2024 edition; guarded by #[serial]
     // above (mirrors src/bootstrap/tests.rs's identical precedent).
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "resolve_safe_mode_flag_reads_env_when_flag_false the test uses Edition 2024 environment mutation inside a controlled test fixture"
+    )]
     fn resolve_safe_mode_flag_reads_env_when_flag_false() {
         // SAFETY: guarded by `#[serial]` on this env-var-scoped lock name — no other test in
         // this process touches `ZEPH_SAFE_MODE` concurrently.

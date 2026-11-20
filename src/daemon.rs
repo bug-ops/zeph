@@ -498,7 +498,10 @@ where
     .await
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "run_daemon keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) async fn run_daemon(
     config_path: Option<&std::path::Path>,
     vault: Option<&str>,

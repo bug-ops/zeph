@@ -156,7 +156,10 @@ pub struct TieredRetrievalResult {
 /// # Errors
 ///
 /// Returns an error if any underlying search or database operation fails.
-#[allow(clippy::too_many_arguments)] // flat pipeline inputs; a params struct would only rename them
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)] // flat pipeline inputs; a params struct would only rename them
 #[tracing::instrument(name = "memory.tiered.retrieve", skip_all, fields(intent = tracing::field::Empty))]
 pub async fn recall_tiered(
     memory: &SemanticMemory,
@@ -217,7 +220,10 @@ pub async fn recall_tiered(
 /// Iterates through tiers starting at `initial_intent`, retrieving candidates and
 /// validating evidence quality. Escalates to heavier tiers when validation indicates
 /// insufficient evidence.
-#[allow(clippy::too_many_arguments)] // same inputs as `recall_tiered`
+#[expect(
+    clippy::too_many_arguments,
+    reason = "escalation_loop This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)] // same inputs as `recall_tiered`
 #[tracing::instrument(name = "memory.tiered.escalation_loop", skip_all, fields(initial_intent = %initial_intent, max_escalations = config.max_escalations))]
 async fn escalation_loop(
     memory: &SemanticMemory,
@@ -361,7 +367,10 @@ async fn retrieve_tier(
 /// # Errors
 ///
 /// Propagates store errors from timestamp or tier lookups.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "score_candidates keeps ordered steps together because they share state and control flow"
+)]
 #[tracing::instrument(name = "memory.tiered.score_candidates", skip_all)]
 async fn score_candidates(
     memory: &SemanticMemory,
@@ -458,7 +467,7 @@ async fn score_candidates(
             let cognitive = if config.cognitive_signal_weight > 0.0 && max_access > 0 {
                 let count = access_counts.get(&msg_id).copied().unwrap_or(0);
                 // Both are i64; precision loss is acceptable for a normalized ratio.
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(clippy::cast_precision_loss, reason = "ratio uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract")]
                 let ratio = count as f64 / max_access as f64;
                 ratio
             } else {
@@ -484,7 +493,7 @@ async fn score_candidates(
 
             RecalledMessage {
                 // f64 → f32: deliberate truncation, score precision is adequate.
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(clippy::cast_possible_truncation, reason = "compute_recency narrows a value whose domain-specific range is bounded at this conversion site")]
                 score: final_score as f32,
                 ..recalled
             }
@@ -512,7 +521,10 @@ async fn score_candidates(
 fn compute_recency(created_at_secs: i64, now_secs: i64, half_life_days: u32) -> f64 {
     debug_assert!(half_life_days > 0, "half_life_days must be > 0");
     // Precision loss is acceptable: age is a time delta in days, not a financial value.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "age_days uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let age_days = (now_secs - created_at_secs).max(0) as f64 / 86_400.0;
     let lambda = std::f64::consts::LN_2 / f64::from(half_life_days);
     (-lambda * age_days).exp()
@@ -545,16 +557,25 @@ fn compute_tfidf_scores(query: &str, candidates: &[RecalledMessage]) -> Vec<f64>
         .collect();
 
     // Precision loss is acceptable for term-frequency ratios over small candidate sets.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "n uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let n = docs.len() as f64;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "avg_dl uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     let avg_dl = docs.iter().map(|d| d.len() as f64).sum::<f64>().max(1.0) / n;
 
     let mut scores = vec![0.0_f64; docs.len()];
 
     for term in &query_terms {
         // Document frequency across the candidate set.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "df uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let df = docs.iter().filter(|d| d.contains(term)).count() as f64;
         if df == 0.0 {
             continue;
@@ -563,9 +584,15 @@ fn compute_tfidf_scores(query: &str, candidates: &[RecalledMessage]) -> Vec<f64>
         let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
 
         for (i, doc) in docs.iter().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "dl uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let dl = doc.len() as f64;
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "tf uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let tf = doc.iter().filter(|t| *t == term).count() as f64;
             let bm25_tf = (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avg_dl));
             scores[i] += idf * bm25_tf;
@@ -712,7 +739,10 @@ fn parse_validation_response(raw: &str, threshold: f32) -> bool {
             .get("sufficient")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "confidence narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let confidence = v
             .get("confidence")
             .and_then(serde_json::Value::as_f64)

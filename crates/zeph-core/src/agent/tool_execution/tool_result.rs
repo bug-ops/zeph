@@ -430,7 +430,11 @@ impl<C: Channel> Agent<C> {
         fields(tool_name = %tc.name),
         err
     )]
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "process_one_tool_result This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+    )]
     pub(super) async fn process_one_tool_result(
         &mut self,
         tc: &zeph_llm::provider::ToolUseRequest,

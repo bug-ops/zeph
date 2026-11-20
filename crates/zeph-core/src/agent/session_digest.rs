@@ -121,7 +121,10 @@ fn format_and_sanitize_conversation(
 ///
 /// PAAC secret masking (#5437) is structural at the provider boundary — callers pass an
 /// already-masked `provider`.
-#[allow(clippy::too_many_arguments)] // pipeline has many required, non-groupable inputs; a *Params struct would be more verbose without simplifying the call sites
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)] // pipeline has many required, non-groupable inputs; a *Params struct would be more verbose without simplifying the call sites
 async fn generate_and_persist_digest(
     provider: &zeph_llm::any::AnyProvider,
     memory: &zeph_memory::semantic::SemanticMemory,

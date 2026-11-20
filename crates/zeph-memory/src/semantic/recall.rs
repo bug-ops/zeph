@@ -355,7 +355,10 @@ impl SemanticMemory {
         feature = "profiling",
         tracing::instrument(name = "memory.remember", skip_all, fields(content_len = %content.len()))
     )]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "remember_with_parts_and_provenance This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     pub async fn remember_with_parts_and_provenance(
         &self,
         conversation_id: ConversationId,
@@ -1139,7 +1142,10 @@ impl SemanticMemory {
         feature = "profiling",
         tracing::instrument(name = "memory.recall.merge_and_rank", skip_all, fields(kw_count = keyword_results.len(), vec_count = vector_results.len()))
     )]
-    #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The merge preserves the ordered deduplication, scoring, and trust-filtering pipeline in one pass."
+    )]
     pub(super) async fn recall_merge_and_rank(
         &self,
         keyword_results: Vec<(MessageId, f64)>,
@@ -1345,7 +1351,10 @@ impl SemanticMemory {
             .filter_map(|(msg_id, score)| {
                 msg_map.get(msg_id).map(|msg| RecalledMessage {
                     message: msg.clone(),
-                    #[expect(clippy::cast_possible_truncation)]
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "Recall scores are clamped to the unit interval before conversion to the public f32 score."
+                    )]
                     score: *score as f32,
                 })
             })
@@ -1794,7 +1803,10 @@ impl SemanticMemory {
     ///     .unwrap_or_default();
     /// # }
     /// ```
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // single-pass enrichment pipeline: splitting would lose readability
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "recall_graph_view This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(
@@ -1883,7 +1895,10 @@ impl SemanticMemory {
     ///     .unwrap_or_default();
     /// # }
     /// ```
-    #[allow(clippy::too_many_lines)] // single-pass enrichment pipeline: splitting would lose readability
+    #[expect(
+        clippy::too_many_lines,
+        reason = "enrich_recall_view keeps ordered steps together because they share state and control flow"
+    )] // single-pass enrichment pipeline: splitting would lose readability
     pub async fn enrich_recall_view(
         &self,
         mut recalled: Vec<crate::recall_view::RecalledFact>,
@@ -2623,7 +2638,10 @@ mod tests {
         let stale = pg_store.save_message(cid, "user", "stale").await.unwrap();
 
         for (id, epoch) in [(fresh, session_start), (stale, session_start + 20 * 86_400)] {
-            #[expect(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "The PostgreSQL timestamp fixture is well within f64's exact integer range."
+            )]
             let epoch_f = epoch as f64;
             sqlx::query(zeph_db::sql!(
                 "UPDATE messages SET created_at = to_timestamp(?) WHERE id = ?"

@@ -224,7 +224,10 @@ impl ToolOrchestrator {
         self.utility_scorer = UtilityScorer::new(config);
     }
 
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub(crate) fn apply_config(
         &mut self,
         max_iterations: usize,
@@ -284,7 +287,10 @@ impl ToolOrchestrator {
         let hits = cache.hits();
         let misses = cache.misses();
         let total = hits + misses;
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "hit_rate uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let hit_rate = if total > 0 {
             format!("{:.1}%", (hits as f64 / total as f64) * 100.0)
         } else {

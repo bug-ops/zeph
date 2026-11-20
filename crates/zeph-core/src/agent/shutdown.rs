@@ -279,7 +279,10 @@ impl<C: Channel> Agent<C> {
     ///
     /// Call this before dropping the agent to ensure no data loss.
     #[tracing::instrument(name = "core.agent.shutdown", skip_all, level = "debug")]
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "shutdown keeps ordered steps together because they share state and control flow"
+    )]
     pub async fn shutdown(&mut self) {
         self.channel
             .send_status_best_effort("Shutting down...")
@@ -327,7 +330,10 @@ impl<C: Channel> Agent<C> {
         if let Some(ref tx) = self.runtime.metrics.metrics_tx {
             let m = tx.borrow();
             if m.filter_applications > 0 {
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "pct uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+                )]
                 let pct = if m.filter_raw_tokens > 0 {
                     m.filter_saved_tokens as f64 / m.filter_raw_tokens as f64 * 100.0
                 } else {

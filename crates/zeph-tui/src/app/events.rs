@@ -80,7 +80,10 @@ impl App {
     /// This is the main state-transition function for agent-driven updates:
     /// appending streaming chunks, recording tool events, displaying confirm
     /// dialogs, and wiring late-bound channels (cancel signal, metrics).
-    #[allow(clippy::too_many_lines)] // large match over all agent event variants
+    #[expect(
+        clippy::too_many_lines,
+        reason = "handle_agent_event keeps ordered steps together because they share state and control flow"
+    )] // large match over all agent event variants
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Chunk(text) => {
@@ -363,7 +366,10 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "handle_tool_output_event This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     fn handle_tool_output_event(
         &mut self,
         tool_name: zeph_common::ToolName,

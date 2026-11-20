@@ -9,7 +9,11 @@
 
 use super::{MigrateError, MigrationResult, section_header_present, value_to_toml_string};
 
-#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+#[expect(
+    clippy::format_push_string,
+    clippy::ref_option,
+    reason = "migrate_ollama_provider appends to an existing buffer to avoid allocating an intermediate formatted string; keeps the nested condition explicit to show the guarded side effect"
+)]
 fn migrate_ollama_provider(
     llm: &toml_edit::Table,
     model: &Option<String>,
@@ -30,7 +34,15 @@ fn migrate_ollama_provider(
     vec![block]
 }
 
-#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+#[expect(
+    clippy::format_push_string,
+    clippy::ref_option,
+    reason = "The migration appends provider fields to one output buffer and reads optional legacy values without taking ownership."
+)]
+#[expect(
+    clippy::collapsible_if,
+    reason = "Nested legacy-field checks keep each provider-specific fallback visibly guarded by its parent table."
+)]
 fn migrate_claude_provider(llm: &toml_edit::Table, model: &Option<String>) -> Vec<String> {
     let mut block = "[[llm.providers]]\ntype = \"claude\"\n".to_owned();
     if let Some(cloud) = llm.get("cloud").and_then(toml_edit::Item::as_table) {
@@ -75,7 +87,11 @@ fn migrate_claude_provider(llm: &toml_edit::Table, model: &Option<String>) -> Ve
     vec![block]
 }
 
-#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+#[expect(
+    clippy::format_push_string,
+    clippy::ref_option,
+    reason = "migrate_openai_provider appends to an existing buffer to avoid allocating an intermediate formatted string; keeps the nested condition explicit to show the guarded side effect"
+)]
 fn migrate_openai_provider(llm: &toml_edit::Table, model: &Option<String>) -> Vec<String> {
     let mut block = "[[llm.providers]]\ntype = \"openai\"\n".to_owned();
     if let Some(openai) = llm.get("openai").and_then(toml_edit::Item::as_table) {
@@ -90,7 +106,11 @@ fn migrate_openai_provider(llm: &toml_edit::Table, model: &Option<String>) -> Ve
     vec![block]
 }
 
-#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+#[expect(
+    clippy::format_push_string,
+    clippy::ref_option,
+    reason = "migrate_gemini_provider appends to an existing buffer to avoid allocating an intermediate formatted string; keeps the nested condition explicit to show the guarded side effect"
+)]
 fn migrate_gemini_provider(llm: &toml_edit::Table, model: &Option<String>) -> Vec<String> {
     let mut block = "[[llm.providers]]\ntype = \"gemini\"\n".to_owned();
     if let Some(gemini) = llm.get("gemini").and_then(toml_edit::Item::as_table) {
@@ -112,7 +132,6 @@ fn migrate_gemini_provider(llm: &toml_edit::Table, model: &Option<String>) -> Ve
     vec![block]
 }
 
-#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
 fn migrate_compatible_provider(llm: &toml_edit::Table) -> Vec<String> {
     let mut blocks = Vec::new();
     if let Some(compat_arr) = llm
@@ -133,7 +152,15 @@ fn migrate_compatible_provider(llm: &toml_edit::Table) -> Vec<String> {
 }
 
 // Returns (provider_blocks, routing)
-#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+#[expect(
+    clippy::format_push_string,
+    clippy::ref_option,
+    reason = "migrate_orchestrator_provider appends to an existing buffer to avoid allocating an intermediate formatted string; keeps the nested condition explicit to show the guarded side effect"
+)]
+#[expect(
+    clippy::collapsible_if,
+    reason = "Nested provider checks preserve the order and scope of legacy orchestrator fallbacks."
+)]
 fn migrate_orchestrator_provider(
     llm: &toml_edit::Table,
     model: &Option<String>,
@@ -210,7 +237,11 @@ fn migrate_orchestrator_provider(
 }
 
 // Returns (provider_blocks, routing)
-#[allow(clippy::format_push_string, clippy::collapsible_if, clippy::ref_option)]
+#[expect(
+    clippy::format_push_string,
+    clippy::ref_option,
+    reason = "migrate_router_provider appends to an existing buffer to avoid allocating an intermediate formatted string; keeps the nested condition explicit to show the guarded side effect"
+)]
 fn migrate_router_provider(
     llm: &toml_edit::Table,
     model: &Option<String>,
@@ -317,12 +348,15 @@ fn strip_task_routing_keys(toml_src: &str) -> String {
 /// # Errors
 ///
 /// Returns `MigrateError::Parse` if the input TOML is invalid.
-#[allow(
+#[expect(
+    clippy::collapsible_if,
+    reason = "Nested table checks preserve each legacy field's conditional migration behavior."
+)]
+#[expect(
     clippy::too_many_lines,
     clippy::format_push_string,
     clippy::manual_let_else,
-    clippy::op_ref,
-    clippy::collapsible_if
+    reason = "migrate_llm_to_providers keeps ordered steps together because they share state and control flow; appends to an existing buffer to avoid allocating an intermediate formatted string"
 )]
 pub fn migrate_llm_to_providers(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     let doc = toml_src.parse::<toml_edit::DocumentMut>()?;

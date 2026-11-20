@@ -221,6 +221,8 @@ pedantic = "warn"
 # is disallowed on any hot path. Verified zero hits workspace-wide before enabling
 # (`cargo clippy --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing" -- -W clippy::await_holding_lock`).
 await_holding_lock = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
 
 [package]
 name = "zeph"

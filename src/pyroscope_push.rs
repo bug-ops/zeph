@@ -45,7 +45,10 @@ const SAMPLE_FREQUENCY_HZ: i32 = 100;
 /// push interval may not be flushed — shutdown is best-effort to avoid blocking the process.
 pub(crate) struct PyroscopeGuard {
     shutdown_tx: watch::Sender<bool>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "drop is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     handle: tokio::task::JoinHandle<()>,
 }
 

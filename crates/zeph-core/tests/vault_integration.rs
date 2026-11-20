@@ -9,7 +9,7 @@ use std::path::Path;
 use age::secrecy::ExposeSecret;
 
 use zeph_core::config::SecretResolver;
-use zeph_vault::{AgeVaultError, AgeVaultProvider};
+use zeph_vault::AgeVaultProvider;
 
 fn encrypt_json(identity: &age::x25519::Identity, json: &serde_json::Value) -> Vec<u8> {
     let recipient = identity.to_public();
@@ -95,7 +95,3 @@ async fn age_vault_injects_token_into_existing_telegram_config() {
         .expect("telegram config must still be present");
     assert_eq!(tg.token.as_deref(), Some("tg-injected-789"));
 }
-
-// Suppress unused import warning when age is not in scope (satisfies clippy)
-#[allow(dead_code)]
-fn _use_age_vault_error(_: AgeVaultError) {}

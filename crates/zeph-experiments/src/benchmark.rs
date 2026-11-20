@@ -140,7 +140,6 @@ impl BenchmarkSet {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::redundant_closure_for_method_calls)]
     use std::assert_matches;
 
     use super::*;

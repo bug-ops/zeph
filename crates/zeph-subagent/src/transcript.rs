@@ -710,7 +710,10 @@ fn parse_entries(path: &Path, strict: bool) -> Result<Vec<TranscriptEntry>, SubA
 /// ([`ChainError::Mismatch`]) or an unverifiable/possibly-re-keyed chain
 /// ([`ChainError::Unverifiable`]); or `anchor` disagrees with the on-disk content (issue #6449 —
 /// see the read-side decision table in the module-level anchor docs, `zeph_common::anchor`).
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "verify_and_extract_messages keeps ordered steps together because they share state and control flow"
+)]
 fn verify_and_extract_messages(
     path: &Path,
     entries: Vec<TranscriptEntry>,
@@ -997,7 +1000,10 @@ fn epoch_to_parts(epoch: u64) -> (u32, u32, u32, u32, u32, u32) {
     let year = if month <= 2 { year + 1 } else { year };
 
     // All values are in range for u32 for any timestamp in [1970, 2554].
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "IntegrityConfigGuard narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     (
         year as u32,
         month as u32,

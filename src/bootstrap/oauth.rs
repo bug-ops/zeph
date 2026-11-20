@@ -36,7 +36,10 @@ impl VaultCredentialStore {
 
     /// Return the vault key this store uses.
     #[must_use]
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "vault_key is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     pub fn vault_key(&self) -> &str {
         &self.vault_key
     }

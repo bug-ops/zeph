@@ -305,7 +305,13 @@ impl FocusState {
     /// assert!(state.should_auto_consolidate()); // 4 turns elapsed
     /// ```
     // TODO(#2510): call this from the agent-loop compression path (Focus strategy Phase 2)
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "This item exists only in the feature configuration that includes its call site."
+        )
+    )]
     pub(crate) fn should_auto_consolidate(&self) -> bool {
         self.config.enabled
             && self.turns_since_focus >= self.config.auto_consolidate_min_window

@@ -28,7 +28,6 @@ pub enum PipelineError {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::ignored_unit_patterns, clippy::manual_string_new)]
     use std::assert_matches;
 
     use std::sync::Arc;
@@ -258,7 +257,10 @@ mod tests {
     async fn extract_step_type_mismatch() {
         #[derive(Debug, serde::Deserialize)]
         struct Strict {
-            #[expect(dead_code)]
+            #[expect(
+                dead_code,
+                reason = "The strict deserialization fixture includes a field absent from the input to verify extraction errors."
+            )]
             required_field: Vec<u32>,
         }
 

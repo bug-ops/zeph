@@ -34,11 +34,20 @@ pub(crate) const fn secs_to_ymdhms(secs: u64) -> (u32, u32, u32, u32, u32, u32) 
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     // All intermediate values are calendar-bounded (day ≤ 31, month ≤ 12, year ≤ ~u32::MAX/2).
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "d narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "mo narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let mo = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "y narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let y = if mo <= 2 { y + 1 } else { y } as u32;
     (y, mo, d, h, mi, s)
 }

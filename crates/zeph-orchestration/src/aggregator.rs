@@ -19,7 +19,10 @@ use super::error::OrchestrationError;
 use super::graph::{TaskGraph, TaskStatus};
 
 /// Collects results from completed tasks and produces a final synthesis.
-#[allow(async_fn_in_trait)]
+#[expect(
+    async_fn_in_trait,
+    reason = "Aggregator keeps this narrowly scoped lint exception at the item that requires it"
+)]
 pub trait Aggregator: Send + Sync {
     /// Synthesize a final response from completed task results in `graph`.
     ///

@@ -32,12 +32,18 @@ pub(crate) fn render(
         return;
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "n narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let n = active.len().min(3) as u16;
     let y_start = chat_area.y + chat_area.height.saturating_sub(n);
 
     for (i, toast) in active.iter().rev().take(3).enumerate() {
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "y narrows a value whose domain-specific range is bounded at this conversion site"
+        )]
         let y = y_start + i as u16;
         if y >= chat_area.y + chat_area.height {
             break;

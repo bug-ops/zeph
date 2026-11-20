@@ -99,7 +99,10 @@ impl<C: Channel> Agent<C> {
     /// not an omission; the `parts` slice passed in by the caller is untouched, so the in-memory
     /// `Message` already pushed via `push_message` keeps its `Image` parts for the current turn's
     /// provider request.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "persist_message_inner keeps ordered steps together because they share state and control flow"
+    )]
     async fn persist_message_inner(
         &mut self,
         role: Role,

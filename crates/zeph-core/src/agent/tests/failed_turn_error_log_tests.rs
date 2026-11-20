@@ -29,7 +29,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ErrorCounter {
 }
 
 #[tokio::test]
-#[allow(clippy::large_futures)]
 async fn process_user_message_claude_404_emits_exactly_one_error_event() {
     let errors = Arc::new(AtomicUsize::new(0));
     let subscriber = tracing_subscriber::registry().with(ErrorCounter(Arc::clone(&errors)));

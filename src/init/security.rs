@@ -30,7 +30,10 @@ pub(crate) fn sandbox_platform_support() -> (bool, &'static str) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "step_sandbox keeps ordered steps together because they share state and control flow"
+)]
 pub(super) fn step_sandbox(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== OS Subprocess Sandbox ==\n");
     println!(
@@ -223,7 +226,7 @@ fn prompt_risk_chain_window_turns() -> anyhow::Result<u64> {
 fn parse_daily_cap_dollars(s: &str) -> u32 {
     s.trim().parse::<f64>().map_or(2500, |dollars| {
         let cents = (dollars.max(0.0) * 100.0).round();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "step_security narrows a value whose domain-specific range is bounded at this conversion site; converts a value that is nonnegative by the domain invariant at this site")]
         {
             cents.min(f64::from(u32::MAX)) as u32
         }
@@ -533,7 +536,6 @@ pub(super) fn step_policy(state: &mut WizardState) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
 
     #[test]

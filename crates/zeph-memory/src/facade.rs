@@ -149,7 +149,10 @@ pub struct CompactionResult {
 // requirement on all implementors. `async_fn_in_trait` fires because auto-trait bounds
 // on the implicit future type cannot be declared without #[trait_variant::make], which
 // is deferred to Phase 2 when the trait becomes object-safe.
-#[allow(async_fn_in_trait)]
+#[expect(
+    async_fn_in_trait,
+    reason = "MemoryFacade keeps this narrowly scoped lint exception at the item that requires it"
+)]
 pub trait MemoryFacade: Send + Sync {
     /// Store a memory entry and return its ID.
     ///

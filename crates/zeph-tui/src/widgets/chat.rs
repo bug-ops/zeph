@@ -154,7 +154,11 @@ impl TranscriptHighlight<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 fn collect_message_lines_from(
     messages: &[crate::app::ChatMessage],
     truncation_info: Option<&str>,
@@ -474,7 +478,10 @@ fn highlight_span(
     out
 }
 
-#[allow(clippy::too_many_arguments)] // structured inputs; a Params struct would not reduce complexity
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)] // structured inputs; a Params struct would not reduce complexity
 fn render_message_lines(
     msg: &crate::app::ChatMessage,
     tool_expanded: bool,
@@ -824,7 +831,11 @@ const TOOL_OUTPUT_HEAD: usize = 2;
 /// Tail lines shown in Inline density after the ellipsis.
 const TOOL_OUTPUT_TAIL: usize = 2;
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "render_tool_message This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 fn render_tool_message(
     msg: &crate::app::ChatMessage,
     tool_expanded: bool,
@@ -1091,7 +1102,10 @@ impl<'t> MdRenderer<'t> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "push_event keeps ordered steps together because they share state and control flow"
+    )]
     fn push_event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(Tag::Heading { .. }) => {

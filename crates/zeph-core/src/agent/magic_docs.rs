@@ -185,7 +185,10 @@ impl<C: Channel> super::Agent<C> {
     ///
     /// Spawns a `tokio::task` that runs concurrently with the next user turn.
     /// No-op when `MagicDocs` is disabled, no docs are registered, or update is not due.
-    #[allow(clippy::too_many_lines)] // inline masked provider resolution (#5437) crosses the 100-line limit
+    #[expect(
+        clippy::too_many_lines,
+        reason = "maybe_update_magic_docs keeps ordered steps together because they share state and control flow"
+    )] // inline masked provider resolution (#5437) crosses the 100-line limit
     pub(super) fn maybe_update_magic_docs(&mut self) {
         let cfg = self.services.memory.subsystems.magic_docs_config.clone();
         if !cfg.enabled

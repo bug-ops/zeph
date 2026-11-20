@@ -217,7 +217,10 @@ fn render_text_area(app: &App, frame: &mut Frame, text_area: Rect, busy: bool) {
         // Cursor is not shown — the user cannot edit within the indicator display.
         let size_label = if ps.byte_len >= 1024 {
             // Integer KB with one decimal place; precision loss at >4 PB is acceptable.
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "kb uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             let kb = ps.byte_len as f64 / 1024.0;
             format!("{kb:.1} KB")
         } else {
@@ -265,7 +268,10 @@ pub(crate) fn caret_xy(app: &App, text_area: Rect, char_index: usize) -> (u16, u
     let input = app.input();
     let prefix = text_before_char(input, char_index);
     let last_line = prefix.rsplit('\n').next().unwrap_or(prefix);
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "cursor_x narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let cursor_x = text_area.x + last_line.width() as u16;
     let visible_lines = text_area.height;
     let cursor_line = u16::try_from(prefix.matches('\n').count()).unwrap_or(u16::MAX);

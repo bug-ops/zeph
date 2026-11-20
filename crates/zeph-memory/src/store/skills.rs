@@ -3,7 +3,6 @@
 
 use super::SqliteStore;
 use crate::error::MemoryError;
-#[allow(unused_imports)]
 use zeph_db::{begin_write, sql};
 
 /// Aggregated usage statistics for a single skill, returned by [`SqliteStore::load_skill_usage`].
@@ -309,7 +308,10 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the insert fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[tracing::instrument(skip_all, name = "memory.skills.save_skill_version")]
     pub async fn save_skill_version(
@@ -349,7 +351,10 @@ impl SqliteStore {
     ///
     /// Returns an error if the insert, deactivate, or activate queries fail. The transaction is
     /// rolled back automatically on error.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "save_and_activate_skill_version This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+    )]
     #[tracing::instrument(skip_all, name = "memory.skills.save_and_activate_skill_version")]
     pub async fn save_and_activate_skill_version(
         &self,
@@ -1105,7 +1110,10 @@ impl SqliteStore {
     ///
     /// Returns [`MemoryError`] on query failure.
     #[tracing::instrument(skip_all, name = "memory.skills.load_routing_head_weights")]
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "load_routing_head_weights keeps the existing concrete type visible at the boundary where it is consumed"
+    )]
     pub async fn load_routing_head_weights(
         &self,
     ) -> Result<Option<(i64, Vec<u8>, f64, i64)>, MemoryError> {

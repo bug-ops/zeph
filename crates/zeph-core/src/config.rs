@@ -133,7 +133,10 @@ impl SecretResolver for Config {
         self.resolve_secrets_masked(vault, None).await
     }
 
-    #[allow(clippy::too_many_lines)] // one branch per vault key, each 2-4 lines — flat by design
+    #[expect(
+        clippy::too_many_lines,
+        reason = "resolve_secrets_masked keeps ordered steps together because they share state and control flow"
+    )] // one branch per vault key, each 2-4 lines — flat by design
     async fn resolve_secrets_masked(
         &mut self,
         vault: &dyn VaultProvider,

@@ -49,7 +49,10 @@ impl CandleWhisperProvider {
     /// # Errors
     ///
     /// Returns `LlmError::ModelLoad` if downloading, hash verification, or loading fails.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "load isolates a narrowly scoped unsafe operation required by the platform API or test harness"
+    )]
     pub fn load(
         repo_id: &str,
         device: Option<Device>,
@@ -213,7 +216,10 @@ impl CandleWhisperProvider {
                 }
                 .into(),
             ),
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "transcribe uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+            )]
             duration_secs: Some(pcm.len() as f32 / m::SAMPLE_RATE as f32),
         })
     }
@@ -294,7 +300,10 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
 
         if channels > 1 {
             for chunk in samples.chunks(channels) {
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "avg uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+                )]
                 let avg = chunk.iter().sum::<f32>() / channels as f32;
                 pcm.push(avg);
             }
@@ -317,7 +326,10 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
     }
 
     // Resample to 16kHz if needed
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "target_rate narrows a value whose domain-specific range is bounded at this conversion site"
+    )]
     let target_rate = m::SAMPLE_RATE as u32;
     if sample_rate != target_rate {
         pcm = resample(&pcm, sample_rate, target_rate)?;

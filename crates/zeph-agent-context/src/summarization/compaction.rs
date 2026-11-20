@@ -43,7 +43,10 @@ use crate::state::{CompactionOutcome, ContextSummarizationView, ProbeOutcome};
 ///
 /// Returns [`ContextError`] if LLM summarization fails.
 #[tracing::instrument(name = "agent_context.compaction.compact_context", skip_all, err)]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "compact_context keeps ordered steps together because they share state and control flow"
+)]
 pub(crate) async fn compact_context(
     summ: &mut ContextSummarizationView<'_>,
     max_summary_tokens: Option<usize>,
@@ -363,7 +366,10 @@ fn tool_pair_partner(messages: &[Message], i: usize, compact_end: usize) -> Opti
 /// Drain the compaction range and reinsert the summary plus protected messages.
 ///
 /// Updates `*summ.cached_prompt_tokens` before returning (CONTRACT S3).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "finalize_compacted_messages This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 fn finalize_compacted_messages(
     summ: &mut ContextSummarizationView<'_>,
     compact_end: usize,

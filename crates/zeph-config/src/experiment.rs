@@ -369,7 +369,10 @@ fn default_command_max_handoffs() -> u32 {
 /// Configuration for the task orchestration subsystem (`[orchestration]` TOML section).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "OrchestrationConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct OrchestrationConfig {
     /// Enable the orchestration subsystem.
     pub enabled: bool,

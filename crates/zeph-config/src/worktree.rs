@@ -44,7 +44,10 @@ use serde::{Deserialize, Serialize};
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "WorktreeConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct WorktreeConfig {
     /// Enable per-subagent git worktrees. When `false`, no worktrees are created
     /// regardless of other settings.

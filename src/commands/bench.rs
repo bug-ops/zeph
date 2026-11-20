@@ -17,7 +17,6 @@ use zeph_bench::{
 };
 use zeph_core::config::SecretResolver as _;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_bench_command(
     cmd: &BenchCommand,
     config_path: Option<&std::path::Path>,
@@ -78,7 +77,10 @@ pub(crate) async fn handle_bench_command(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "handle_run_baseline This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn handle_run_baseline(
     dataset: &str,
     output: &std::path::Path,
@@ -216,7 +218,6 @@ async fn run_memory_off_pass(
     Ok((run, writer))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_memory_on_pass(
     dataset: &str,
     data_path: &std::path::Path,
@@ -369,7 +370,10 @@ fn handle_show(results: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "handle_run This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
+)]
 async fn handle_run(
     dataset: &str,
     output: &std::path::Path,

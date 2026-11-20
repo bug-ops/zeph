@@ -93,6 +93,25 @@ pub struct ContextBudget {
     pub(crate) graph_enabled: bool,
 }
 
+/// Inputs used to allocate one turn's context budget.
+#[derive(Clone, Copy)]
+pub struct BudgetAllocationInput<'a> {
+    /// System prompt whose tokens are deducted before slot allocation.
+    pub system_prompt: &'a str,
+    /// Skills prompt whose tokens are deducted before slot allocation.
+    pub skills_prompt: &'a str,
+    /// Token counter used for prompt strings.
+    pub token_counter: &'a dyn TokenCounting,
+    /// Whether graph facts receive a budget slot.
+    pub graph_enabled: bool,
+    /// Tokens reserved for the session digest.
+    pub digest_tokens: usize,
+    /// Whether allocation uses the memory-first strategy.
+    pub memory_first: bool,
+    /// Memory slot allocation mode.
+    pub mode: AllocationMode,
+}
+
 impl ContextBudget {
     /// Create a new budget with `max_tokens` capacity and `reserve_ratio` fraction reserved
     /// for the model response.
@@ -218,15 +237,15 @@ impl ContextBudget {
         digest_tokens: usize,
         memory_first: bool,
     ) -> BudgetAllocation {
-        self.allocate_with_mode(
+        self.allocate_with_mode(BudgetAllocationInput {
             system_prompt,
             skills_prompt,
-            tc,
+            token_counter: tc,
             graph_enabled,
             digest_tokens,
             memory_first,
-            AllocationMode::Replace,
-        )
+            mode: AllocationMode::Replace,
+        })
     }
 
     /// Like [`allocate_with_opts`](Self::allocate_with_opts) with an explicit [`AllocationMode`].
@@ -237,35 +256,41 @@ impl ContextBudget {
     /// # Examples
     ///
     /// ```no_run
-    /// use zeph_context::budget::{AllocationMode, ContextBudget};
+    /// use zeph_context::budget::{AllocationMode, BudgetAllocationInput, ContextBudget};
     /// # struct Tc;
     /// # impl zeph_common::memory::TokenCounting for Tc {
     /// #     fn count_tokens(&self, t: &str) -> usize { t.split_whitespace().count() }
     /// #     fn count_tool_schema_tokens(&self, v: &serde_json::Value) -> usize { v.to_string().len() }
     /// # }
     /// let budget = ContextBudget::new(100_000, 0.15);
-    /// let alloc = budget.allocate_with_mode(
-    ///     "", "", &Tc, false, 0, false, AllocationMode::Append { turn_cap: 5_000 },
-    /// );
+    /// let alloc = budget.allocate_with_mode(BudgetAllocationInput {
+    ///     system_prompt: "",
+    ///     skills_prompt: "",
+    ///     token_counter: &Tc,
+    ///     graph_enabled: false,
+    ///     digest_tokens: 0,
+    ///     memory_first: false,
+    ///     mode: AllocationMode::Append { turn_cap: 5_000 },
+    /// });
     /// assert!(alloc.summaries + alloc.semantic_recall + alloc.cross_session + alloc.code_context <= 5_000);
     /// ```
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::too_many_arguments
+        reason = "The slot ratios intentionally use floating-point shares; input and output ranges are bounded by the context window."
     )]
-    pub fn allocate_with_mode(
-        &self,
-        system_prompt: &str,
-        skills_prompt: &str,
-        tc: &dyn TokenCounting,
-        graph_enabled: bool,
-        digest_tokens: usize,
-        memory_first: bool,
-        mode: AllocationMode,
-    ) -> BudgetAllocation {
+    pub fn allocate_with_mode(&self, input: BudgetAllocationInput<'_>) -> BudgetAllocation {
+        let BudgetAllocationInput {
+            system_prompt,
+            skills_prompt,
+            token_counter: tc,
+            graph_enabled,
+            digest_tokens,
+            memory_first,
+            mode,
+        } = input;
         if self.max_tokens == 0 {
             return BudgetAllocation {
                 system_prompt: 0,
@@ -371,7 +396,11 @@ impl ContextBudget {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #![expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "The fixture value is bounded to the target field width."
+    )]
 
     use super::*;
 
@@ -439,15 +468,15 @@ mod tests {
     fn append_mode_caps_memory_slots_and_gives_history_the_rest() {
         let tc = NaiveTc;
         let budget = ContextBudget::new(10_000, 0.20).with_graph_enabled(true);
-        let alloc = budget.allocate_with_mode(
-            "",
-            "",
-            &tc,
-            true,
-            0,
-            false,
-            AllocationMode::Append { turn_cap: 500 },
-        );
+        let alloc = budget.allocate_with_mode(BudgetAllocationInput {
+            system_prompt: "",
+            skills_prompt: "",
+            token_counter: &tc,
+            graph_enabled: true,
+            digest_tokens: 0,
+            memory_first: false,
+            mode: AllocationMode::Append { turn_cap: 500 },
+        });
         let memory = alloc.summaries
             + alloc.semantic_recall
             + alloc.cross_session
@@ -463,15 +492,15 @@ mod tests {
     fn append_mode_cap_is_clamped_to_available_tokens() {
         let tc = NaiveTc;
         let budget = ContextBudget::new(1_000, 0.20);
-        let alloc = budget.allocate_with_mode(
-            "",
-            "",
-            &tc,
-            false,
-            0,
-            false,
-            AllocationMode::Append { turn_cap: 50_000 },
-        );
+        let alloc = budget.allocate_with_mode(BudgetAllocationInput {
+            system_prompt: "",
+            skills_prompt: "",
+            token_counter: &tc,
+            graph_enabled: false,
+            digest_tokens: 0,
+            memory_first: false,
+            mode: AllocationMode::Append { turn_cap: 50_000 },
+        });
         assert_eq!(alloc.recent_history, 0);
         assert!(alloc.code_context <= 800);
     }
@@ -481,15 +510,15 @@ mod tests {
         let tc = NaiveTc;
         let budget = ContextBudget::new(10_000, 0.20);
         let legacy = budget.allocate_with_opts("", "", &tc, false, 0, true);
-        let append = budget.allocate_with_mode(
-            "",
-            "",
-            &tc,
-            false,
-            0,
-            true,
-            AllocationMode::Append { turn_cap: 100 },
-        );
+        let append = budget.allocate_with_mode(BudgetAllocationInput {
+            system_prompt: "",
+            skills_prompt: "",
+            token_counter: &tc,
+            graph_enabled: false,
+            digest_tokens: 0,
+            memory_first: true,
+            mode: AllocationMode::Append { turn_cap: 100 },
+        });
         assert_eq!(legacy.summaries, append.summaries);
         assert_eq!(append.recent_history, 0);
     }

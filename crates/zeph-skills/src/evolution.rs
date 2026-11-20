@@ -204,7 +204,10 @@ impl SkillMetrics {
     /// Prefer [`crate::trust_score::posterior_weight`] for ranking decisions — it applies
     /// a Wilson-score confidence penalty that is more conservative for small sample sizes.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "success_rate uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+    )]
     pub fn success_rate(&self) -> f64 {
         if self.total == 0 {
             0.0
@@ -314,7 +317,6 @@ or a transient issue like network timeout, rate limit, etc. (should_improve: fal
 Respond in JSON with fields: should_improve (bool), issues (list of strings), severity (\"low\", \"medium\", or \"high\").";
 
 #[must_use]
-#[allow(clippy::cast_precision_loss)]
 pub fn build_evaluation_prompt(
     name: &str,
     body: &str,

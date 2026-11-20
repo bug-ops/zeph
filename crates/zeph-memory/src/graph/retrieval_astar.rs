@@ -97,7 +97,11 @@ pub(crate) fn cap_node_map<V>(
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "graph_recall_astar This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
+)]
 // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 #[tracing::instrument(skip_all, name = "memory.graph.astar", fields(query_len = query.len()))]
 pub async fn graph_recall_astar(

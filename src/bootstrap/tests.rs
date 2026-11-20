@@ -2,8 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // std::env::set_var / remove_var are unsafe in Rust 2024 edition; all callers are #[serial].
-#![allow(unsafe_code)]
-#![allow(clippy::default_trait_access)]
+#![expect(
+    unsafe_code,
+    reason = "The test isolates the unsafe operation required by the Rust 2024 or platform API."
+)]
+#![expect(
+    clippy::default_trait_access,
+    reason = "The explicit default keeps the fixture type clear."
+)]
 
 use std::assert_matches;
 use std::path::{Path, PathBuf};

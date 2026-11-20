@@ -367,7 +367,10 @@ impl Default for RegistryConfig {
 /// hybrid_search = true
 /// subagent_skill_token_budget = 12000
 /// ```
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "SkillsConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SkillsConfig {
     /// Directories to scan for `*.skill.md` / `SKILL.md` files.
@@ -823,7 +826,10 @@ fn default_mining_generation_timeout_ms() -> u64 {
 /// score_threshold = 0.25
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "IndexConfig These independent flags belong to the same configuration or state object and are set or read together"
+)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct IndexConfig {
     /// Enable code indexing. Default: `false`.
     #[serde(default)]

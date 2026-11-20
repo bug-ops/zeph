@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 use zeph_db::ActiveDialect;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use super::SqliteStore;

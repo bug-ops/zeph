@@ -25,7 +25,13 @@ impl<C: Channel> Agent<C> {
     /// Batch-apply all pending deferred tool pair summaries.
     ///
     /// Returns the number of summaries applied.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "apply_deferred_summaries is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )
+    )]
     pub(in crate::agent) fn apply_deferred_summaries(&mut self) -> usize {
         let svc = zeph_agent_context::ContextService::new();
         let mut summ = self.summarization_view();

@@ -1704,7 +1704,7 @@ impl<'a> AgentVisible<'a> {
     }
 
     /// Iterate over the visible messages in order.
-    #[allow(clippy::must_use_candidate)]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'a Message> + '_ {
         self.0.iter().copied()
     }
@@ -2337,7 +2337,10 @@ pub trait LlmProvider: Send + Sync {
 
     /// Model identifier string (e.g. `gpt-4o-mini`, `claude-sonnet-5`).
     /// Used by cost-estimation heuristics. Returns `""` when not applicable.
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "model_identifier keeps the bound in the signature to match the surrounding trait or call contract"
+    )]
     fn model_identifier(&self) -> &str {
         ""
     }
@@ -3302,7 +3305,10 @@ mod tests {
             None
         }
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "chat implements the trait-required async signature while completing synchronously"
+        )]
         async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {

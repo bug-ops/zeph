@@ -106,9 +106,15 @@ impl SqliteStore {
         for r in records {
             let conversation_id = r.conversation_id.map(|c| c.0);
             let failure_type = r.failure_type.as_str();
-            #[allow(clippy::cast_possible_wrap)]
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "query_len converts a value bounded to the destination range by the domain invariant"
+            )]
             let query_len = r.query_len as i64;
-            #[allow(clippy::cast_possible_wrap)]
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "result_count converts a value bounded to the destination range by the domain invariant"
+            )]
             let result_count = r.result_count as i64;
             let latency_ms = r.latency_ms.cast_signed();
             zeph_db::query(sql!(

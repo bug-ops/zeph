@@ -80,14 +80,18 @@ impl ScrollAnim {
         if elapsed >= SCROLL_ANIM_TICKS {
             return (self.to, true);
         }
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "t uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
+        )]
         let t = elapsed as f32 / SCROLL_ANIM_TICKS as f32;
         // Ease-out cubic: 1 - (1-t)^3
         let eased = 1.0_f32 - (1.0 - t).powi(3);
-        #[allow(
+        #[expect(
             clippy::cast_sign_loss,
             clippy::cast_possible_truncation,
-            clippy::cast_precision_loss
+            clippy::cast_precision_loss,
+            reason = "offset converts a value that is nonnegative by the domain invariant at this site; narrows a value whose domain-specific range is bounded at this conversion site"
         )]
         let offset = if self.from <= self.to {
             let delta = self.to - self.from;
@@ -121,9 +125,18 @@ impl SlotId {
 /// stay on `App` because they belong to the single shared agent process.
 pub(crate) struct SessionSlot {
     // id and label are used by the tab bar in phase-2; present now so SessionNew can set them.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Session tabs will use the slot identifier when the session command is wired"
+    )]
     pub id: SlotId,
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "this item is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )
+    )]
     pub label: String,
 
     // Chat / transcript state
@@ -221,7 +234,13 @@ pub(crate) struct SessionRegistry {
     slots: indexmap::IndexMap<SlotId, SessionSlot>,
     active: SlotId,
     // next_id is used by create() which is called by tests and will be used by SessionNew in phase-2.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "bootstrap is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )
+    )]
     next_id: u64,
 }
 
@@ -244,7 +263,13 @@ impl SessionRegistry {
     }
 
     /// Number of open slots.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "len is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )
+    )]
     pub fn len(&self) -> usize {
         self.slots.len()
     }
@@ -273,7 +298,10 @@ impl SessionRegistry {
     }
 
     /// Iterate over all slots in insertion order.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "iter is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     pub fn iter(&self) -> impl Iterator<Item = (&SlotId, &SessionSlot)> {
         self.slots.iter()
     }
@@ -331,7 +359,13 @@ impl SessionRegistry {
     /// Create a new slot and return its id.
     ///
     /// Not exposed as a user command in phase-1; exists for unit tests and phase-2.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "create is reached through feature-gated or generated integration paths rather than direct Rust calls"
+        )
+    )]
     pub(crate) fn create(&mut self, label: impl Into<String>) -> SlotId {
         let id = SlotId(self.next_id);
         self.next_id += 1;

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::sync::Arc;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 use std::sync::atomic::Ordering;
@@ -703,7 +702,10 @@ struct EdgeInsertCounts {
 /// Insert extracted edges that have both endpoints in `name_to_id`.
 ///
 /// Returns how many edges were inserted and how many failed to persist.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "insert_edges keeps ordered steps together because they share state and control flow"
+)]
 async fn insert_edges(
     resolver: &crate::graph::EntityResolver<'_>,
     edges: &[crate::graph::extractor::ExtractedEdge],
@@ -1232,7 +1234,10 @@ enum DocOutcome {
 }
 
 impl SemanticMemory {
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item keeps ordered steps together because they share state and control flow"
+    )]
     /// Extract graph entities and edges from a batch of pre-validated documents.
     ///
     /// This is the Phase-2 graph-sink entry point for `zeph knowledge ingest` (spec-067

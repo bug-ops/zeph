@@ -6,7 +6,6 @@ use zeph_core::config::{McpOAuthConfig, McpServerConfig, McpTrustLevel, OAuthTok
 
 use super::WizardState;
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn step_mcpls(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== MCP: LSP Code Intelligence ==\n");
 
@@ -99,7 +98,10 @@ file_patterns = ["**/*.rs"]
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The remote MCP wizard validates and writes each server's auth settings in one interactive sequence."
+)]
 pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== MCP: Remote Servers ==\n");
     println!(
@@ -260,7 +262,6 @@ pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn step_mcp_discovery(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== MCP: Tool Discovery ==\n");
     println!("Controls how MCP tools are selected per turn when you have many tools configured.");

@@ -12,7 +12,10 @@ use crate::theme::Theme;
 // 48 data rows + 1 header row + 2 border lines
 const POPUP_HEIGHT: u16 = 51;
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "render keeps ordered steps together because they share state and control flow"
+)]
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
     let popup = centered_rect(70, POPUP_HEIGHT, area);
     frame.render_widget(Clear, popup);

@@ -7,7 +7,6 @@ use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
 use zeph_common::secret_redact::scrub_secrets;
-#[allow(unused_imports)]
 use zeph_db::sql;
 
 /// A distilled session digest: key facts and outcomes for a single conversation.

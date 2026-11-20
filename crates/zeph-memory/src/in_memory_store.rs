@@ -188,7 +188,10 @@ impl VectorStore for InMemoryVectorStore {
                     .partial_cmp(&a.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            #[expect(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "The vector result limit is bounded by the in-memory collection length."
+            )]
             scored.truncate(limit as usize);
             Ok(scored)
         })

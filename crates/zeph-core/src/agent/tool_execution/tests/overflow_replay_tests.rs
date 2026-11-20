@@ -4,7 +4,10 @@
 //! A body stored by overflow or archive and replayed by `read_overflow` re-enters context with
 //! the classification recorded when it was stored.
 
-#![allow(clippy::large_futures)]
+#![expect(
+    clippy::large_futures,
+    reason = "The test exercises the concrete async path without boxing its future."
+)]
 
 use std::assert_matches;
 use std::sync::Arc;

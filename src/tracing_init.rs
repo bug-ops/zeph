@@ -12,8 +12,6 @@ use zeph_core::config::{LogRotation, LoggingConfig, TelemetryConfig};
 ///
 /// Dropping any guard flushes and closes the corresponding writer.
 /// Pass this struct to the top-level `run()` and hold it until the process exits.
-// All fields intentionally share the `_guard` postfix to reflect their shared purpose.
-#[allow(clippy::struct_field_names)]
 pub(crate) struct TracingGuards {
     /// Async file-writer guard for the rolling log file, held in a shared take-once cell.
     /// `None` when file logging is disabled.
@@ -39,7 +37,10 @@ pub(crate) struct TracingGuards {
     /// telemetry is disabled, or no endpoint is configured.
     /// Dropping this guard signals the background push task to stop.
     #[cfg(feature = "profiling-pyroscope")]
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "this item is reached through feature-gated or generated integration paths rather than direct Rust calls"
+    )]
     pub(crate) pyroscope_guard: Option<crate::pyroscope_push::PyroscopeGuard>,
     /// OTLP tracer provider shutdown handle. `None` when the `otel` feature is absent or
     /// telemetry backend is not `Otlp`. Dropping this guard flushes the `BatchSpanProcessor`
@@ -202,7 +203,10 @@ fn resolve_log_path(
 /// unconditionally, plus the local Chrome trace writer when the `profiling` feature is enabled)
 /// race and beat that path's graceful drain with a hard exit — this is exactly critic finding
 /// C1 for #6683, and the same hazard applies to the file-log writer (#6693).
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Tracing initialization configures the subscriber, optional writers, filters, and exporter layers as one startup transaction."
+)]
 pub(crate) fn init_tracing(
     logging: &LoggingConfig,
     runtime_ctx: zeph_core::RuntimeContext,
@@ -847,7 +851,6 @@ fn filter_trace_metadata(
 ///
 /// Does not panic. OTLP pipeline errors are logged via `tracing::warn!` and `None` is returned.
 #[cfg(feature = "otel")]
-#[allow(clippy::too_many_lines)]
 fn build_otlp_layer(
     telemetry: &TelemetryConfig,
     layers: &mut Vec<
