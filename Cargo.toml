@@ -296,7 +296,7 @@ profiling-pyroscope = ["profiling", "otel", "dep:pprof"]
 # For the equivalent explicit sqlite build:
 #   cargo build --no-default-features --features full,sqlite
 # Or simply `cargo build --features full` to rely on the default sqlite backend.
-gonka = ["zeph-llm/gonka", "zeph-core/gonka"]
+gonka = ["zeph-llm/gonka", "zeph-core/gonka", "zeph-acp?/gonka"]
 index = ["zeph-core/index"]
 sqlite = [
     "zeph-db/sqlite",

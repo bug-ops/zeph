@@ -674,6 +674,13 @@ async fn drain_until_stop_collects_text_chunks() {
 /// `session/update` notification handler (mirroring the ACP client examples' pattern) so it can
 /// assert on content actually delivered over the wire, not just on `PromptResponse.stop_reason`.
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    feature = "acp-http",
+    expect(
+        clippy::large_futures,
+        reason = "The round-trip test intentionally runs its local ACP server and client in one future."
+    )
+)]
 async fn review_command_output_is_delivered_to_client() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1058,6 +1065,13 @@ async fn close_session_removes_session_from_memory() {
 /// configured, permanently removes the persisted row too — a deleted session must never
 /// resurrect via `session/load`/`session/resume` (#6271).
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    feature = "acp-http",
+    expect(
+        clippy::large_futures,
+        reason = "The test drives the session deletion flow as one local ACP future."
+    )
+)]
 async fn delete_session_removes_session_from_list() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1139,6 +1153,13 @@ async fn delete_session_removes_session_from_list() {
 /// task left running past the close can never keep emitting events/notifications under a
 /// `SessionId` that may be reused by a later `session/load`/`session/resume` (#6674).
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    feature = "acp-http",
+    expect(
+        clippy::large_futures,
+        reason = "The test drives the session close flow as one local ACP future."
+    )
+)]
 async fn close_session_aborts_agent_loop_task() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1197,6 +1218,13 @@ async fn close_session_aborts_agent_loop_task() {
 
 /// Same guarantee as `close_session_aborts_agent_loop_task`, for `session/delete` (#6674).
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    feature = "acp-http",
+    expect(
+        clippy::large_futures,
+        reason = "The test drives the session deletion flow as one local ACP future."
+    )
+)]
 async fn delete_session_aborts_agent_loop_task() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1317,6 +1345,13 @@ async fn fork_session_creates_distinct_session_id() {
 /// `ForkEngine::fork` wiring under test without needing the full agent-loop integration.
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    feature = "acp-http",
+    expect(
+        clippy::large_futures,
+        reason = "The test drives session forking and persistence as one local ACP future."
+    )
+)]
 async fn fork_session_copies_event_log_when_persistence_enabled() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1490,6 +1525,13 @@ async fn resume_session_reconnects_to_existing_session() {
 /// `resume_session_reconnects_to_existing_session`. A follow-up `session/prompt` on the
 /// resumed session proves the reconstructed entry is actually wired up and functional.
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    feature = "acp-http",
+    expect(
+        clippy::large_futures,
+        reason = "The test drives session reconstruction from persistence as one local ACP future."
+    )
+)]
 async fn resume_session_reconstructs_from_store_after_restart() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2330,6 +2372,10 @@ async fn create_owned_session(
 /// created by one connection's owner must not appear in a different owner's list, even when
 /// both connections share the same `sqlite_path`.
 #[tokio::test(flavor = "current_thread")]
+#[expect(
+    clippy::large_futures,
+    reason = "The owner-isolation test exercises multiple local ACP sessions in one future."
+)]
 async fn list_sessions_isolated_by_owner_across_stdio_connections() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2569,6 +2615,13 @@ async fn load_session_cross_owner_fails() {
 /// `delete_session_cross_owner_returns_404_and_does_not_delete` — this is the missing
 /// coverage for the `do_delete_session` ACP handler itself) (#6271).
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    feature = "acp-http",
+    expect(
+        clippy::large_futures,
+        reason = "The test drives the cross-owner deletion flow as one local ACP future."
+    )
+)]
 async fn delete_session_cross_owner_fails() {
     let local = tokio::task::LocalSet::new();
     local

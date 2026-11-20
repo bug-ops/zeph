@@ -10,6 +10,13 @@ use agent_client_protocol as acp;
 use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/resume` request.
+#[cfg_attr(
+    feature = "gonka",
+    expect(
+        clippy::large_futures,
+        reason = "Gonka provider state increases the resume handler future size beyond the lint threshold."
+    )
+)]
 pub(crate) async fn handle_resume_session(
     req: acp::v1::schema::ResumeSessionRequest,
     responder: acp::v1::Responder<acp::v1::schema::ResumeSessionResponse>,
