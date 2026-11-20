@@ -7,8 +7,6 @@
 //! Bounded by `max_in_flight`; oldest handle (by `started_at`) is evicted and cancelled
 //! when the bound is exceeded.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

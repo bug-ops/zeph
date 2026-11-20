@@ -18,8 +18,6 @@
 //! score         = freq_norm * wilson_low
 //! ```
 
-#![allow(dead_code)]
-
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

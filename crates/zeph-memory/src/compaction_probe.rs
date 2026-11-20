@@ -130,8 +130,7 @@ fn compute_category_scores(
             CategoryScore {
                 category,
                 score: avg,
-                #[allow(clippy::cast_possible_truncation)]
-                probes_run: scores.len() as u32,
+                probes_run: u32::try_from(scores.len()).unwrap_or(u32::MAX),
             }
         })
         .collect();

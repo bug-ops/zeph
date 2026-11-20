@@ -26,8 +26,6 @@
 //! - **No allocation on malformed input**: `Malformed` is returned immediately when
 //!   a structural invariant is violated; the buffer is not reallocated.
 
-#![allow(dead_code)]
-
 use serde_json::Map;
 
 #[non_exhaustive]
@@ -46,16 +44,6 @@ pub enum PrefixState {
     },
     /// The buffer contains a sequence that cannot be a valid JSON object prefix.
     Malformed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ctx {
-    TopObject,
-    InKey,
-    AfterKey,
-    InValue,
-    InStringValue,
-    InNestedValue { depth: u32 },
 }
 
 /// Streaming structural parser for partial Anthropic SSE tool-input JSON.

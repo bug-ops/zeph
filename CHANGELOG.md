@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `zeph-a2a`, `zeph-gateway`, `zeph-acp`, `zeph-mcp`, `zeph-channels`, `zeph-tools`: begin the #7150 rollout by warning on `#[allow]`, replacing active suppressions with reasoned `#[expect]` attributes, deleting stale expectations, and saturating block-count and duration conversions.
+- `zeph-core`, `zeph-bench`: remove the five module-level `dead_code` suppressions; delete an obsolete speculative JSON parser context enum that had no users.
+- `zeph-core`, `zeph-context`: group tool-failure and context-fetch scheduling inputs in context types, removing two `too_many_arguments` suppressions.
+- `zeph-context`, `zeph-memory`: saturate token-count and probe-count conversions instead of narrowing casts.
 
 ## [0.24.0] - 2026-11-16
 
