@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![expect(
-    clippy::large_futures,
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "The test exercises the concrete async path without boxing its future.; Fixture construction failures should fail the test immediately."
 )]
 #![recursion_limit = "256"]

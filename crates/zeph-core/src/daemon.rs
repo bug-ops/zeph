@@ -319,10 +319,6 @@ fn expand_tilde(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::field_reassign_with_default,
-        reason = "The fixture overrides selected fields while retaining the other default values."
-    )]
     use std::assert_matches;
 
     use super::*;

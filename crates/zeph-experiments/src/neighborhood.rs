@@ -119,10 +119,7 @@ impl VariationGenerator for Neighborhood {
 #[cfg(test)]
 mod tests {
     #![expect(
-        clippy::collapsible_if,
         clippy::field_reassign_with_default,
-        clippy::manual_midpoint,
-        clippy::manual_range_contains,
         reason = "The asymmetric branch boundaries are part of this domain rule.; The fixture overrides selected fields while retaining the other default values."
     )]
 

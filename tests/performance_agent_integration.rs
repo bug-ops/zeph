@@ -4,10 +4,6 @@
     reason = "The fixture value is bounded to the target field width.; Floating-point precision is not part of this test fixture contract."
 )]
 // Integration tests await full agent sessions; the future size reflects real agent state.
-#![expect(
-    clippy::large_futures,
-    reason = "The test exercises the concrete async path without boxing its future."
-)]
 // Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
 #![recursion_limit = "256"]
 

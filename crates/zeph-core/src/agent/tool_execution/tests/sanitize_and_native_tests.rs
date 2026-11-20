@@ -1055,10 +1055,6 @@ async fn scan_output_exfiltration_block_emits_security_event() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "native_tool_use_response_cache_hit_skips_llm_call keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn native_tool_use_response_cache_hit_skips_llm_call() {
     use crate::agent::agent_tests::*;
     use std::sync::Arc;
@@ -1122,10 +1118,6 @@ async fn native_tool_use_response_cache_hit_skips_llm_call() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "native_tool_use_cache_stores_only_text_responses keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn native_tool_use_cache_stores_only_text_responses() {
     use crate::agent::agent_tests::*;
     use std::sync::Arc;
@@ -1221,10 +1213,6 @@ async fn native_tool_use_cache_stores_only_text_responses() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "native_tool_use_cache_key_stable_across_growing_history keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn native_tool_use_cache_key_stable_across_growing_history() {
     use crate::agent::agent_tests::*;
     use std::sync::Arc;
@@ -1286,10 +1274,6 @@ async fn native_tool_use_cache_key_stable_across_growing_history() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "native_tool_use_cache_skipped_when_no_user_message keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn native_tool_use_cache_skipped_when_no_user_message() {
     use crate::agent::agent_tests::*;
     use std::sync::Arc;
@@ -1726,10 +1710,6 @@ async fn nli_and_secret_masking_are_independently_toggleable() {
 /// `process_single_native_turn()` path (not a hand-constructed message history), so this test
 /// only passes if the production code actually detects on the `ToolResult` push.
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "magic_doc_registered_after_single_read_then_respond_turn keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn magic_doc_registered_after_single_read_then_respond_turn() {
     use crate::agent::agent_tests::*;
     use zeph_llm::any::AnyProvider;
@@ -1805,10 +1785,6 @@ async fn magic_doc_registered_after_single_read_then_respond_turn() {
 /// cache hit), yet the doc must still be registered — proving the `CacheCheckResult::Hit` arm's
 /// terminal push also goes through `push_message()`.
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "magic_doc_registered_on_semantic_cache_hit_branch keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn magic_doc_registered_on_semantic_cache_hit_branch() {
     use crate::agent::agent_tests::*;
     use std::sync::Arc;
@@ -1908,10 +1884,6 @@ async fn magic_doc_registered_on_semantic_cache_hit_branch() {
 /// which covers this exit path (and the other three) uniformly with no `tier_loop.rs` change
 /// required for them specifically.
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "magic_doc_registered_when_tool_result_is_final_message_of_max_iterations_exit keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn magic_doc_registered_when_tool_result_is_final_message_of_max_iterations_exit() {
     use crate::agent::agent_tests::*;
     use zeph_llm::any::AnyProvider;
@@ -2003,10 +1975,6 @@ async fn magic_doc_registered_when_tool_result_is_final_message_of_max_iteration
 /// not even the always-on `compress_context` tool, which is otherwise pushed unconditionally
 /// whenever the gate is open.
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "tools_disabled_gate_sends_no_tool_definitions_to_llm keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn tools_disabled_gate_sends_no_tool_definitions_to_llm() {
     use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry};
     use zeph_llm::any::AnyProvider;
@@ -2051,10 +2019,6 @@ async fn tools_disabled_gate_sends_no_tool_definitions_to_llm() {
 /// proving the gate condition isn't inverted and doesn't regress the always-on
 /// `compress_context` tool for the common case.
 #[tokio::test]
-#[expect(
-    clippy::large_futures,
-    reason = "tools_enabled_baseline_sends_tool_definitions_to_llm keeps the composed async path concrete to preserve static dispatch without adding boxing"
-)]
 async fn tools_enabled_baseline_sends_tool_definitions_to_llm() {
     use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry};
     use zeph_llm::any::AnyProvider;

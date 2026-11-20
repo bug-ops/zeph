@@ -4,10 +4,6 @@
 #[cfg(test)]
 mod tests {
     use super::super::Agent;
-    #[expect(
-        clippy::wildcard_imports,
-        reason = "test_repo_map_populated_without_retriever groups a cohesive internal module surface used throughout this implementation"
-    )]
     use crate::agent::agent_tests::*;
 
     /// GAP-1554-A: repo map fields are populated even when retriever is None.

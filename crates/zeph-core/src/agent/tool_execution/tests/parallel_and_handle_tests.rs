@@ -715,10 +715,6 @@ fn inject_active_skill_env_maps_secret_name_to_env_key() {
 #[tokio::test]
 async fn inject_active_skill_env_injects_only_active_skill_secrets() {
     use crate::agent::Agent;
-    #[expect(
-        clippy::wildcard_imports,
-        reason = "provider groups a cohesive internal module surface used throughout this implementation"
-    )]
     use crate::agent::agent_tests::*;
     use crate::vault::Secret;
     use zeph_skills::registry::SkillRegistry;
@@ -752,10 +748,6 @@ async fn inject_active_skill_env_injects_only_active_skill_secrets() {
 #[test]
 fn inject_active_skill_env_calls_set_skill_env_with_correct_map() {
     use crate::agent::Agent;
-    #[expect(
-        clippy::wildcard_imports,
-        reason = "temp_dir groups a cohesive internal module surface used throughout this implementation"
-    )]
     use crate::agent::agent_tests::*;
     use crate::vault::Secret;
     use std::sync::Arc;
@@ -801,10 +793,6 @@ fn inject_active_skill_env_calls_set_skill_env_with_correct_map() {
 #[test]
 fn inject_active_skill_env_clears_after_call() {
     use crate::agent::Agent;
-    #[expect(
-        clippy::wildcard_imports,
-        reason = "temp_dir groups a cohesive internal module surface used throughout this implementation"
-    )]
     use crate::agent::agent_tests::*;
     use crate::vault::Secret;
     use std::sync::Arc;

@@ -149,11 +149,6 @@ pub fn default_vault_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::doc_markdown,
-        reason = "The documentation uses established project terminology."
-    )]
-
     use super::*;
 
     #[test]

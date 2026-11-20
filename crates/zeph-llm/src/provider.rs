@@ -1704,6 +1704,7 @@ impl<'a> AgentVisible<'a> {
     }
 
     /// Iterate over the visible messages in order.
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'a Message> + '_ {
         self.0.iter().copied()
     }

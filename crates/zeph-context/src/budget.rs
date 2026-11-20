@@ -256,7 +256,7 @@ impl ContextBudget {
     /// # Examples
     ///
     /// ```no_run
-    /// use zeph_context::budget::{AllocationMode, ContextBudget};
+    /// use zeph_context::budget::{AllocationMode, BudgetAllocationInput, ContextBudget};
     /// # struct Tc;
     /// # impl zeph_common::memory::TokenCounting for Tc {
     /// #     fn count_tokens(&self, t: &str) -> usize { t.split_whitespace().count() }

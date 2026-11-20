@@ -648,10 +648,6 @@ fn glob_match(pattern: &GlobPattern, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::default_trait_access,
-        reason = "The explicit default keeps the fixture type clear."
-    )]
     use std::assert_matches;
 
     use super::*;

@@ -3301,10 +3301,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::default_trait_access,
-        reason = "with_compression_sets_proactive_strategy uses the concrete type name to keep the default value unambiguous"
-    )]
     fn with_compression_sets_proactive_strategy() {
         let compression = CompressionConfig {
             strategy: CompressionStrategy::Proactive {

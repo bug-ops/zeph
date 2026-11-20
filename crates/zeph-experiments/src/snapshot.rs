@@ -251,7 +251,6 @@ impl ConfigSnapshot {
 mod tests {
     #![expect(
         clippy::field_reassign_with_default,
-        clippy::semicolon_if_nothing_returned,
         clippy::type_complexity,
         reason = "The fixture overrides selected fields while retaining the other default values."
     )]

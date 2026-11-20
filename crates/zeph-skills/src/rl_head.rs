@@ -115,7 +115,8 @@ impl RoutingHeadInner {
         success_rate: f32,
         use_count: u32,
     ) -> f32 {
-        let mut input = Vec::with_capacity(self.input_dim());
+        let input_dim = self.input_dim();
+        let mut input = Vec::with_capacity(input_dim);
         input.extend_from_slice(query_embed);
         input.extend_from_slice(skill_embed);
         input.push(cosine_score);
@@ -128,19 +129,19 @@ impl RoutingHeadInner {
 
         // Hidden layer: h = relu(w1 @ input + b1)
         let mut pre_relu = vec![0.0f32; self.hidden_dim];
-        for i in 0..self.hidden_dim {
+        for (i, value) in pre_relu.iter_mut().enumerate() {
             let mut acc = self.b1[i];
-            for j in 0..self.input_dim() {
-                acc += self.w1[i * self.input_dim() + j] * input[j];
+            for (j, feature) in input[..input_dim].iter().enumerate() {
+                acc += self.w1[i * input_dim + j] * feature;
             }
-            pre_relu[i] = acc;
+            *value = acc;
         }
         let hidden: Vec<f32> = pre_relu.iter().map(|&x| x.max(0.0)).collect();
 
         // Output layer: score = sigmoid(w2 @ hidden + b2)
         let mut logit = self.b2;
-        for i in 0..self.hidden_dim {
-            logit += self.w2[i] * hidden[i];
+        for (i, activation) in hidden.iter().enumerate() {
+            logit += self.w2[i] * activation;
         }
         let score = sigmoid(logit);
 

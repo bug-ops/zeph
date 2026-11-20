@@ -160,6 +160,13 @@ impl TuiChannel {
     }
 }
 
+#[cfg_attr(
+    not(feature = "profiling"),
+    expect(
+        clippy::unused_async_trait_impl,
+        reason = "The Channel interface is async, and display-only updates enqueue TUI events without waiting."
+    )
+)]
 impl Channel for TuiChannel {
     fn ask_user_support(&self) -> zeph_core::channel::AskUserSupport {
         zeph_core::channel::AskUserSupport::Interactive

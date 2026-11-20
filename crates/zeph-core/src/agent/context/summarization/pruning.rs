@@ -133,10 +133,6 @@ impl<C: Channel> Agent<C> {
     /// This is the non-dispatching inner implementation. Called directly by the dispatcher
     /// when strategy is `Reactive` and by scored strategies as their fallback — the latter
     /// avoids the infinite recursion that would occur if they called `prune_tool_outputs`.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "prune_tool_outputs_oldest_first uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
-    )]
     pub(super) fn prune_tool_outputs_oldest_first(&mut self, min_to_free: usize) -> usize {
         let protect = self.context_manager.prune_protect_tokens;
         let mut tail_tokens = 0usize;

@@ -4629,10 +4629,6 @@ mod tests {
         > + Send {
             std::future::ready(Ok(None))
         }
-        #[expect(
-            clippy::unused_async_trait_impl,
-            reason = "execute_tool_call implements the trait-required async signature while completing synchronously"
-        )]
         async fn execute_tool_call(
             &self,
             call: &zeph_tools::ToolCall,
@@ -5673,10 +5669,6 @@ mod tests {
         ),
     );
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "acp_test_params keeps ordered steps together because they share state and control flow"
-    )] // exhaustive BuildAcpAgentParams literal — one field per line
     fn acp_test_params(
         config: &zeph_core::config::Config,
         matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,

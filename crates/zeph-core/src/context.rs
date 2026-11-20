@@ -246,12 +246,6 @@ impl EnvironmentContext {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::single_match,
-        reason = "The fixture value is bounded to the target field width."
-    )]
 
     use super::*;
 

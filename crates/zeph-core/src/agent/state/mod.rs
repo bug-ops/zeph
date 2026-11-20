@@ -784,6 +784,7 @@ pub(crate) struct OrchestrationState {
     pub(crate) orchestration_config: crate::config::OrchestrationConfig,
     /// Lazily initialized plan template cache. `None` until first use or when
     /// memory (`SQLite`) is unavailable.
+    #[cfg(feature = "scheduler")]
     pub(crate) plan_cache: Option<zeph_orchestration::PlanCache>,
     /// Goal embedding from the most recent `plan_with_cache()` call. Consumed by
     /// `finalize_plan_execution()` to cache the completed plan template.
@@ -792,6 +793,7 @@ pub(crate) struct OrchestrationState {
     pub(crate) topology_advisor: Option<std::sync::Arc<zeph_orchestration::TopologyAdvisor>>,
     /// Last `AdaptOrch` verdict; carried from `handle_plan_goal_as_string` to scheduler loop
     /// for `record_outcome`.
+    #[cfg(feature = "scheduler")]
     pub(crate) last_advisor_verdict: Option<zeph_orchestration::AdvisorVerdict>,
     /// Task graph persistence handle. `None` when no `SemanticMemory` was
     /// attached via `with_memory`, or when
@@ -825,8 +827,7 @@ pub(crate) struct OrchestrationState {
     ///
     /// Lazily initialised by `plan.rs` on first journal call; shared across pause/resume cycles
     /// for the same process lifetime.
-    // Accessed exclusively through ensure_durable_backend() in plan.rs; rustc's cross-module
-    // dead_code analysis does not follow the indirect Option method chains.
+    #[cfg(feature = "scheduler")]
     pub(crate) durable_backend: Option<std::sync::Arc<zeph_durable::DurableBackendEnum>>,
     /// Writer handle for the shared P2 durable backend.
     // Same as durable_backend: accessed through plan.rs ensure_durable_backend().

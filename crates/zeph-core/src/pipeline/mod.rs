@@ -28,11 +28,6 @@ pub enum PipelineError {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::ignored_unit_patterns,
-        clippy::manual_string_new,
-        reason = "The ignored unit value makes the match shape explicit.; The chosen construction is required by the surrounding interface."
-    )]
     use std::assert_matches;
 
     use std::sync::Arc;

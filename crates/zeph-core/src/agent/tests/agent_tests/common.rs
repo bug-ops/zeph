@@ -234,10 +234,6 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
-    #[expect(
-        clippy::unused_async_trait_impl,
-        reason = "recv implements the trait-required async signature while completing synchronously"
-    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, crate::channel::ChannelError> {
         let next = {
             let mut msgs = self.messages.lock().unwrap();

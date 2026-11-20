@@ -963,10 +963,6 @@ impl SubAgentDef {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::cloned_ref_to_slice_refs,
-        reason = "The owned value remains available for subsequent fixture checks."
-    )]
     use std::assert_matches;
 
     use indoc::indoc;

@@ -592,10 +592,6 @@ impl MockProvider {
 }
 
 impl LlmProvider for MockProvider {
-    #[expect(
-        clippy::unnecessary_literal_bound,
-        reason = "name keeps the bound in the signature to match the surrounding trait or call contract"
-    )]
     fn name(&self) -> &str {
         self.name_override.as_deref().unwrap_or("mock")
     }

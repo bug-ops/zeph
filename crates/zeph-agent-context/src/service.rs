@@ -3087,10 +3087,6 @@ mod tests {
             Cow::Borrowed(s)
         }
 
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "make_view This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
-        )]
         fn make_view<'a>(
             sanitizer: &'a ContentSanitizer,
             quarantine_summarizer: Option<&'a QuarantinedSummarizer>,
@@ -3989,10 +3985,6 @@ mod tests {
             }
         }
 
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "make_view This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
-        )]
         pub(super) fn make_view<'a>(
             fixture: &'a Fixture,
             last_confidence: &'a mut Option<f32>,

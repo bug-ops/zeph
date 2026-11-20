@@ -115,10 +115,6 @@ impl VariationGenerator for Random {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::manual_range_contains,
-        reason = "The asymmetric branch boundaries are part of this domain rule."
-    )]
 
     use std::collections::HashSet;
 

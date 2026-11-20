@@ -324,8 +324,9 @@ where
     .await
 }
 
+#[cfg(any(feature = "acp", test))]
 fn cli_requested_any_acp_mode(cli: &Cli) -> bool {
-    #[cfg(not(any(feature = "acp", feature = "acp-http")))]
+    #[cfg(not(feature = "acp"))]
     let _ = cli;
 
     #[cfg(feature = "acp")]

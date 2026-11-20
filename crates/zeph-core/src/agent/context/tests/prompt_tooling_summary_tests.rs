@@ -1,11 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![expect(
-    clippy::large_futures,
-    reason = "The test exercises the concrete async path without boxing its future."
-)]
-
 use std::sync::Arc;
 
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};

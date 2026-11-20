@@ -1,11 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "Fixture construction failures should fail the test immediately.; Fixture construction failures should fail the test immediately."
-)]
-
 //! Acceptance tests (tests-first) for #7136: `AbortOnDrop<R>` aborts its supervised task on drop
 //! and the registry entry disappears.
 

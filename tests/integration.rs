@@ -4,10 +4,6 @@
     reason = "The test isolates the unsafe operation required by the Rust 2024 or platform API."
 )]
 // Integration tests await full agent sessions; the future size reflects real agent state.
-#![expect(
-    clippy::large_futures,
-    reason = "The test exercises the concrete async path without boxing its future."
-)]
 // Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
 #![recursion_limit = "256"]
 

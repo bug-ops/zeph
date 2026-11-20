@@ -709,6 +709,14 @@ impl SkillMatcherBackend {
     ///
     /// Returns an error if the Qdrant sync fails.
     #[cfg_attr(
+        not(any(feature = "qdrant", feature = "profiling")),
+        expect(
+            clippy::unused_async,
+            clippy::unused_async_trait_impl,
+            reason = "The in-memory backend keeps the same async sync method as the Qdrant backend."
+        )
+    )]
+    #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "skill.matcher_sync", skip_all)
     )]

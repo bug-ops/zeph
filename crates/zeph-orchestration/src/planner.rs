@@ -471,10 +471,6 @@ fn convert_response(
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::needless_pass_by_value,
-        reason = "This narrow exception is required by the local test or feature configuration."
-    )]
     use std::assert_matches;
 
     use super::*;

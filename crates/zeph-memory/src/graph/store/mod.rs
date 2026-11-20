@@ -408,10 +408,6 @@ impl GraphStore {
     ///
     /// Never returns an error.
     #[cfg(feature = "postgres")]
-    #[expect(
-        clippy::unused_async,
-        reason = "checkpoint_wal matches the async interface used by neighboring implementations"
-    )]
     #[tracing::instrument(name = "memory.graph.store.checkpoint_wal", skip_all)]
     pub async fn checkpoint_wal(&self) -> Result<(), MemoryError> {
         Ok(())

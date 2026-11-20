@@ -966,10 +966,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::field_reassign_with_default,
-        reason = "test_sync_no_double_count sets only the fields relevant to this fixture while keeping remaining defaults explicit"
-    )]
     fn test_sync_no_double_count() {
         let pm = PrometheusMetrics::new();
 

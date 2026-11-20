@@ -124,6 +124,13 @@ fn build_qdrant_ops(config: &Config) -> Result<Option<QdrantOps>, BootstrapError
 pub struct AppBuilder {
     config: Config,
     config_path: PathBuf,
+    #[cfg_attr(
+        not(any(feature = "acp", feature = "a2a", feature = "session")),
+        expect(
+            dead_code,
+            reason = "ACP, A2A, and the session server use this provider to resolve credentials."
+        )
+    )]
     vault: Box<dyn VaultProvider>,
     /// Present when the vault backend is `age`. Used to pass to `create_mcp_manager_with_vault`
     /// for OAuth credential persistence across sessions.
@@ -339,9 +346,7 @@ impl AppBuilder {
     }
 
     /// Returns the vault provider used for secret resolution.
-    ///
-    /// Retained as part of the public `Bootstrap` API for external callers
-    /// that may inspect or override vault behavior at runtime.
+    #[cfg(any(feature = "acp", feature = "a2a", feature = "session"))]
     pub fn vault(&self) -> &dyn VaultProvider {
         self.vault.as_ref()
     }
