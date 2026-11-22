@@ -249,7 +249,7 @@ max_templates = 100
 
 ## Inter-Agent Handoff
 
-Inter-agent context propagation uses a skill-based YAML protocol defined in the `rust-agent-handoff` skill. See `specs/handoff-skill-system/spec.md` for the full specification.
+Inter-agent context propagation uses a skill-based protocol (Markdown handoff files with YAML frontmatter) defined in the `rust-agent-handoff` skill. See [[032-handoff-skill-system/spec]] for the full specification.
 
 There are no typed Rust structs or compile-time validation for handoff content in the orchestration crate. The skill documentation is the contract. Typed validation (PRs #2076, #2078) was attempted and reverted (#2082).
 

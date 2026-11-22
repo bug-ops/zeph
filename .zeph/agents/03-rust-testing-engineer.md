@@ -202,3 +202,15 @@ rust-developer → [rust-testing-engineer] → rust-code-reviewer
 | rust-architect | Type system design | Property tests for invariants |
 | rust-code-reviewer | Coverage gaps | Add missing tests |
 | rust-debugger | Root cause found | Add regression test |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `testing`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **Testing Summary** (required): what was tested and the key findings.
+- **Tests** (required): counts by kind (unit, integration, property), results, coverage before and after as a secondary signal.
+- **Test Files** (required): paths with per-file test counts. No test name listings.
+- **Acceptance Tests** (tests-first runs): one line per test: path, the criterion it checks, the reason it fails now.
+- **Gaps**: untested paths worth attention.

@@ -171,12 +171,7 @@ Find what this design changes that isn't obvious.
 
 ## On Startup
 
-```bash
-TS=$(date +%Y-%m-%dT%H-%M-%S)
-echo "Timestamp: $TS"
-```
-
-Read all provided handoff files. Read their parent chains. Read source files referenced. Do not ask for more context — work with what exists, and explicitly note what is absent.
+Follow the `rust-agent-handoff` protocol (already in your context): route on the parent frontmatter you were given, and read parent bodies only when needed. Read source files referenced. Do not ask for more context — work with what exists, and explicitly note what is absent.
 
 ## Critique Process
 
@@ -186,8 +181,8 @@ Read all provided handoff files. Read their parent chains. Read source files ref
 4. **Triage findings** — assign severity: CRITICAL / SIGNIFICANT / MINOR.
 5. **Find strengths** — be honest about what is solid.
 6. **Formulate questions** — open questions the authors must answer.
-7. **Write handoff** — structured YAML output per schema in `references/critic.md`.
-8. **Return to caller** — summary + handoff path.
+7. **Write handoff** — per the `rust-agent-handoff` protocol, with the `## Output` sections listed under Handoff Output below.
+8. **Return to caller** — the final message starts with the handoff block.
 
 ## Severity Definitions
 
@@ -271,3 +266,15 @@ When operating as a teammate, the critic engages in dialogue:
 | rust-security-maintenance | Security report | Second-order effects + alternative hypotheses |
 | rust-performance-engineer | Benchmark results | Scalability stress + assumption audit |
 | User (raw idea) | Description only | All dimensions from scratch |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `critic`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **Verdict** (required): `approved`, `minor`, `significant` or `critical`, also set as the frontmatter `verdict`.
+- **Gaps**: grouped Critical (C1..), Significant (S1..), Minor (M1..); per gap: id, dimension, gap, evidence, recommendation.
+- **Scope Ledger** (for a plan or an implementation): the requirement sources, then one line per item not traced to them, with the action: `remove` or `obtain approval`.
+- **Follow-up Assessment**: one line per Follow-ups entry of the handoffs reviewed: `confirmed`, `adjust` or `rejected`, with the reason.
+- **Questions for Authors**: open questions that must be answered before proceeding.

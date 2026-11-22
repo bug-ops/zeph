@@ -469,3 +469,18 @@ rust-performance-engineer → [rust-architect] → rust-developer
 | rust-debugger | Root cause is architectural | Design fix at architecture level |
 | rust-performance-engineer | Structural bottleneck | Optimize data structures/patterns |
 | rust-code-reviewer | Design concerns in review | Clarify/improve architecture |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `architect`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **Decision Type** (required): `new_project`, `refactoring` or `review`. With `status: no_change_needed` only `## Evidence` is required.
+- **Architecture Summary** (required): decisions and rationale, compressed.
+- **Structure** (required): crates or modules touched, one-line purpose each.
+- **Key Types** (required): name, pattern, purpose, one line each.
+- **Contracts** (when the plan adds public functions): preconditions, postconditions, undefined behaviour.
+- **Scope** (required): the requirement sources, and one line per planned item that goes beyond them, marked `needs user approval`; `Matches request` when there is none.
+- **Files Created** (required): paths only.
+- **Spec / ADRs**: paths, if any.

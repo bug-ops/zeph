@@ -416,3 +416,14 @@ rust-code-reviewer → [rust-performance-engineer] → rust-developer → rust-c
 | rust-developer | New feature complete | Benchmark and optimize |
 | rust-testing-engineer | Slow tests | Optimize test setup |
 | rust-cicd-devops | Slow CI builds | Build optimization |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `performance`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **Baseline and Result** (required): what was measured, how (command, build profile), before and after, run count and variance.
+- **Hot Paths** (required): location, share of time or allocations, cause.
+- **Changes**: what was changed, or recommended when the run was report-only.
+- **Not Measured**: what the numbers do not cover.
