@@ -818,6 +818,8 @@ mod tests {
     use zeph_llm::mock::MockProvider;
     use zeph_llm::provider::{CacheUsage, Message, PrefixCache, Role, TokenUsage};
 
+    use zeph_common::money::CentsPer1k;
+
     use super::*;
     use crate::cost::ModelPricing;
 
@@ -868,10 +870,10 @@ mod tests {
 
     fn pricing(read: f64, write: f64) -> ModelPricing {
         ModelPricing {
-            prompt_cents_per_1k: 1.0,
-            completion_cents_per_1k: 1.0,
-            cache_read_cents_per_1k: read,
-            cache_write_cents_per_1k: write,
+            prompt_cents_per_1k: CentsPer1k::new(1.0),
+            completion_cents_per_1k: CentsPer1k::new(1.0),
+            cache_read_cents_per_1k: CentsPer1k::new(read),
+            cache_write_cents_per_1k: CentsPer1k::new(write),
         }
     }
 
@@ -963,10 +965,10 @@ mod tests {
         CostTracker::new(true, 0.0).with_pricing(
             "m",
             ModelPricing {
-                prompt_cents_per_1k: 1.0,
-                completion_cents_per_1k: 5.0,
-                cache_read_cents_per_1k: 0.1,
-                cache_write_cents_per_1k: 1.25,
+                prompt_cents_per_1k: CentsPer1k::new(1.0),
+                completion_cents_per_1k: CentsPer1k::new(5.0),
+                cache_read_cents_per_1k: CentsPer1k::new(0.1),
+                cache_write_cents_per_1k: CentsPer1k::new(1.25),
             },
         )
     }

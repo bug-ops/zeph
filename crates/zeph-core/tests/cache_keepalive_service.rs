@@ -22,6 +22,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use zeph_common::money::CentsPer1k;
 
 use tokio::sync::watch;
 use zeph_core::cache_keepalive::{KeepaliveState, StopReason};
@@ -465,10 +466,10 @@ async fn keepalive_think_tokens_then_request_then_idle_pings_with_new_budget_and
     let tracker = CostTracker::new(true, 0.0).with_pricing(
         PRICED_MODEL,
         ModelPricing {
-            prompt_cents_per_1k: 1.0,
-            completion_cents_per_1k: 0.0,
-            cache_read_cents_per_1k: 0.001,
-            cache_write_cents_per_1k: 1.25,
+            prompt_cents_per_1k: CentsPer1k::new(1.0),
+            completion_cents_per_1k: CentsPer1k::new(0.0),
+            cache_read_cents_per_1k: CentsPer1k::new(0.001),
+            cache_write_cents_per_1k: CentsPer1k::new(1.25),
         },
     );
     let (agent, pings, rx, _dir) = build(

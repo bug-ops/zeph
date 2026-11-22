@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use zeph_common::money::CentsPer1k;
 use zeph_core::RuntimeContext;
 use zeph_core::channel::Channel;
 use zeph_core::config::Config;
@@ -936,8 +937,8 @@ pub(crate) fn apply_cost_tracker<C: Channel>(
                     prompt_cents_per_1k: pricing.prompt_cents_per_1k,
                     completion_cents_per_1k: pricing.completion_cents_per_1k,
                     // Cocoon sidecar does not charge separately for cached tokens
-                    cache_read_cents_per_1k: 0.0,
-                    cache_write_cents_per_1k: 0.0,
+                    cache_read_cents_per_1k: CentsPer1k::new(0.0),
+                    cache_write_cents_per_1k: CentsPer1k::new(0.0),
                 },
             );
         }
@@ -3616,8 +3617,8 @@ mod tests {
             provider_type: zeph_config::ProviderKind::Cocoon,
             model: Some("Qwen/Qwen3-0.6B".into()),
             cocoon_pricing: Some(zeph_config::CocoonPricing {
-                prompt_cents_per_1k: 0.01,
-                completion_cents_per_1k: 0.03,
+                prompt_cents_per_1k: CentsPer1k::new(0.01),
+                completion_cents_per_1k: CentsPer1k::new(0.03),
             }),
             ..zeph_config::ProviderEntry::default()
         };

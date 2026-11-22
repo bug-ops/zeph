@@ -3,6 +3,7 @@
 
 use super::*;
 use std::assert_matches;
+use zeph_common::money::CentsPer1k;
 
 fn ollama_entry() -> ProviderEntry {
     ProviderEntry {
@@ -957,8 +958,8 @@ fn test_cocoon_model_none_passes() {
 fn validate_cocoon_pricing_negative_prompt_errors() {
     let mut e = cocoon_entry(Some("http://localhost:10000"), Some("Qwen/Qwen3-0.6B"));
     e.cocoon_pricing = Some(CocoonPricing {
-        prompt_cents_per_1k: -1.0,
-        completion_cents_per_1k: 0.03,
+        prompt_cents_per_1k: CentsPer1k::new(-1.0),
+        completion_cents_per_1k: CentsPer1k::new(0.03),
     });
     assert!(e.validate().is_err());
 }
@@ -967,8 +968,8 @@ fn validate_cocoon_pricing_negative_prompt_errors() {
 fn validate_cocoon_pricing_negative_completion_errors() {
     let mut e = cocoon_entry(Some("http://localhost:10000"), Some("Qwen/Qwen3-0.6B"));
     e.cocoon_pricing = Some(CocoonPricing {
-        prompt_cents_per_1k: 0.01,
-        completion_cents_per_1k: -0.5,
+        prompt_cents_per_1k: CentsPer1k::new(0.01),
+        completion_cents_per_1k: CentsPer1k::new(-0.5),
     });
     assert!(e.validate().is_err());
 }
@@ -977,8 +978,8 @@ fn validate_cocoon_pricing_negative_completion_errors() {
 fn validate_cocoon_pricing_valid_passes() {
     let mut e = cocoon_entry(Some("http://localhost:10000"), Some("Qwen/Qwen3-0.6B"));
     e.cocoon_pricing = Some(CocoonPricing {
-        prompt_cents_per_1k: 0.01,
-        completion_cents_per_1k: 0.03,
+        prompt_cents_per_1k: CentsPer1k::new(0.01),
+        completion_cents_per_1k: CentsPer1k::new(0.03),
     });
     assert!(e.validate().is_ok());
 }

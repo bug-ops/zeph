@@ -7,6 +7,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use thiserror::Error;
+use zeph_common::money::CentsPer1k;
 use zeph_config::ServiceSpeed;
 use zeph_llm::provider::TokenUsage;
 
@@ -35,12 +36,12 @@ pub struct ProviderUsage {
 
 #[derive(Debug, Clone)]
 pub struct ModelPricing {
-    pub prompt_cents_per_1k: f64,
-    pub completion_cents_per_1k: f64,
+    pub prompt_cents_per_1k: CentsPer1k,
+    pub completion_cents_per_1k: CentsPer1k,
     /// Cache read (cache hit) price. Claude: 10% of prompt; `OpenAI`: 50%; others: 0%.
-    pub cache_read_cents_per_1k: f64,
+    pub cache_read_cents_per_1k: CentsPer1k,
     /// Cache write (cache creation) price. Claude: 125% of prompt; others: 0%.
-    pub cache_write_cents_per_1k: f64,
+    pub cache_write_cents_per_1k: CentsPer1k,
 }
 
 struct CostState {
@@ -81,10 +82,10 @@ fn claude_pricing_with_cache_read(
     cache_read_ratio: f64,
 ) -> ModelPricing {
     ModelPricing {
-        prompt_cents_per_1k: prompt,
-        completion_cents_per_1k: completion,
-        cache_read_cents_per_1k: prompt * cache_read_ratio,
-        cache_write_cents_per_1k: prompt * 1.25,
+        prompt_cents_per_1k: CentsPer1k::new(prompt),
+        completion_cents_per_1k: CentsPer1k::new(completion),
+        cache_read_cents_per_1k: CentsPer1k::new(prompt * cache_read_ratio),
+        cache_write_cents_per_1k: CentsPer1k::new(prompt * 1.25),
     }
 }
 
@@ -98,11 +99,11 @@ fn strip_date_suffix(model: &str) -> &str {
 
 fn openai_pricing(prompt: f64, completion: f64) -> ModelPricing {
     ModelPricing {
-        prompt_cents_per_1k: prompt,
-        completion_cents_per_1k: completion,
+        prompt_cents_per_1k: CentsPer1k::new(prompt),
+        completion_cents_per_1k: CentsPer1k::new(completion),
         // OpenAI: cache read = 50% of prompt, no cache write charge
-        cache_read_cents_per_1k: prompt * 0.5,
-        cache_write_cents_per_1k: 0.0,
+        cache_read_cents_per_1k: CentsPer1k::new(prompt * 0.5),
+        cache_write_cents_per_1k: CentsPer1k::new(0.0),
     }
 }
 
@@ -254,10 +255,10 @@ impl CostTracker {
             reason = "record_auxiliary_usage uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
         )]
         {
-            pricing.prompt_cents_per_1k * (usage.input as f64) / 1000.0
-                + pricing.completion_cents_per_1k * (usage.output as f64) / 1000.0
-                + pricing.cache_read_cents_per_1k * (usage.cache_read as f64) / 1000.0
-                + pricing.cache_write_cents_per_1k * (usage.cache_write as f64) / 1000.0
+            pricing.prompt_cents_per_1k.as_f64() * (usage.input as f64) / 1000.0
+                + pricing.completion_cents_per_1k.as_f64() * (usage.output as f64) / 1000.0
+                + pricing.cache_read_cents_per_1k.as_f64() * (usage.cache_read as f64) / 1000.0
+                + pricing.cache_write_cents_per_1k.as_f64() * (usage.cache_write as f64) / 1000.0
         }
     }
 
