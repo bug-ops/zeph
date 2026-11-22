@@ -1,28 +1,17 @@
-FROM rust:1.97.1-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS builder
-
-ARG CARGO_FEATURES=""
-
+FROM rust:1.100.0-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS chef
+RUN cargo install cargo-chef --locked --version 0.1.78
 WORKDIR /build
 
-# Cache dependencies in a separate layer
-COPY Cargo.toml Cargo.lock ./
-COPY crates/zeph-core/Cargo.toml crates/zeph-core/Cargo.toml
-COPY crates/zeph-llm/Cargo.toml crates/zeph-llm/Cargo.toml
-COPY crates/zeph-skills/Cargo.toml crates/zeph-skills/Cargo.toml
-COPY crates/zeph-memory/Cargo.toml crates/zeph-memory/Cargo.toml
-COPY crates/zeph-channels/Cargo.toml crates/zeph-channels/Cargo.toml
-COPY crates/zeph-tools/Cargo.toml crates/zeph-tools/Cargo.toml
-COPY crates/zeph-mcp/Cargo.toml crates/zeph-mcp/Cargo.toml
-COPY crates/zeph-a2a/Cargo.toml crates/zeph-a2a/Cargo.toml
-COPY crates/zeph-tui/Cargo.toml crates/zeph-tui/Cargo.toml
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
-    for d in crates/*/; do mkdir -p "$d/src" && echo '' > "$d/src/lib.rs"; done && \
-    cargo build --release ${CARGO_FEATURES:+--features $CARGO_FEATURES} 2>/dev/null || true
-
+FROM chef AS planner
 COPY . .
-RUN touch src/main.rs && \
-    for d in crates/*/src/lib.rs; do touch "$d"; done && \
-    cargo build --release ${CARGO_FEATURES:+--features $CARGO_FEATURES}
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+ARG CARGO_FEATURES=""
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json ${CARGO_FEATURES:+--features $CARGO_FEATURES}
+COPY . .
+RUN cargo build --release ${CARGO_FEATURES:+--features $CARGO_FEATURES}
 
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
