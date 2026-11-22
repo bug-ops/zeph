@@ -14,6 +14,7 @@ use std::pin::Pin;
 
 use tracing::Instrument as _;
 use zeph_commands::{CommandError, SessionControlAccess};
+use zeph_common::money::Cents;
 use zeph_llm::provider::LlmProvider;
 
 use super::Agent;
@@ -867,7 +868,7 @@ struct StatusMetrics {
     prompt_tokens: u64,
     completion_tokens: u64,
     reasoning_tokens: u64,
-    cost_cents: f64,
+    cost_cents: Cents,
     mcp_servers: usize,
     orch_plans: u64,
     orch_tasks: u64,
@@ -908,7 +909,7 @@ fn collect_status_metrics(
             prompt_tokens: 0,
             completion_tokens: 0,
             reasoning_tokens: 0,
-            cost_cents: 0.0,
+            cost_cents: Cents::ZERO,
             mcp_servers: 0,
             orch_plans: 0,
             orch_tasks: 0,
@@ -925,12 +926,12 @@ fn collect_status_metrics(
 
 fn append_cost_section(
     out: &mut String,
-    cost_cents: f64,
+    cost_cents: Cents,
     provider_breakdown: &[(String, crate::cost::ProviderUsage)],
 ) {
     use std::fmt::Write;
-    if cost_cents > 0.0 {
-        let _ = writeln!(out, "Cost:      ${:.4}", cost_cents / 100.0);
+    if cost_cents > Cents::ZERO {
+        let _ = writeln!(out, "Cost:      {cost_cents}");
         if !provider_breakdown.is_empty() {
             let _ = writeln!(
                 out,
@@ -945,7 +946,7 @@ fn append_cost_section(
                     name,
                     usage.request_count,
                     total_tokens,
-                    format!("${:.4}", usage.cost_cents / 100.0),
+                    usage.cost_cents.to_string(),
                 );
             }
         }

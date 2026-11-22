@@ -38,6 +38,7 @@ use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 use tracing::Instrument as _;
 use zeph_common::ProviderName;
+use zeph_common::money::Cents;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
     KeepaliveOutcome, KeepaliveRequest, LlmProvider as _, Message, ResponseUsage, TokenUsage,
@@ -139,9 +140,9 @@ struct Inner {
     generation: u64,
     consecutive: u32,
     failures: u32,
-    ping_spend_cents: f64,
+    ping_spend_cents: Cents,
     pings: u64,
-    cost_cents: f64,
+    cost_cents: Cents,
     speed: zeph_config::ServiceSpeed,
     state: KeepaliveState,
     user: Option<bool>,
@@ -264,10 +265,17 @@ impl HistoryChunks {
     }
 }
 
+/// Pings sent and what they cost, as shown by status displays.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeepaliveStats {
+    pub(crate) pings: u64,
+    pub(crate) cost: Cents,
+}
+
 /// What a ping starts from: the snapshot and what the idle period has spent so far.
 struct PingStart {
     request: Arc<KeepaliveRequest>,
-    spent_cents: f64,
+    spent_cents: Cents,
     speed: zeph_config::ServiceSpeed,
 }
 
@@ -285,7 +293,7 @@ enum PingResult {
     Failed,
     Pinged {
         usage: ResponseUsage,
-        cost_cents: f64,
+        cost_cents: Cents,
     },
 }
 
@@ -413,10 +421,13 @@ impl Shared {
         self.wake.notify_one();
     }
 
-    /// Pings sent and their cost in cents, for status displays.
-    pub(crate) fn stats(&self) -> (u64, f64) {
+    /// Pings sent and their cost, for status displays.
+    pub(crate) fn stats(&self) -> KeepaliveStats {
         let g = self.inner.lock();
-        (g.pings, g.cost_cents)
+        KeepaliveStats {
+            pings: g.pings,
+            cost: g.cost_cents,
+        }
     }
 
     /// Real activity (a turn started): restart the timer, cancel any in-flight ping and re-arm
@@ -596,7 +607,7 @@ impl Inner {
         self.retry_at = None;
         self.consecutive = 0;
         self.failures = 0;
-        self.ping_spend_cents = 0.0;
+        self.ping_spend_cents = Cents::ZERO;
         if matches!(
             self.state,
             KeepaliveState::Stopped(StopReason::CapReached | StopReason::BudgetExhausted)
@@ -647,10 +658,10 @@ impl ServiceDeps {
         if let Some(tx) = &self.metrics_tx {
             let spend = self.cost.as_ref().map(|c| c.current_spend());
             tx.send_modify(|m| {
-                let (pings, cost_cents) = self.shared.stats();
+                let stats = self.shared.stats();
                 m.cache_keepalive = self.shared.state();
-                m.cache_keepalive_pings = pings;
-                m.cache_keepalive_cost_cents = cost_cents;
+                m.cache_keepalive_pings = stats.pings;
+                m.cache_keepalive_cost_cents = stats.cost;
                 if let Some(spend) = spend {
                     m.cost_spent_cents = spend;
                 }
@@ -667,7 +678,7 @@ impl ServiceDeps {
     fn gate(
         &self,
         request: &KeepaliveRequest,
-        spent_cents: f64,
+        spent_cents: Cents,
         speed: zeph_config::ServiceSpeed,
     ) -> Option<StopReason> {
         let backend = request.provider.keepalive_backend(request.target.as_ref());
@@ -698,14 +709,14 @@ impl ServiceDeps {
             speed,
         );
         let total = spent_cents + worst_ping;
-        if total <= 0.0 {
+        if total <= Cents::ZERO {
             return unpriced_stop(output);
         }
         (total >= avoided_write).then_some(StopReason::BudgetExhausted)
     }
 
-    fn record_cost(&self, backend: &AnyProvider, usage: ResponseUsage) -> f64 {
-        self.cost.as_deref().map_or(0.0, |tracker| {
+    fn record_cost(&self, backend: &AnyProvider, usage: ResponseUsage) -> Cents {
+        self.cost.as_deref().map_or(Cents::ZERO, |tracker| {
             tracker.record_keepalive_usage(
                 backend.name(),
                 backend.provider_kind_str(),
@@ -821,7 +832,7 @@ mod tests {
     use zeph_common::money::CentsPer1k;
 
     use super::*;
-    use crate::cost::ModelPricing;
+    use crate::cost::{DailyBudget, ModelPricing};
 
     const TTL: Duration = Duration::from_secs(300);
     const STANDARD: zeph_config::ServiceSpeed = zeph_config::ServiceSpeed::Standard;
@@ -883,7 +894,7 @@ mod tests {
                 cache: Some(CacheUsage { creation, read }),
                 ..ResponseUsage::default()
             },
-            cost_cents: 0.0,
+            cost_cents: Cents::ZERO,
         }
     }
 
@@ -901,40 +912,45 @@ mod tests {
 
     #[test]
     fn cost_gate_passes_while_pings_stay_below_the_avoided_write() {
-        let mut tracker = CostTracker::new(true, 0.0);
+        let mut tracker = CostTracker::new(DailyBudget::Unlimited);
         tracker = tracker.with_pricing("m", pricing(0.1, 1.25));
         let req = request_with(priced_mock("m"), &"x".repeat(40_000));
         let shared = Arc::new(Shared::default());
-        assert_eq!(deps(&shared, Some(tracker)).gate(&req, 0.0, STANDARD), None);
+        assert_eq!(
+            deps(&shared, Some(tracker)).gate(&req, Cents::new(0.0), STANDARD),
+            None
+        );
     }
 
     #[test]
     fn cost_gate_stops_when_pings_would_cost_more_than_the_write_they_avoid() {
-        let tracker = CostTracker::new(true, 0.0).with_pricing("m", pricing(0.1, 1.25));
+        let tracker =
+            CostTracker::new(DailyBudget::Unlimited).with_pricing("m", pricing(0.1, 1.25));
         let req = request_with(priced_mock("m"), &"x".repeat(40_000));
         let shared = Arc::new(Shared::default());
         let d = deps(&shared, Some(tracker));
         // 10_000 prefix tokens: a write avoided costs 12.5 cents.
         assert_eq!(
-            d.gate(&req, 12.0, STANDARD),
+            d.gate(&req, Cents::new(12.0), STANDARD),
             Some(StopReason::BudgetExhausted)
         );
     }
 
     #[test]
     fn cost_gate_stops_when_a_read_costs_more_than_a_write() {
-        let tracker = CostTracker::new(true, 0.0).with_pricing("m", pricing(2.0, 1.0));
+        let tracker = CostTracker::new(DailyBudget::Unlimited).with_pricing("m", pricing(2.0, 1.0));
         let req = request_with(priced_mock("m"), &"x".repeat(40_000));
         let shared = Arc::new(Shared::default());
         assert_eq!(
-            deps(&shared, Some(tracker)).gate(&req, 0.0, STANDARD),
+            deps(&shared, Some(tracker)).gate(&req, Cents::new(0.0), STANDARD),
             Some(StopReason::BudgetExhausted)
         );
     }
 
     #[test]
     fn cost_gate_respects_the_daily_budget() {
-        let tracker = CostTracker::new(true, 1.0).with_pricing("m", pricing(0.1, 1.25));
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1.0)))
+            .with_pricing("m", pricing(0.1, 1.25));
         tracker.record_usage(
             "p",
             "cloud",
@@ -948,7 +964,7 @@ mod tests {
         let req = request_with(priced_mock("m"), &"x".repeat(40_000));
         let shared = Arc::new(Shared::default());
         assert_eq!(
-            deps(&shared, Some(tracker)).gate(&req, 0.0, STANDARD),
+            deps(&shared, Some(tracker)).gate(&req, Cents::new(0.0), STANDARD),
             Some(StopReason::BudgetExhausted)
         );
     }
@@ -962,7 +978,7 @@ mod tests {
     }
 
     fn thinking_tracker() -> CostTracker {
-        CostTracker::new(true, 0.0).with_pricing(
+        CostTracker::new(DailyBudget::Unlimited).with_pricing(
             "m",
             ModelPricing {
                 prompt_cents_per_1k: CentsPer1k::new(1.0),
@@ -978,12 +994,16 @@ mod tests {
         let shared = Arc::new(Shared::default());
         let d = deps(&shared, Some(thinking_tracker()));
         assert_eq!(
-            d.gate(&thinking_priced_request(Some(8192)), 0.0, STANDARD),
+            d.gate(
+                &thinking_priced_request(Some(8192)),
+                Cents::new(0.0),
+                STANDARD
+            ),
             Some(StopReason::BudgetExhausted),
             "8193 output tokens at 5 cents per 1k exceed the 25 cent write avoided"
         );
         assert_eq!(
-            d.gate(&thinking_priced_request(None), 0.0, STANDARD),
+            d.gate(&thinking_priced_request(None), Cents::new(0.0), STANDARD),
             None,
             "one output token keeps the ping far below the write avoided"
         );
@@ -1002,7 +1022,7 @@ mod tests {
         assert!(shared.is_capturing());
         shared.mark_activity();
         assert_eq!(shared.state(), KeepaliveState::Idle);
-        assert!(shared.inner.lock().ping_spend_cents.abs() < f64::EPSILON);
+        assert_eq!(shared.inner.lock().ping_spend_cents, Cents::ZERO);
     }
 
     #[test]
@@ -1029,10 +1049,12 @@ mod tests {
                     }),
                     ..ResponseUsage::default()
                 },
-                cost_cents: 0.5,
+                cost_cents: Cents::new(0.5),
             },
         );
-        assert_eq!(shared.stats(), (1, 0.5));
+        let stats = shared.stats();
+        assert_eq!(stats.pings, 1);
+        assert_eq!(stats.cost, Cents::new(0.5));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1076,7 +1098,10 @@ mod tests {
     fn cost_gate_is_open_without_a_cost_tracker() {
         let req = request_with(priced_mock("m"), "hi");
         let shared = Arc::new(Shared::default());
-        assert_eq!(deps(&shared, None).gate(&req, 100.0, STANDARD), None);
+        assert_eq!(
+            deps(&shared, None).gate(&req, Cents::new(100.0), STANDARD),
+            None
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1238,10 +1263,11 @@ mod tests {
         let router = RouterProvider::new(vec![named("a", "unpriced"), named("b", "priced")]);
         let mut req = request_with(AnyProvider::Router(Box::new(router)), &"x".repeat(40_000));
         req.target = Some(zeph_common::ProviderName::new("b"));
-        let tracker = CostTracker::new(true, 0.0).with_pricing("priced", pricing(2.0, 1.0));
+        let tracker =
+            CostTracker::new(DailyBudget::Unlimited).with_pricing("priced", pricing(2.0, 1.0));
         let shared = Arc::new(Shared::default());
         assert_eq!(
-            deps(&shared, Some(tracker)).gate(&req, 0.0, STANDARD),
+            deps(&shared, Some(tracker)).gate(&req, Cents::new(0.0), STANDARD),
             Some(StopReason::BudgetExhausted)
         );
         assert_eq!(
@@ -1478,17 +1504,12 @@ mod tests {
         let thinking = thinking_priced_request(Some(2048));
         let no_tracker = deps(&shared, None);
         assert_eq!(
-            no_tracker.gate(&thinking, 0.0, STANDARD),
+            no_tracker.gate(&thinking, Cents::new(0.0), STANDARD),
             Some(StopReason::Unpriced)
         );
-        let unknown_model = deps(&shared, Some(CostTracker::new(true, 0.0)));
+        let unknown_model = deps(&shared, Some(CostTracker::new(DailyBudget::Unlimited)));
         assert_eq!(
-            unknown_model.gate(&thinking, 0.0, STANDARD),
-            Some(StopReason::Unpriced)
-        );
-        let tracking_off = deps(&shared, Some(CostTracker::new(false, 0.0)));
-        assert_eq!(
-            tracking_off.gate(&thinking, 0.0, STANDARD),
+            unknown_model.gate(&thinking, Cents::new(0.0), STANDARD),
             Some(StopReason::Unpriced)
         );
     }
@@ -1497,9 +1518,12 @@ mod tests {
     fn cost_gate_stays_open_when_unpriced_and_the_output_cap_is_one() {
         let shared = Arc::new(Shared::default());
         let plain = thinking_priced_request(None);
-        assert_eq!(deps(&shared, None).gate(&plain, 0.0, STANDARD), None);
-        let unknown_model = deps(&shared, Some(CostTracker::new(true, 0.0)));
-        assert_eq!(unknown_model.gate(&plain, 0.0, STANDARD), None);
+        assert_eq!(
+            deps(&shared, None).gate(&plain, Cents::new(0.0), STANDARD),
+            None
+        );
+        let unknown_model = deps(&shared, Some(CostTracker::new(DailyBudget::Unlimited)));
+        assert_eq!(unknown_model.gate(&plain, Cents::new(0.0), STANDARD), None);
     }
 
     #[test]

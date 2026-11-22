@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 use zeph_common::format_tokens;
+use zeph_common::money::Cents;
 
 use crate::app::{App, InputMode};
 use crate::layout::truncate_to_width;
@@ -453,11 +454,11 @@ fn push_extra_low_segments(
     metrics: &MetricsSnapshot,
     theme: &Theme,
 ) {
-    if metrics.cost_spent_cents > 0.0 {
+    if metrics.cost_spent_cents > Cents::ZERO {
         list.push_abbrev_styled(
             Priority::Low,
-            format!(" · ${:.4}", metrics.cost_spent_cents / 100.0),
-            format!(" ${:.2}", metrics.cost_spent_cents / 100.0),
+            format!(" · {}", metrics.cost_spent_cents),
+            format!(" {:.2}", metrics.cost_spent_cents),
             theme.status_bar,
         );
     }
@@ -465,9 +466,8 @@ fn push_extra_low_segments(
         list.push_abbrev_styled(
             Priority::Low,
             format!(
-                " · keepalive {} ${:.4}",
-                metrics.cache_keepalive_pings,
-                metrics.cache_keepalive_cost_cents / 100.0
+                " · keepalive {} {}",
+                metrics.cache_keepalive_pings, metrics.cache_keepalive_cost_cents
             ),
             format!(" ka{}", metrics.cache_keepalive_pings),
             theme.status_bar,
@@ -1029,7 +1029,7 @@ mod tests {
         assert!(!render(KeepaliveState::Idle).contains("Warming"));
         let counted = MetricsSnapshot {
             cache_keepalive_pings: 3,
-            cache_keepalive_cost_cents: 12.5,
+            cache_keepalive_cost_cents: Cents::new(12.5),
             ..MetricsSnapshot::default()
         };
         let shown = render_to_string(180, 1, |frame, area| {

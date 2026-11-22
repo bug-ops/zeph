@@ -234,7 +234,7 @@ impl<C: Channel> Agent<C> {
             .metrics
             .metrics_tx
             .as_ref()
-            .map_or(0.0, |tx| tx.borrow().cost_spent_cents);
+            .map_or(0.0, |tx| tx.borrow().cost_spent_cents.as_f64());
         let _ = self
             .channel
             .send_usage(tokens, context_window, cost_cents)

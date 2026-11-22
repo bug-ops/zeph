@@ -40,14 +40,14 @@ called immediately after `record_cost_and_cache()` at each turn completion point
 | Method | Description |
 |--------|-------------|
 | `record_successful_task()` | Increments today's successful-task counter |
-| `cps() -> Option<f64>` | Returns CPS in cents; `None` until first task recorded |
+| `cps() -> Option<Cents>` | Returns CPS in cents; `None` until first task recorded |
 | `successful_tasks() -> u64` | Returns count of successful tasks today |
 
 ### Metrics fields (`AgentMetrics`)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `cost_cps_cents` | `Option<f64>` | Current CPS value |
+| `cost_cps_cents` | `Option<Cents>` | Current CPS value |
 | `cost_successful_tasks` | `u64` | Successful task count today |
 
 Both fields are updated in `record_cost_and_cache` → `record_successful_task` call chain inside
@@ -56,7 +56,7 @@ Both fields are updated in `record_cost_and_cache` → `record_successful_task` 
 ## Key Invariants
 
 - CPS and successful-task count reset at UTC day boundary, consistent with `spent_cents` reset.
-- When `CostTracker` is disabled, `record_successful_task()` is a no-op; `cps()` returns `None`.
+- With `[cost] enabled = false` no `CostTracker` exists, so `cps()` is never available and `cost_cps_cents` stays `None`.
 - A turn that errors before `record_cost_and_cache` is called is NOT counted as successful.
 - Per-provider CPS is not tracked; only the global daily counter is maintained.
 

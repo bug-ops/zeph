@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use crate::agent::agent_tests::*;
-use crate::cost::CostTracker;
+use crate::cost::{CostTracker, DailyBudget};
+use zeph_common::money::Cents;
 use zeph_config::EnsembleConfig;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
@@ -112,7 +113,9 @@ async fn run_scheduler_loop_full_quorum_records_serving_model_cache_tokens_and_c
         MockToolExecutor::no_tools(),
     )
     .with_memory(Arc::clone(&memory), cid, 100, 5, 1000)
-    .with_cost_tracker(CostTracker::new(true, 100_000.0))
+    .with_cost_tracker(CostTracker::new(DailyBudget::Limited(Cents::new(
+        100_000.0,
+    ))))
     .with_ensemble_members(vec![member("m1"), member("m2"), member("m3")]);
     agent.services.orchestration.orchestration_config = config;
 

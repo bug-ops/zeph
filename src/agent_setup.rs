@@ -823,7 +823,7 @@ async fn build_compressed_executor<
 
 use zeph_core::agent::Agent;
 use zeph_core::config::IndexConfig;
-use zeph_core::cost::CostTracker;
+use zeph_core::cost::{CostTracker, DailyBudget};
 use zeph_index::{
     indexer::{CodeIndexer, IndexerConfig},
     store::CodeStore,
@@ -926,7 +926,7 @@ pub(crate) fn apply_cost_tracker<C: Channel>(
     if !config.cost.enabled {
         return agent;
     }
-    let mut tracker = CostTracker::new(true, f64::from(config.cost.max_daily_cents));
+    let mut tracker = CostTracker::new(DailyBudget::from_config(config.cost.max_daily_cents));
     for entry in &config.llm.providers {
         if entry.provider_type == zeph_config::ProviderKind::Cocoon
             && let (Some(pricing), Some(model)) = (&entry.cocoon_pricing, &entry.model)

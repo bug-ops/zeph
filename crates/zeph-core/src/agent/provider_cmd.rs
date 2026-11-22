@@ -6,6 +6,7 @@
 use std::fmt::Write as _;
 
 use tokio::time::Duration;
+use zeph_common::money::Cents;
 
 use super::Agent;
 use super::agent_supervisor::TaskClass;
@@ -475,8 +476,8 @@ impl<C: Channel> Agent<C> {
                 "Tokens:    {} prompt / {} completion",
                 m.prompt_tokens, m.completion_tokens
             );
-            if m.cost_spent_cents > 0.0 {
-                let _ = writeln!(out, "Cost:      ${:.4}", m.cost_spent_cents / 100.0);
+            if m.cost_spent_cents > Cents::ZERO {
+                let _ = writeln!(out, "Cost:      {}", m.cost_spent_cents);
             }
         }
         out.trim_end().to_owned()

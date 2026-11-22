@@ -2222,7 +2222,9 @@ mod tests {
 
         let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
             .with_memory(std::sync::Arc::clone(&memory_arc), cid, 50, 5, 100)
-            .with_cost_tracker(crate::cost::CostTracker::new(true, 1000.0));
+            .with_cost_tracker(crate::cost::CostTracker::new(
+                crate::cost::DailyBudget::Limited(zeph_common::money::Cents::new(1000.0)),
+            ));
         // gpt-4o is a known-priced model — a zero-cost model would make this test vacuous.
         "gpt-4o".clone_into(&mut agent.runtime.config.model_name);
 
@@ -2263,12 +2265,12 @@ mod tests {
             .current_spend();
         let actual = memory_arc.sqlite().usage_cost_since(0).await.unwrap();
         assert!(
-            (actual - expected).abs() < 1e-6,
+            (actual - expected.as_f64()).abs() < 1e-6,
             "SUM(usage_records.cost_cents)={actual} must equal \
              CostTracker.current_spend()={expected}"
         );
         assert!(
-            expected > 0.0,
+            expected > zeph_common::money::Cents::ZERO,
             "gpt-4o must be a priced model — a zero-cost test proves nothing"
         );
     }
@@ -2287,7 +2289,9 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         )
-        .with_cost_tracker(crate::cost::CostTracker::new(true, 1000.0));
+        .with_cost_tracker(crate::cost::CostTracker::new(
+            crate::cost::DailyBudget::Limited(zeph_common::money::Cents::new(1000.0)),
+        ));
         "gpt-4o".clone_into(&mut agent.runtime.config.model_name);
 
         let planner_provider = agent.provider.clone();
@@ -2303,7 +2307,11 @@ mod tests {
             .as_ref()
             .unwrap()
             .current_spend();
-        assert!(spend.abs() < f64::EPSILON, "cache hit billed {spend}");
+        assert_eq!(
+            spend,
+            zeph_common::money::Cents::ZERO,
+            "cache hit billed {spend}"
+        );
     }
 
     /// Gating: when cost tracking is disabled (`[cost] enabled = false`, `cost_tracker` is
