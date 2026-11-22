@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** `rust-agent-handoff` skill: handoff protocol v2 (spec 032) replaces nested `.yaml` files with Markdown files with flat YAML frontmatter; per-role output sections move from the skill's `references/` into the `.zeph/agents/` definitions (#7160).
 - Workspace: fix the isolated `profiling-alloc` build and synchronize the debug dump redaction test with completion of the asynchronous file write.
 - Workspace: fix lint compatibility for isolated features and Rust 1.98, and compile the context budget doctest with its new input type.
 - `zeph-bench`: replace the tau2 tool schema module-wide dead-code suppression with item-level expectations that explain the schema-only fields.
@@ -23,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-llm`: scope the large-enum expectation to Gonka builds where provider variants make it necessary.
 - `zeph-acp`, `zeph-sanitizer`: scope dead-code, large-futures, and excessive-bools expectations to the feature profiles that activate those conditions.
 - `zeph-index`, `zeph-orchestration`: move PostgreSQL testcontainers modules to dev-dependencies so test-utils builds do not report unused optional dependencies.
+- Dependencies: bump `url` to 2.5.9 for RUSTSEC-2026-0592 (#7160).
 - `.github/deny.toml`: document temporary exceptions for newly issued unmaintained advisories on `chrono` and `humantime`.
 
 ## [0.24.0] - 2026-11-16

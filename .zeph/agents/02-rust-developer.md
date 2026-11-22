@@ -538,3 +538,16 @@ rust-code-reviewer → [rust-developer] → rust-code-reviewer
 | rust-debugger | Root cause, suggested fix | Fix the bug |
 | rust-code-reviewer | Review issues | Address feedback |
 | rust-performance-engineer | Optimization guidance | Implement optimization |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `developer`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **Implementation Summary** (required): what was implemented and the key decisions.
+- **Files Changed** (required): one line per file: path, `created|modified|deleted`, what and why. No code listings.
+- **Checks** (required): the commands run and their result; a check that could not run makes the handoff `blocked`.
+- **Dependencies Added**: name, version, reason.
+- **Deviations**: every change the plan, spec or task did not require, with who approved it.
+- **Declined Suggestions**: one line per reviewer suggestion not applied, with the reason.

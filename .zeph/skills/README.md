@@ -43,7 +43,7 @@ Zeph supports two skill matching backends:
 | `process-management` | Monitor, manage, and control system processes — ps, kill, jobs, systemctl |
 | `qdrant` | Manage Qdrant vector database — collections, points, search, filters, snapshots |
 | `regex` | Write, test, and debug regular expressions across programming languages |
-| `rust-agent-handoff` | Handoff protocol for Rust multi-agent development system |
+| `rust-agent-handoff` | Handoff protocol v2 for the Rust development sub-agents: Markdown handoff files with flat YAML frontmatter |
 | `scheduler` | Create, cancel, and manage periodic (cron) and deferred background tasks |
 | `setup-guide` | Zeph configuration reference — LLM providers, memory, tools, and features |
 | `skill-audit` | Spec compliance and security review of installed skills |

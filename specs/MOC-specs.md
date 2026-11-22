@@ -216,7 +216,7 @@ status: moc
 ## Special Topics & Documentation
 
 ### Handoff Protocol
-- [[032-handoff-skill-system/spec|Skill-Based Handoff Protocol]] — YAML handoff protocol for inter-agent communication, structured skill exchange format
+- [[032-handoff-skill-system/spec|Skill-Based Handoff Protocol]] — handoff protocol v2: Markdown files with flat YAML frontmatter for inter-agent communication
 
 ### Subagent Context
 - [[033-subagent-context-propagation/spec|Subagent Context Propagation]] — gap analysis of `/agent spawn` context vs Claude Code reference, 12 gaps (P1–P4), phase-based fix plan; documents GAP-07 (cwd) and GAP-08b (loop exits) resolution

@@ -288,3 +288,14 @@ rust-architect → [rust-cicd-devops] → rust-testing-engineer
 | rust-testing-engineer | Test commands | Test integration |
 | rust-security-maintenance | Security requirements | Security scanning |
 | rust-performance-engineer | Build optimization | Caching, parallelization |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `cicd`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **CI Summary** (required): what changed in the pipeline and why.
+- **Workflows Changed** (required): file, jobs touched, one-line reason.
+- **Local and CI Parity** (required): the local commands that now match the changed jobs.
+- **Secrets Required**: name and purpose, if any.

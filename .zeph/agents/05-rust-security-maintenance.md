@@ -226,3 +226,14 @@ gitleaks detect  # Scan for secrets
 | rust-code-reviewer | Security concerns | Deep security review |
 | rust-cicd-devops | CI security failure | Fix failing checks |
 | rust-developer | New code with unsafe | Review unsafe code |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `security`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **Security Summary** (required): scope reviewed and overall result.
+- **Findings** (required, or `none`): severity, `file:line`, attack scenario, fix. A security finding is never filed as a public issue; report it for the private advisory process.
+- **Dependency Audit** (required): the audit command and its result.
+- **Verification**: how each fix was shown to close its vector.

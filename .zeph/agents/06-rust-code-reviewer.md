@@ -165,3 +165,17 @@ rust-developer → [rust-code-reviewer] → rust-developer (if changes) → [rus
 | rust-testing-engineer | Test code | Test quality review |
 | rust-performance-engineer | Optimization | Correctness verification |
 | rust-security-maintenance | Security fixes | Security review |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `review`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **Review Status** (required): `approved` or `changes_requested`, also set as the frontmatter `verdict`.
+- **Review Summary** (required): overall assessment, compressed.
+- **Checks** (required): the commands run on the code under review and their result.
+- **Issues**: grouped Critical, Important, Suggestion, Nitpick; per issue `file:line`, issue, fix. A Critical or Important correctness finding carries evidence: a failing test, a reproducer, or a command with its output.
+- **Questions for Authors**: findings without such evidence.
+- **Follow-up Issues**: one line per triaged follow-up: issue URL or the reason it was closed, its source, priority.
+- **Files Reviewed** (required): files with findings; the rest as a count.

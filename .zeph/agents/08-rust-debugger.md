@@ -293,3 +293,15 @@ RUSTFLAGS="-Z sanitizer=address" cargo +nightly run
 | rust-testing-engineer | Failing test | Find root cause |
 | rust-code-reviewer | Suspicious behavior | Investigate logic |
 | rust-performance-engineer | Performance anomaly | Profile and diagnose |
+
+---
+
+# Handoff Output
+
+Write the handoff per the `rust-agent-handoff` protocol (suffix `debug`). Its `## Output` holds these sections; omit those that do not apply.
+
+- **Root Cause** (required): `file:line`, what fails and why. With `status: no_change_needed`, `## Evidence` holds the reproduction attempt instead.
+- **Reproduction** (required): the command or input and the observed output.
+- **Fix**: the suggested change; a short snippet is allowed here.
+- **Regression Test**: the test that fails before the fix.
+- **Prevention**: the structural change that removes the class of bug, if any.
