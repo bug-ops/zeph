@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-llm`: scope the large-enum expectation to Gonka builds where provider variants make it necessary.
 - `zeph-acp`, `zeph-sanitizer`: scope dead-code, large-futures, and excessive-bools expectations to the feature profiles that activate those conditions.
 - `zeph-index`, `zeph-orchestration`: move PostgreSQL testcontainers modules to dev-dependencies so test-utils builds do not report unused optional dependencies.
+- Dependencies: bump `url` to 2.5.9 for RUSTSEC-2026-0592 (#7160).
 - `.github/deny.toml`: document temporary exceptions for newly issued unmaintained advisories on `chrono` and `humantime`.
 
 ## [0.24.0] - 2026-11-16
