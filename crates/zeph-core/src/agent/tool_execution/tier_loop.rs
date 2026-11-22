@@ -434,11 +434,6 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    fn skill_attribution(&self) -> Option<Vec<String>> {
-        (!self.services.skill.active_skill_names.is_empty())
-            .then(|| self.services.skill.active_skill_names.clone())
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "prepare_tool_dispatch keeps ordered steps together because they share state and control flow"
@@ -452,6 +447,10 @@ impl<C: Channel> Agent<C> {
         // PAAC secret unmasking (#5437): resolved once per dispatch batch (Arc clone, cheap)
         // so the closure below doesn't need to re-borrow `self` for every tool call.
         let secret_registry = self.services.security.secret_registry.clone();
+        let batch_attribution = zeph_tools::CallAttribution {
+            caller: None,
+            active_skills: self.services.skill.active_skill_names.clone(),
+        };
         // When the orchestration scheduler has set a named execution environment for the
         // current task, inject it into every ToolCall so ShellExecutor::resolve_context
         // uses the right env/cwd without the LLM having to supply it.
@@ -511,10 +510,7 @@ impl<C: Channel> Agent<C> {
                 ToolCall {
                     tool_id: tc.name.clone(),
                     params,
-                    attribution: zeph_tools::CallAttribution::new(
-                        None,
-                        self.skill_attribution().into_iter().flatten(),
-                    ),
+                    attribution: batch_attribution.clone(),
                     context: task_ctx.clone(),
                     tool_call_id: Some(tool_call_ids[idx].clone()),
                 }
@@ -2346,6 +2342,31 @@ mod tests {
             tool_id: zeph_common::ToolName::new(name),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn dispatch_batch_calls_share_equal_attribution_with_active_skills() {
+        use crate::agent::state::skill_name;
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![] as Vec<String>),
+            zeph_skills::registry::SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.skill.active_skill_names = vec![skill_name("alpha"), skill_name("beta")];
+        let calls = [make_tool_req("shell"), make_tool_req("read")];
+
+        let ctx = agent.prepare_tool_dispatch(&calls, std::sync::Arc::default());
+
+        assert_eq!(ctx.calls.len(), 2);
+        assert_eq!(ctx.calls[0].attribution, ctx.calls[1].attribution);
+        assert_eq!(
+            ctx.calls[0].attribution.active_skills,
+            [skill_name("alpha"), skill_name("beta")]
+        );
     }
 
     // Regression guard for issue #3738: pre_tool_use hooks must fire for tools that are

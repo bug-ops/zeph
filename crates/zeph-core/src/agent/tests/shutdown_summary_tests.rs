@@ -537,7 +537,7 @@ async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop()
         .services
         .skill
         .active_skill_names
-        .push("test-skill".to_owned());
+        .push(crate::agent::state::skill_name("test-skill"));
     agent.run().await.expect("agent run must succeed");
 
     let snap: MetricsSnapshot = rx.borrow().clone();

@@ -15,13 +15,22 @@ use zeph_llm::provider::{Message, MessageMetadata, Role, ToolDefinition};
 use crate::config::FocusConfig;
 use zeph_common::text::estimate_tokens;
 
+/// Name of the `start_focus` built-in tool.
+pub(crate) const START_FOCUS_TOOL: &str = "start_focus";
+/// Name of the `complete_focus` built-in tool.
+pub(crate) const COMPLETE_FOCUS_TOOL: &str = "complete_focus";
+/// Name of the `compress_context` built-in tool.
+pub(crate) const COMPRESS_CONTEXT_TOOL: &str = "compress_context";
+/// Name of the `request_compaction` built-in tool.
+pub(crate) const REQUEST_COMPACTION_TOOL: &str = "request_compaction";
+
 /// Build tool definitions for `start_focus` and `complete_focus` (#1850).
 ///
 /// These are injected into the tool list when `focus.enabled = true`.
 pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
-            name: "start_focus".into(),
+            name: START_FOCUS_TOOL.into(),
             description: "Start a focused exploration phase. Use before diving into a subtask \
                           (e.g., reading many files, running experiments). The conversation since \
                           this checkpoint will be summarized and compressed when you call \
@@ -43,7 +52,7 @@ pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
             output_schema: None,
         },
         ToolDefinition {
-            name: "complete_focus".into(),
+            name: COMPLETE_FOCUS_TOOL.into(),
             description: "Complete the active focus phase. Summarizes the conversation since the \
                           last start_focus checkpoint, appends the summary to the pinned Knowledge \
                           block, and removes the bracketed messages from context.\n\nParameters: \
@@ -73,7 +82,7 @@ pub(crate) fn focus_tool_definitions() -> Vec<ToolDefinition> {
 /// strategy. The strategy controls automatic compression; this tool provides explicit control.
 pub(crate) fn compress_context_tool_definition() -> ToolDefinition {
     ToolDefinition {
-        name: "compress_context".into(),
+        name: COMPRESS_CONTEXT_TOOL.into(),
         description: "Compress the current conversation context. Summarizes conversation history \
                       (excluding pinned Knowledge) into a compact summary, appends it to the \
                       Knowledge block, and removes the original messages from context.\n\n\
@@ -98,7 +107,7 @@ pub(crate) fn compress_context_tool_definition() -> ToolDefinition {
 /// — only one compaction fires per turn regardless of how many times the agent calls this.
 pub(crate) fn request_compaction_tool_definition() -> ToolDefinition {
     ToolDefinition {
-        name: "request_compaction".into(),
+        name: REQUEST_COMPACTION_TOOL.into(),
         description: "Request immediate context compaction. Use when the conversation context \
                       feels unwieldy or when you are running low on context space. Provide a \
                       brief reason for the compaction request.\n\n\

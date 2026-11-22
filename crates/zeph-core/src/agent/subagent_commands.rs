@@ -2490,7 +2490,10 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         );
-        agent.services.skill.active_skill_names = vec!["trusted-skill".into(), "evil-skill".into()];
+        agent.services.skill.active_skill_names = vec![
+            crate::agent::state::skill_name("trusted-skill"),
+            crate::agent::state::skill_name("evil-skill"),
+        ];
         agent.services.skill.trust_snapshot.write().insert(
             "trusted-skill".into(),
             crate::skill_invoker::SkillTrustSnapshot {
@@ -2538,8 +2541,10 @@ mod tests {
         // Simulate retrieval-fallback mode: every registered skill is "active" for catalog
         // purposes, including one the operator has Blocked.
         agent.services.skill.skill_fallback_mode = true;
-        agent.services.skill.active_skill_names =
-            vec!["trusted-skill".into(), "blocked-skill".into()];
+        agent.services.skill.active_skill_names = vec![
+            crate::agent::state::skill_name("trusted-skill"),
+            crate::agent::state::skill_name("blocked-skill"),
+        ];
         agent.services.skill.trust_snapshot.write().insert(
             "blocked-skill".into(),
             crate::skill_invoker::SkillTrustSnapshot {
@@ -2655,7 +2660,8 @@ mod tests {
             .await
             .unwrap();
         agent = agent.with_memory(memory, zeph_memory::ConversationId(1), 50, 5, 50);
-        agent.services.skill.active_skill_names = vec!["evil-skill".into()];
+        agent.services.skill.active_skill_names =
+            vec![crate::agent::state::skill_name("evil-skill")];
 
         let resp = agent.handle_agent_background("helper", "do work").await;
         assert!(

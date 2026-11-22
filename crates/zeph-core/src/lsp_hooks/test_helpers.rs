@@ -61,7 +61,9 @@ impl McpCaller for RecordingCaller {
         queue.remove(0)
     }
 
-    fn list_servers(&self) -> impl std::future::Future<Output = Vec<String>> + Send {
-        std::future::ready(vec!["mcpls".to_owned()])
+    fn list_servers(
+        &self,
+    ) -> impl std::future::Future<Output = Vec<zeph_common::types::McpServerId>> + Send {
+        std::future::ready(vec!["mcpls".into()])
     }
 }

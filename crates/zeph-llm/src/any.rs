@@ -85,13 +85,6 @@ macro_rules! delegate_provider {
 /// The `Candle` variant is only available when the `candle` feature is enabled.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
-#[cfg_attr(
-    feature = "gonka",
-    expect(
-        clippy::large_enum_variant,
-        reason = "Gonka and mock provider variants stay inline to preserve allocation-free enum dispatch."
-    )
-)]
 pub enum AnyProvider {
     Ollama(OllamaProvider),
     Claude(ClaudeProvider),
@@ -107,7 +100,7 @@ pub enum AnyProvider {
     ///
     /// Only available when the `gonka` feature is enabled.
     #[cfg(feature = "gonka")]
-    Gonka(GonkaProvider),
+    Gonka(Box<GonkaProvider>),
     /// Cocoon confidential compute provider — routes requests through the TEE sidecar.
     Cocoon(Box<CocoonProvider>),
     /// A mock provider for use in tests and benchmarks.
@@ -508,7 +501,7 @@ impl AnyProvider {
                 Self::Candle(p)
             }
             #[cfg(feature = "gonka")]
-            Self::Gonka(p) => Self::Gonka(p.with_generation_overrides(overrides)),
+            Self::Gonka(p) => Self::Gonka(Box::new(p.with_generation_overrides(overrides))),
             Self::Cocoon(p) => Self::Cocoon(Box::new(p.with_generation_overrides(overrides))),
             Self::Router(_) | Self::Triage(_) => {
                 tracing::warn!("generation overrides not supported for this provider variant");
@@ -792,6 +785,14 @@ impl LlmProvider for AnyProvider {
         messages: &[Message],
     ) -> Result<(String, ChatExtras), crate::LlmError> {
         delegate_provider!(self, |p| p.chat_with_extras(messages).await)
+    }
+
+    async fn chat_with_tools_extras(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<(ChatResponse, ChatExtras), crate::LlmError> {
+        delegate_provider!(self, |p| p.chat_with_tools_extras(messages, tools).await)
     }
 
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, crate::LlmError> {
@@ -1340,14 +1341,14 @@ mod tests {
             }])
             .unwrap(),
         );
-        AnyProvider::Gonka(GonkaProvider::new(crate::gonka::GonkaConfig {
+        AnyProvider::Gonka(Box::new(GonkaProvider::new(crate::gonka::GonkaConfig {
             signer,
             pool,
             model: "gpt-4o".into(),
             max_tokens: 4096,
             embedding_model: None,
             timeout: std::time::Duration::from_secs(30),
-        }))
+        })))
     }
 
     #[cfg(feature = "gonka")]

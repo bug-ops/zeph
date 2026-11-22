@@ -401,11 +401,11 @@ impl McpManager {
         feature = "profiling",
         tracing::instrument(name = "mcp.manager.list_servers", skip_all)
     )]
-    pub async fn list_servers(&self) -> Vec<String> {
+    pub async fn list_servers(&self) -> Vec<McpServerId> {
         let clients = self.clients.read().await;
         server_ids_in_order(clients.keys(), &self.configured_order)
             .into_iter()
-            .map(ToString::to_string)
+            .cloned()
             .collect()
     }
 

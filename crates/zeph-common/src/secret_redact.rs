@@ -312,6 +312,64 @@ pub fn scrub_content(text: &str) -> Cow<'_, str> {
     chain(scrub_secrets(text), sanitize_paths)
 }
 
+/// Separator that stands in for a stripped control or bypass codepoint while scrubbing.
+const SPLITTER: char = '\u{1}';
+const SPLITTER_STR: &str = "\u{1}";
+
+static ANSI_CSI_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").expect("ansi csi regex is valid"));
+
+static REDACTED_TAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(\[REDACTED[A-Z_]*\])\x01\S*").expect("redacted tail regex is valid")
+});
+
+fn is_strippable(c: char) -> bool {
+    c.is_control() || crate::patterns::is_bypass_codepoint(c)
+}
+
+/// Make server-controlled text safe to store in an error or log line.
+///
+/// Scrubs secret shapes, strips control and bypass codepoints, and caps the result at `max_chars`
+/// characters. Whitespace controls (`\t`, `\n`, ...) become a space so they keep acting as token
+/// boundaries. ANSI CSI sequences and every other control or bypass codepoint become a separator
+/// that is invisible to the boundary-anchored shapes yet lets prefix-tier shapes consume a token
+/// split by it. After the first scrub, the tail that a shape left behind a separator is dropped,
+/// the separators are deleted and the text is scrubbed again for fixed-length shapes that the
+/// separator had broken. The cap runs last so a secret is never cut before it is scrubbed.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::secret_redact::sanitize_upstream_text;
+///
+/// let out = sanitize_upstream_text("key sk-test-abc123def456\u{1b}[31m", 500);
+/// assert!(!out.contains("sk-test-abc123def456"));
+/// assert!(!out.contains('\u{1b}'));
+/// assert_eq!(sanitize_upstream_text("é".repeat(10).as_str(), 3).chars().count(), 3);
+/// ```
+#[must_use]
+pub fn sanitize_upstream_text(text: &str, max_chars: usize) -> String {
+    if !text.chars().any(is_strippable) {
+        return scrub_secret_shapes(text).chars().take(max_chars).collect();
+    }
+    let spaced = ANSI_CSI_REGEX.replace_all(text, SPLITTER_STR);
+    let marked: String = spaced
+        .chars()
+        .map(|c| match c {
+            '\t' | '\n' | '\x0b' | '\x0c' | '\r' => ' ',
+            c if is_strippable(c) => SPLITTER,
+            c => c,
+        })
+        .collect();
+    let scrubbed = scrub_secret_shapes(&marked);
+    let absorbed = REDACTED_TAIL_REGEX.replace_all(&scrubbed, "${1}");
+    let joined: String = absorbed.chars().filter(|&c| c != SPLITTER).collect();
+    scrub_secret_shapes(&joined)
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

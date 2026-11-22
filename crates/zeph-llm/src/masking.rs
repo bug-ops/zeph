@@ -335,6 +335,20 @@ impl LlmProvider for MaskedProvider {
         .await
     }
 
+    async fn chat_with_tools_extras(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<(ChatResponse, ChatExtras), LlmError> {
+        let masked = self.mask_messages(messages);
+        LlmProviderDyn::chat_with_tools_extras(
+            self.inner.as_ref(),
+            masked.as_deref().unwrap_or(messages),
+            tools,
+        )
+        .await
+    }
+
     fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
         LlmProvider::last_response_usage(self.inner.as_ref())
     }

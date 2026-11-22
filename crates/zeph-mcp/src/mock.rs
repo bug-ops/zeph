@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use rmcp::model::{CallToolResult, ContentBlock};
 
+use zeph_common::types::McpServerId;
+
 use crate::caller::McpCaller;
 use crate::error::McpError;
 
@@ -35,7 +37,7 @@ pub struct MockMcpCaller {
     pending_responses: Arc<Mutex<VecDeque<Result<CallToolResult, McpError>>>>,
     /// Server IDs returned by `list_servers`. Empty by default so that
     /// `is_available()` returns `false` unless explicitly configured.
-    pub server_ids: Arc<Mutex<Vec<String>>>,
+    pub server_ids: Arc<Mutex<Vec<McpServerId>>>,
 }
 
 impl MockMcpCaller {
@@ -54,7 +56,7 @@ impl MockMcpCaller {
     ///
     /// Panics if the internal mutex is poisoned.
     #[must_use]
-    pub fn with_server(self, id: impl Into<String>) -> Self {
+    pub fn with_server(self, id: impl Into<McpServerId>) -> Self {
         self.server_ids.lock().unwrap().push(id.into());
         self
     }
@@ -120,7 +122,7 @@ impl McpCaller for MockMcpCaller {
         std::future::ready(result)
     }
 
-    fn list_servers(&self) -> impl Future<Output = Vec<String>> + Send {
+    fn list_servers(&self) -> impl Future<Output = Vec<McpServerId>> + Send {
         std::future::ready(self.server_ids.lock().unwrap().clone())
     }
 }

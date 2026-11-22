@@ -11,10 +11,11 @@
 //!
 //! # Scope
 //!
-//! `CoE` wraps only the router's plain `chat()` calls (auxiliary completions such as skill
-//! matching and JSON retries). The main agent turn goes through `chat_with_tools` /
-//! `chat_stream`, which neither request `logprobs` nor escalate, so the user-visible answer of
-//! a tool-using turn is not entropy-checked (#7096).
+//! `CoE` wraps the router's `chat()` and `chat_with_tools()`. Streaming is excluded by design:
+//! delivered chunks cannot be replaced by a shadow answer. A tool-call primary answer is kept
+//! without a shadow call; only a text answer can escalate. The shadow stage (secondary call and
+//! inter-divergence) is bounded by [`CoeConfig::shadow_budget`], so a slow secondary never
+//! costs the primary answer.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,8 +24,30 @@ use std::time::Duration;
 use zeph_common::math::cosine_similarity;
 
 use crate::error::LlmError;
-use crate::provider::{Message, ResponseUsage};
+use crate::provider::{ChatExtras, ChatResponse, ResponseUsage};
 use crate::provider_dyn::LlmProviderDyn;
+
+/// Upper bound of the shadow stage, regardless of the configured LLM timeout.
+const MAX_SHADOW_BUDGET: Duration = Duration::from_secs(30);
+
+/// Shadow-stage budget for a given LLM timeout: `min(30 s, llm_timeout / 4)`.
+///
+/// A primary answer that completes within three quarters of `llm_timeout` is therefore never
+/// lost to the `CoE` stage.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use zeph_llm::router::coe::shadow_budget_for;
+///
+/// assert_eq!(shadow_budget_for(Duration::from_secs(120)), Duration::from_secs(30));
+/// assert_eq!(shadow_budget_for(Duration::from_secs(20)), Duration::from_secs(5));
+/// ```
+#[must_use]
+pub fn shadow_budget_for(llm_timeout: Duration) -> Duration {
+    MAX_SHADOW_BUDGET.min(llm_timeout / 4)
+}
 
 /// Configuration for the `CoE` subsystem (mirrors `[llm.coe]` in TOML).
 #[derive(Debug, Clone)]
@@ -35,6 +58,11 @@ pub struct CoeConfig {
     pub inter_threshold: f64,
     /// Baseline rate at which secondary is called even when intra is low.
     pub shadow_sample_rate: f64,
+    /// Time allowed for the shadow stage; on expiry the primary is kept.
+    ///
+    /// Runtime-derived from `timeouts.llm_seconds` (see [`shadow_budget_for`]), not a TOML key.
+    /// A zero budget disables the shadow stage.
+    pub shadow_budget: Duration,
 }
 
 impl Default for CoeConfig {
@@ -43,6 +71,7 @@ impl Default for CoeConfig {
             intra_threshold: 0.8,
             inter_threshold: 0.20,
             shadow_sample_rate: 0.1,
+            shadow_budget: MAX_SHADOW_BUDGET,
         }
     }
 }
@@ -137,11 +166,47 @@ pub fn decide(entropy: Option<f64>, divergence: Option<f32>, config: &CoeConfig)
     CoeDecision::KeepPrimary
 }
 
+/// A response shape that [`run_coe`] can check and, after an escalation, replace.
+pub(crate) trait CoeResponse {
+    /// Text the entropy and divergence signals apply to; `None` for tool-call answers, which
+    /// are kept without a shadow call.
+    fn coe_text(&self) -> Option<&str>;
+
+    /// Carry per-request metadata of the discarded `primary` over to this replacement.
+    fn inherit_request_metadata(&mut self, primary: &mut Self);
+}
+
+impl CoeResponse for String {
+    fn coe_text(&self) -> Option<&str> {
+        Some(self)
+    }
+
+    fn inherit_request_metadata(&mut self, _primary: &mut Self) {}
+}
+
+impl CoeResponse for ChatResponse {
+    fn coe_text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text, .. } => Some(text),
+            Self::ToolUse { .. } => None,
+        }
+    }
+
+    /// The primary's request was the one sent, so its thinking-replay report and its
+    /// compaction summary describe the request and must survive the replacement.
+    fn inherit_request_metadata(&mut self, primary: &mut Self) {
+        self.set_replay(primary.replay().merge(self.replay()));
+        if let Some(summary) = primary.take_compaction() {
+            self.attach_compaction(summary);
+        }
+    }
+}
+
 /// Result of one [`run_coe`] pass.
 #[derive(Debug)]
-pub struct CoeOutcome {
-    /// Final response text (the primary's, or the secondary's after an escalation).
-    pub text: String,
+pub(crate) struct CoeOutcome<R> {
+    /// Final response (the primary's, or the secondary's after an escalation).
+    pub response: R,
     /// Primary provider name, for Thompson updates.
     pub primary_name: String,
     /// Decision taken for this turn.
@@ -153,81 +218,96 @@ pub struct CoeOutcome {
     pub shadow_usage: Option<ResponseUsage>,
 }
 
-/// Run the full `CoE` pipeline for a single turn.
-///
-/// Takes the already-obtained primary response to avoid a redundant LLM call.
-/// Optionally shadows via secondary and returns the final response text.
-/// Also returns the primary provider name for Thompson updates.
-///
-/// Returns a [`CoeOutcome`] with the final text, primary name, decision and shadow usage.
-///
-/// # Errors
-///
-/// Secondary/embed failures are swallowed and cause fallback to the primary response (COE-02).
-#[tracing::instrument(name = "llm.router.coe.run_coe", skip_all)]
-pub async fn run_coe(
-    coe: &CoeRouter,
-    primary_name: String,
-    primary_text: String,
-    primary_extras: crate::provider::ChatExtras,
-    messages: &[Message],
-) -> Result<CoeOutcome, LlmError> {
-    let entropy = primary_extras.entropy;
-
-    if !should_shadow(entropy, &coe.config) {
-        coe.metrics.kept_primary.fetch_add(1, Ordering::Relaxed);
-        return Ok(CoeOutcome {
-            text: primary_text,
+impl<R> CoeOutcome<R> {
+    fn kept(response: R, primary_name: String, shadow_usage: Option<ResponseUsage>) -> Self {
+        Self {
+            response,
             primary_name,
             decision: CoeDecision::KeepPrimary,
-            shadow_usage: None,
-        });
+            shadow_usage,
+        }
+    }
+}
+
+/// Run the full `CoE` pipeline for a single turn.
+///
+/// Takes the already-obtained primary response to avoid a redundant LLM call, and a lazy
+/// `secondary` future that is polled only when a shadow call is warranted. The shadow stage
+/// runs under [`CoeConfig::shadow_budget`]; a secondary error or a timeout keeps the primary
+/// and counts toward `embed_failures` (COE-02). A tool-call primary, or a zero budget, returns
+/// the primary immediately.
+#[tracing::instrument(name = "llm.router.coe.run_coe", skip_all)]
+pub(crate) async fn run_coe<R, F>(
+    coe: &CoeRouter,
+    primary_name: String,
+    mut primary: R,
+    primary_extras: ChatExtras,
+    secondary: F,
+) -> CoeOutcome<R>
+where
+    R: CoeResponse,
+    F: Future<Output = Result<R, LlmError>>,
+{
+    if primary.coe_text().is_none() {
+        return CoeOutcome::kept(primary, primary_name, None);
+    }
+    let entropy = primary_extras.entropy;
+
+    if coe.config.shadow_budget.is_zero() || !should_shadow(entropy, &coe.config) {
+        coe.metrics.kept_primary.fetch_add(1, Ordering::Relaxed);
+        return CoeOutcome::kept(primary, primary_name, None);
     }
 
-    let secondary_text = match coe.secondary.chat(messages).await {
-        Ok(t) => t,
-        Err(e) => {
+    let shadow = tokio::time::timeout(coe.config.shadow_budget, async {
+        let secondary = secondary.await?;
+        let usage = coe.secondary.last_response_usage();
+        let divergence = match (primary.coe_text(), secondary.coe_text()) {
+            (Some(p), Some(s)) => inter_divergence(p, s, &*coe.embed).await,
+            _ => None,
+        };
+        Ok::<_, LlmError>((secondary, usage, divergence))
+    })
+    .await;
+    let (mut secondary, shadow_usage, divergence) = match shadow {
+        Ok(Ok(done)) => done,
+        Ok(Err(e)) => {
             tracing::warn!(error = %e, "coe: secondary call failed, keeping primary");
             coe.metrics.embed_failures.fetch_add(1, Ordering::Relaxed);
-            return Ok(CoeOutcome {
-                text: primary_text,
-                primary_name,
-                decision: CoeDecision::KeepPrimary,
-                shadow_usage: None,
-            });
+            return CoeOutcome::kept(primary, primary_name, None);
+        }
+        Err(_) => {
+            tracing::warn!(
+                budget_ms = u64::try_from(coe.config.shadow_budget.as_millis()).unwrap_or(u64::MAX),
+                "coe: shadow stage timed out, keeping primary"
+            );
+            coe.metrics.embed_failures.fetch_add(1, Ordering::Relaxed);
+            return CoeOutcome::kept(primary, primary_name, None);
         }
     };
-    let shadow_usage = coe.secondary.last_response_usage();
-
-    // Compute inter-divergence.
-    let divergence = inter_divergence(&primary_text, &secondary_text, &*coe.embed).await;
 
     let decision = decide(entropy, divergence, &coe.config);
-
-    let text = match decision {
-        CoeDecision::EscalateIntra => {
-            coe.metrics
-                .intra_escalations
-                .fetch_add(1, Ordering::Relaxed);
-            secondary_text
-        }
-        CoeDecision::EscalateInter => {
-            coe.metrics
-                .inter_escalations
-                .fetch_add(1, Ordering::Relaxed);
-            secondary_text
+    let response = match decision {
+        CoeDecision::EscalateIntra | CoeDecision::EscalateInter => {
+            let counter = if matches!(decision, CoeDecision::EscalateIntra) {
+                &coe.metrics.intra_escalations
+            } else {
+                &coe.metrics.inter_escalations
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            secondary.inherit_request_metadata(&mut primary);
+            secondary
         }
         CoeDecision::KeepPrimary => {
             coe.metrics.kept_primary.fetch_add(1, Ordering::Relaxed);
-            primary_text
+            primary
         }
     };
-    Ok(CoeOutcome {
-        text,
+    CoeOutcome {
+        response,
         primary_name,
         decision,
         shadow_usage,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -287,6 +367,7 @@ mod tests {
                 intra_threshold: 0.8,
                 inter_threshold: 0.20,
                 shadow_sample_rate: 0.0, // disable random shadow unless explicitly set
+                shadow_budget: Duration::from_secs(30),
             },
             secondary: Arc::new(secondary) as Arc<dyn LlmProviderDyn>,
             embed: Arc::new(embed) as Arc<dyn LlmProviderDyn>,
@@ -306,15 +387,18 @@ mod tests {
         let coe = make_coe_router(AnyProvider::Mock(secondary), AnyProvider::Mock(embed));
 
         // Low entropy → should_shadow returns false with shadow_sample_rate=0.0
-        let CoeOutcome { text, decision, .. } = run_coe(
+        let CoeOutcome {
+            response: text,
+            decision,
+            ..
+        } = run_coe(
             &coe,
             "primary".into(),
             "primary response".into(),
             ChatExtras { entropy: Some(0.1) },
-            &[],
+            coe.secondary.chat(&[]),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(text, "primary response");
         assert_matches!(decision, CoeDecision::KeepPrimary);
@@ -334,15 +418,18 @@ mod tests {
         let coe = make_coe_router(AnyProvider::Mock(secondary), AnyProvider::Mock(embed));
 
         // High entropy triggers shadow; secondary fails → fallback to primary.
-        let CoeOutcome { text, decision, .. } = run_coe(
+        let CoeOutcome {
+            response: text,
+            decision,
+            ..
+        } = run_coe(
             &coe,
             "primary".into(),
             "primary response".into(),
             ChatExtras { entropy: Some(1.0) },
-            &[],
+            coe.secondary.chat(&[]),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(text, "primary response");
         assert_matches!(decision, CoeDecision::KeepPrimary);
@@ -360,15 +447,18 @@ mod tests {
         embed.supports_embeddings = true;
         let coe = make_coe_router(AnyProvider::Mock(secondary), AnyProvider::Mock(embed));
 
-        let CoeOutcome { text, decision, .. } = run_coe(
+        let CoeOutcome {
+            response: text,
+            decision,
+            ..
+        } = run_coe(
             &coe,
             "primary".into(),
             "primary response text long enough to matter".into(),
             ChatExtras { entropy: Some(1.0) }, // above intra_threshold=0.8
-            &[],
+            coe.secondary.chat(&[]),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(text, "secondary response");
         assert_matches!(decision, CoeDecision::EscalateIntra);

@@ -523,7 +523,7 @@ impl<C: Channel> Agent<C> {
         if skill_fallback_mode || names.is_empty() {
             return String::new();
         }
-        let mut sorted: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut sorted: Vec<&str> = names.iter().map(zeph_common::SkillName::as_str).collect();
         sorted.sort_unstable();
         format!("<active_skills>{}</active_skills>", sorted.join(", "))
     }
@@ -1094,7 +1094,10 @@ mod tests {
     #[tokio::test]
     async fn compact_mode_sends_only_the_names_line() {
         let mut agent = append_agent();
-        agent.services.skill.active_skill_names = vec!["alpha".into(), "beta".into()];
+        agent.services.skill.active_skill_names = vec![
+            crate::agent::state::skill_name("alpha"),
+            crate::agent::state::skill_name("beta"),
+        ];
         let mut input = inputs("catalog", &[], vec![]);
         input.effective_mode = crate::config::SkillPromptMode::Compact;
         let text = run_turn(&mut agent, input).await;
@@ -1105,22 +1108,31 @@ mod tests {
     #[tokio::test]
     async fn active_skills_line_is_sent_only_when_it_changes() {
         let mut agent = append_agent();
-        agent.services.skill.active_skill_names = vec!["beta".into(), "alpha".into()];
+        agent.services.skill.active_skill_names = vec![
+            crate::agent::state::skill_name("beta"),
+            crate::agent::state::skill_name("alpha"),
+        ];
         let t1 = run_turn(&mut agent, inputs("c", &[], vec![])).await;
         assert!(t1.contains("<active_skills>alpha, beta</active_skills>"));
 
-        agent.services.skill.active_skill_names = vec!["alpha".into(), "beta".into()];
+        agent.services.skill.active_skill_names = vec![
+            crate::agent::state::skill_name("alpha"),
+            crate::agent::state::skill_name("beta"),
+        ];
         let t2 = run_turn(&mut agent, inputs("c", &[], vec![])).await;
         assert!(
             !t2.contains("active_skills"),
             "a pure reorder is not a change: {t2}"
         );
 
-        agent.services.skill.active_skill_names = vec!["gamma".into()];
+        agent.services.skill.active_skill_names = vec![crate::agent::state::skill_name("gamma")];
         let t3 = run_turn(&mut agent, inputs("c", &[], vec![])).await;
         assert!(t3.contains("<active_skills>gamma</active_skills>"));
 
-        agent.services.skill.active_skill_names = vec!["alpha".into(), "beta".into()];
+        agent.services.skill.active_skill_names = vec![
+            crate::agent::state::skill_name("alpha"),
+            crate::agent::state::skill_name("beta"),
+        ];
         let t4 = run_turn(&mut agent, inputs("c", &[], vec![])).await;
         assert!(
             t4.contains("<active_skills>alpha, beta</active_skills>"),
@@ -1131,7 +1143,10 @@ mod tests {
     #[tokio::test]
     async fn active_skills_keeps_match_order_in_agent_state() {
         let mut agent = append_agent();
-        agent.services.skill.active_skill_names = vec!["zeta".into(), "alpha".into()];
+        agent.services.skill.active_skill_names = vec![
+            crate::agent::state::skill_name("zeta"),
+            crate::agent::state::skill_name("alpha"),
+        ];
         run_turn(&mut agent, inputs("c", &[], vec![])).await;
         assert_eq!(
             agent
@@ -1139,7 +1154,7 @@ mod tests {
                 .skill
                 .active_skill_names
                 .first()
-                .map(String::as_str),
+                .map(zeph_common::SkillName::as_str),
             Some("zeta")
         );
     }
@@ -1147,7 +1162,10 @@ mod tests {
     #[tokio::test]
     async fn active_skills_is_not_sent_in_fallback_mode() {
         let mut agent = append_agent();
-        agent.services.skill.active_skill_names = vec!["alpha".into(), "beta".into()];
+        agent.services.skill.active_skill_names = vec![
+            crate::agent::state::skill_name("alpha"),
+            crate::agent::state::skill_name("beta"),
+        ];
         let mut input = inputs("c", &[], vec![]);
         input.skill_fallback_mode = true;
         let text = run_turn(&mut agent, input).await;
@@ -1157,7 +1175,7 @@ mod tests {
     #[tokio::test]
     async fn active_skills_entering_fallback_mode_clears_the_sent_list_once() {
         let mut agent = append_agent();
-        agent.services.skill.active_skill_names = vec!["alpha".into()];
+        agent.services.skill.active_skill_names = vec![crate::agent::state::skill_name("alpha")];
         run_turn(&mut agent, inputs("c", &[], vec![])).await;
 
         let mut input = inputs("c", &[], vec![]);

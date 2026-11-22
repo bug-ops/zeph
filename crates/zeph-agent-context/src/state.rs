@@ -160,7 +160,7 @@ pub struct ContextAssemblyView<'a> {
     /// `services.skill.last_skills_prompt` — written by `Agent<C>::rebuild_system_prompt`.
     pub last_skills_prompt: &'a mut String,
     /// `services.skill.active_skill_names` — written by `Agent<C>::rebuild_system_prompt`.
-    pub active_skill_names: &'a mut Vec<String>,
+    pub active_skill_names: &'a mut Vec<zeph_common::SkillName>,
     /// `services.skill.registry` — `Arc` clone enables concurrent read access.
     pub skill_registry: Arc<RwLock<SkillRegistry>>,
     /// `services.skill.skill_paths` — read during proactive reload.

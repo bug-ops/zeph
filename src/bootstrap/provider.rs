@@ -9,7 +9,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::ollama::OllamaProvider;
 use zeph_llm::provider_dyn::LlmProviderDyn;
 use zeph_llm::router::cascade::ClassifierMode;
-use zeph_llm::router::coe::CoeConfig as RouterCoeConfig;
+use zeph_llm::router::coe::{CoeConfig as RouterCoeConfig, shadow_budget_for};
 use zeph_llm::router::triage::{ComplexityTier, TriageRouter};
 use zeph_llm::router::{AsiRouterConfig, BanditRouterConfig, CascadeRouterConfig, RouterProvider};
 
@@ -136,6 +136,9 @@ fn apply_coe(router: RouterProvider, config: &Config) -> RouterProvider {
             intra_threshold: intra,
             inter_threshold: inter,
             shadow_sample_rate: shadow,
+            shadow_budget: shadow_budget_for(std::time::Duration::from_secs(
+                config.timeouts.llm_seconds,
+            )),
         };
         tracing::info!("coe: enabled (intra={:.2} inter={:.2})", intra, inter);
         router.with_coe(router_coe, sec, emb)

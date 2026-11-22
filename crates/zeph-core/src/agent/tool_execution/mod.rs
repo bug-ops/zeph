@@ -7,6 +7,7 @@ mod doom_loop;
 mod exfiltration;
 pub(in crate::agent) mod focus;
 mod focus_compression;
+pub(in crate::agent) use focus_compression::BuiltinTool;
 #[cfg(test)]
 pub(in crate::agent) use focus_compression::user_answer_output;
 mod gates;
@@ -673,7 +674,7 @@ impl<C: Channel> Agent<C> {
                 .skill
                 .active_skill_names
                 .iter()
-                .filter_map(|name| reg.skill(name).ok())
+                .filter_map(|name| reg.skill(name.as_str()).ok())
                 .collect()
         };
         let env: std::collections::HashMap<String, String> = active_skills

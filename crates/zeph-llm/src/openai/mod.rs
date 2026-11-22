@@ -1007,6 +1007,7 @@ impl LlmProvider for OpenAiProvider {
                 top_p,
                 frequency_penalty,
                 presence_penalty,
+                logprobs: false,
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -1133,6 +1134,55 @@ impl LlmProvider for OpenAiProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
+        Ok(self.chat_with_tools_inner(messages, tools, false).await?.0)
+    }
+
+    #[tracing::instrument(
+        name = "llm.chat_with_tools",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
+    )]
+    async fn chat_with_tools_extras(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<(ChatResponse, ChatExtras), LlmError> {
+        let (response, entropy) = self.chat_with_tools_inner(messages, tools, true).await?;
+        Ok((response, ChatExtras { entropy }))
+    }
+}
+
+impl OpenAiProvider {
+    async fn post_tool_request(
+        &self,
+        body: &ToolChatRequest<'_>,
+    ) -> Result<(reqwest::StatusCode, String), LlmError> {
+        let response = send_with_retry(
+            "OpenAI",
+            MAX_RETRIES,
+            self.status_tx.as_ref(),
+            Some(&self.usage),
+            || {
+                self.openai_post(format!("{}/chat/completions", self.base_url))
+                    .json(body)
+                    .send()
+            },
+        )
+        .await?;
+        crate::http::read_response_body(response).await
+    }
+
+    /// Tool-aware chat returning the response and, when requested and reported, the mean
+    /// negative log-probability of the generated tokens.
+    ///
+    /// A `logprobs` 400 that is not a context-length error is retried once without the
+    /// parameter; the rejection is latched only when that retry succeeds.
+    async fn chat_with_tools_inner(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        want_logprobs: bool,
+    ) -> Result<(ChatResponse, Option<f64>), LlmError> {
         let api_messages = convert_messages_structured(messages);
         let reasoning_effort = self.reasoning_effort.as_deref();
 
@@ -1163,7 +1213,7 @@ impl LlmProvider for OpenAiProvider {
             .collect();
 
         let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
-        let body = ToolChatRequest {
+        let mut body = ToolChatRequest {
             model: &self.model,
             messages: &api_messages,
             completion_tokens: self.completion_tokens(),
@@ -1173,22 +1223,23 @@ impl LlmProvider for OpenAiProvider {
             top_p,
             frequency_penalty,
             presence_penalty,
+            logprobs: want_logprobs && !self.logprobs_rejected.load(Ordering::Relaxed),
         };
 
-        let response = send_with_retry(
-            "OpenAI",
-            MAX_RETRIES,
-            self.status_tx.as_ref(),
-            Some(&self.usage),
-            || {
-                self.openai_post(format!("{}/chat/completions", self.base_url))
-                    .json(&body)
-                    .send()
-            },
-        )
-        .await?;
-
-        let (status, text) = crate::http::read_response_body(response).await?;
+        let (mut status, mut text) = self.post_tool_request(&body).await?;
+        if body.logprobs
+            && status == reqwest::StatusCode::BAD_REQUEST
+            && !crate::error::body_is_context_length_error(&text)
+        {
+            body.logprobs = false;
+            (status, text) = self.post_tool_request(&body).await?;
+            if status.is_success() && !self.logprobs_rejected.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    provider = %self.provider_name,
+                    "endpoint rejected logprobs on the tool path; CoE intra-entropy disabled for this provider"
+                );
+            }
+        }
 
         if status == reqwest::StatusCode::BAD_REQUEST {
             crate::http::log_api_error_body("openai", status, &text);
@@ -1225,11 +1276,9 @@ impl LlmProvider for OpenAiProvider {
             return Err(LlmError::api_error("openai", status.as_u16(), &text));
         }
 
-        self.decode_tool_chat_response(&text, "openai")
+        self.decode_tool_chat_response_with_entropy(&text, "openai")
     }
-}
 
-impl OpenAiProvider {
     /// Decode a raw tool-chat JSON response body into a [`ChatResponse`].
     ///
     /// Records usage via `store_cache_usage`.  Pass `provider_name` so that
@@ -1239,6 +1288,18 @@ impl OpenAiProvider {
         text: &str,
         provider_name: &str,
     ) -> Result<ChatResponse, LlmError> {
+        Ok(self
+            .decode_tool_chat_response_with_entropy(text, provider_name)?
+            .0)
+    }
+
+    /// Like [`decode_tool_chat_response`](Self::decode_tool_chat_response), additionally
+    /// returning the mean negative log-probability when the body carries `logprobs`.
+    fn decode_tool_chat_response_with_entropy(
+        &self,
+        text: &str,
+        provider_name: &str,
+    ) -> Result<(ChatResponse, Option<f64>), LlmError> {
         let resp: ToolChatResponse = serde_json::from_str(text)?;
 
         if let Some(ref usage) = resp.usage {
@@ -1252,6 +1313,7 @@ impl OpenAiProvider {
             .ok_or(LlmError::EmptyResponse {
                 provider: provider_name.into(),
             })?;
+        let entropy = choice.logprobs.as_ref().and_then(ChatLogprobs::mean_nll);
 
         if let Some(tool_calls) = choice.message.tool_calls
             && !tool_calls.is_empty()
@@ -1273,7 +1335,7 @@ impl OpenAiProvider {
                     }
                 })
                 .collect();
-            return Ok(ChatResponse::tool_use(text, calls));
+            return Ok((ChatResponse::tool_use(text, calls), entropy));
         }
 
         // Inject truncation marker when finish_reason is "length" so the agent loop
@@ -1293,7 +1355,7 @@ impl OpenAiProvider {
         } else {
             choice.message.content
         };
-        Ok(ChatResponse::text(content))
+        Ok((ChatResponse::text(content), entropy))
     }
 
     /// Build a serialized `TypedChatRequest` body for `chat_typed`.
@@ -1567,6 +1629,8 @@ struct ToolChatRequest<'a> {
     frequency_penalty: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    logprobs: bool,
 }
 
 #[derive(Serialize)]
@@ -1605,6 +1669,8 @@ struct ToolChatChoice {
     message: ToolChatMessage,
     #[serde(default)]
     finish_reason: Option<String>,
+    #[serde(default)]
+    logprobs: Option<ChatLogprobs>,
 }
 
 #[derive(Deserialize)]

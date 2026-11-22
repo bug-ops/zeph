@@ -318,7 +318,13 @@ Embed errors on either side cause the quality check to be skipped (fail-open). T
 
 ## Chain-of-Entropy Scope
 
-With `[llm.coe] enabled = true` the router requests `logprobs` and can escalate to the secondary provider only on `chat()` calls, such as skill matching and JSON retries. The main agent turn uses `chat_with_tools` and `chat_stream`, which are not covered, so the answer you read is never checked for intra-entropy or escalated. Check the wire log for `"logprobs": true` on auxiliary requests only.
+With `[llm.coe] enabled = true` the router requests `logprobs` and can escalate to the secondary provider on `chat()` and on `chat_with_tools()`, so the main agent turn is entropy-checked as well as auxiliary calls such as skill matching and JSON retries. Streaming (`chat_stream`) is not covered by design: chunks already delivered cannot be replaced by a second answer.
+
+On the tool path only a text answer can escalate. A tool-call answer is kept as is, without a secondary call. If the secondary does not support tool use, CoE is skipped for that call. When an escalation replaces a text answer with a secondary tool-call answer, the turn continues with the secondary's tool calls. Quality outcomes are not recorded on the tool path, and the served usage stays attributed to the primary provider.
+
+CoE exists only for the `ema` and `thompson` strategies; `cascade` and `bandit` routers have no CoE. Privacy: with CoE enabled, the masked conversation of the turn, including tool results, is also sent to `secondary_provider` on shadowed turns, and on high-entropy or sampled turns both answers are sent to the embedding provider.
+
+The secondary call and the divergence check run under a time budget of `min(30 s, timeouts.llm_seconds / 4)`. If the secondary is slow or fails, the primary answer is kept. The budget is derived from `timeouts.llm_seconds` and has no config key of its own.
 
 Intra-entropy escalation is fed by logprobs from OpenAI, OpenAI-compatible and Ollama providers. `llm.coe.intra_threshold` accepts any finite value of 0.0 or more; a negative or non-finite value fails config load. Shadow calls made for this check are reported as auxiliary usage.
 

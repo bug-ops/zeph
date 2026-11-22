@@ -8,6 +8,7 @@
 use std::future::Future;
 
 use rmcp::model::CallToolResult;
+use zeph_common::types::McpServerId;
 
 use crate::error::McpError;
 
@@ -44,7 +45,7 @@ pub trait McpCaller: Send + Sync {
     ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send;
 
     /// Return the IDs of all currently connected servers.
-    fn list_servers(&self) -> impl Future<Output = Vec<String>> + Send;
+    fn list_servers(&self) -> impl Future<Output = Vec<McpServerId>> + Send;
 }
 
 impl McpCaller for crate::manager::McpManager {
@@ -57,7 +58,7 @@ impl McpCaller for crate::manager::McpManager {
         self.call_tool(server_id, tool_name, args).await
     }
 
-    async fn list_servers(&self) -> Vec<String> {
+    async fn list_servers(&self) -> Vec<McpServerId> {
         self.list_servers().await
     }
 }

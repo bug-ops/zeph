@@ -25,7 +25,7 @@ impl<C: Channel> Agent<C> {
             let heuristics = match memory
                 .sqlite()
                 .load_skill_heuristics(
-                    skill_name,
+                    skill_name.as_str(),
                     config.erl_min_confidence,
                     config.erl_max_heuristics_per_skill,
                 )
@@ -46,7 +46,7 @@ impl<C: Channel> Agent<C> {
             let section = zeph_skills::erl::format_heuristics_section(&texts);
             if !section.is_empty() {
                 sections.push_str("\n\n<!-- ERL heuristics for skill: ");
-                sections.push_str(skill_name);
+                sections.push_str(skill_name.as_str());
                 sections.push_str(" -->\n");
                 sections.push_str(&section);
             }

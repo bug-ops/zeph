@@ -806,4 +806,18 @@ impl LlmProvider for MockProvider {
         // Fallback: delegate to chat() and wrap in Text.
         Ok(ChatResponse::text(self.chat(messages).await?))
     }
+
+    async fn chat_with_tools_extras(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<(ChatResponse, crate::provider::ChatExtras), crate::LlmError> {
+        let response = self.chat_with_tools(messages, tools).await?;
+        let extras = self
+            .fixed_entropy
+            .map_or_else(crate::provider::ChatExtras::default, |e| {
+                crate::provider::ChatExtras::with_entropy(e)
+            });
+        Ok((response, extras))
+    }
 }

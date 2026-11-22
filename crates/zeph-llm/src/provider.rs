@@ -2469,6 +2469,34 @@ pub trait LlmProvider: Send + Sync {
         async move { Ok((self.chat(&msgs).await?, ChatExtras::default())) }
     }
 
+    /// Send messages with tool definitions and return the response together with per-call extras.
+    ///
+    /// Default implementation calls [`chat_with_tools`][Self::chat_with_tools] and returns
+    /// [`ChatExtras::default()`]. Providers that support logprobs override it to populate
+    /// [`ChatExtras::entropy`]; a backend that rejects the `logprobs` parameter is retried once
+    /// without it.
+    ///
+    /// The router calls this method only when `CoE` is enabled; every other tool path uses
+    /// [`chat_with_tools`][Self::chat_with_tools], which never requests logprobs.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`chat_with_tools`][Self::chat_with_tools].
+    fn chat_with_tools_extras(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> impl Future<Output = Result<(ChatResponse, ChatExtras), LlmError>> + Send {
+        let msgs = messages.to_vec();
+        let tools = tools.to_vec();
+        async move {
+            Ok((
+                self.chat_with_tools(&msgs, &tools).await?,
+                ChatExtras::default(),
+            ))
+        }
+    }
+
     /// Return the request payload that will be sent to the provider, for debug dumps.
     ///
     /// Implementations should mirror the provider's request body as closely as practical.

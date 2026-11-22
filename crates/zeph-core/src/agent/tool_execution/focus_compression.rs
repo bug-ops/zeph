@@ -13,6 +13,11 @@ use zeph_llm::provider::MessagePart;
 
 use super::focus::BuiltinReply;
 use crate::agent::Agent;
+use crate::agent::ask_user::ASK_USER_TOOL;
+use crate::agent::focus::{
+    COMPLETE_FOCUS_TOOL, COMPRESS_CONTEXT_TOOL, REQUEST_COMPACTION_TOOL, START_FOCUS_TOOL,
+};
+use crate::agent::skill_state::SKILL_STATE_PATCH_TOOL;
 use crate::channel::Channel;
 
 pub(super) fn context_management_output(
@@ -48,12 +53,26 @@ fn denied_reply(name: &str) -> BuiltinReply {
     BuiltinReply::failed(format!("Error: {name} is denied by [tools.permissions]"))
 }
 
-/// Synthetic tools the agent loop answers itself, never reaching hooks, gates or executors.
-///
-/// Invariant: a name that maps to `Some` always gets a result written into its slot by
-/// [`Agent::preprocess_focus_compress_calls`], so the dispatch sites may skip it safely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::agent) enum BuiltinTool {
+/// Declares [`BuiltinTool`] and `BuiltinTool::ALL` from one variant list, so `ALL` cannot miss one.
+macro_rules! builtin_tools {
+    ($($(#[$meta:meta])* $variant:ident),+ $(,)?) => {
+        /// Synthetic tools the agent loop answers itself, never reaching hooks, gates or executors.
+        ///
+        /// Invariant: a name that maps to `Some` always gets a result written into its slot by
+        /// [`Agent::preprocess_focus_compress_calls`], so the dispatch sites may skip it safely.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(in crate::agent) enum BuiltinTool {
+            $($(#[$meta])* $variant),+
+        }
+
+        impl BuiltinTool {
+            /// Every built-in, the reserved native namespace.
+            pub(in crate::agent) const ALL: &'static [Self] = &[$(Self::$variant),+];
+        }
+    };
+}
+
+builtin_tools! {
     CompressContext,
     RequestCompaction,
     /// `start_focus` / `complete_focus`; only a built-in while focus is enabled.
@@ -63,21 +82,39 @@ pub(in crate::agent) enum BuiltinTool {
     AskUser,
 }
 
+impl BuiltinTool {
+    /// Tool names this built-in answers; the single source for the reserved native names.
+    pub(in crate::agent) const fn tool_names(self) -> &'static [&'static str] {
+        match self {
+            Self::CompressContext => &[COMPRESS_CONTEXT_TOOL],
+            Self::RequestCompaction => &[REQUEST_COMPACTION_TOOL],
+            Self::Focus => &[START_FOCUS_TOOL, COMPLETE_FOCUS_TOOL],
+            Self::SkillStatePatch => &[SKILL_STATE_PATCH_TOOL],
+            Self::AskUser => &[ASK_USER_TOOL],
+        }
+    }
+
+    /// Built-in owning `name`, ignoring whether it is currently enabled.
+    fn from_reserved_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|b| b.tool_names().contains(&name))
+    }
+}
+
 impl<C: Channel> Agent<C> {
     /// Classify `name` as an agent built-in, or `None` for an executor-backed tool.
     pub(in crate::agent) fn builtin_tool(&self, name: &str) -> Option<BuiltinTool> {
-        match name {
-            "compress_context" => Some(BuiltinTool::CompressContext),
-            "request_compaction" => Some(BuiltinTool::RequestCompaction),
-            "start_focus" | "complete_focus" if self.services.focus.config.enabled => {
-                Some(BuiltinTool::Focus)
-            }
-            crate::agent::skill_state::SKILL_STATE_PATCH_TOOL => Some(BuiltinTool::SkillStatePatch),
-            crate::agent::ask_user::ASK_USER_TOOL if self.runtime.ask_user.config.enabled => {
-                Some(BuiltinTool::AskUser)
-            }
-            _ => None,
-        }
+        let builtin = BuiltinTool::from_reserved_name(name)?;
+        let enabled = match builtin {
+            BuiltinTool::Focus => self.services.focus.config.enabled,
+            BuiltinTool::AskUser => self.runtime.ask_user.config.enabled,
+            BuiltinTool::CompressContext
+            | BuiltinTool::RequestCompaction
+            | BuiltinTool::SkillStatePatch => true,
+        };
+        enabled.then_some(builtin)
     }
 
     /// Whether `[tools.permissions]` denies this built-in call.
@@ -298,6 +335,26 @@ mod tests {
             5,
             MockToolExecutor::no_tools(),
         )
+    }
+
+    #[test]
+    fn every_builtin_definition_name_is_reserved() {
+        let reserved: Vec<&str> = BuiltinTool::ALL
+            .iter()
+            .copied()
+            .flat_map(|b| b.tool_names().iter().copied())
+            .collect();
+        let defs = crate::agent::focus::focus_tool_definitions()
+            .into_iter()
+            .chain([
+                crate::agent::focus::compress_context_tool_definition(),
+                crate::agent::focus::request_compaction_tool_definition(),
+                crate::agent::ask_user::ask_user_tool_definition(),
+            ]);
+        for def in defs {
+            assert!(reserved.contains(&def.name.as_str()), "{}", def.name);
+        }
+        assert!(reserved.contains(&SKILL_STATE_PATCH_TOOL));
     }
 
     #[test]

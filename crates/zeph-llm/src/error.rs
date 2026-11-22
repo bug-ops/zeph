@@ -67,23 +67,7 @@ pub(crate) fn check_refusal(
     })
 }
 
-/// Scrub secret shapes, drop control characters and cap `text` at `max_chars` characters.
-///
-/// Scrubs both before and after the control-character strip: the first pass sees terminal escape
-/// sequences as boundaries, the second catches a token that the strip reassembles
-/// (`s\x1bk-...`). The cap runs last so a secret is never cut before it is scrubbed.
-pub(crate) fn sanitize_provider_text(text: &str, max_chars: usize) -> String {
-    use zeph_common::secret_redact::scrub_secret_shapes;
-
-    let stripped: String = scrub_secret_shapes(text)
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
-    scrub_secret_shapes(&stripped)
-        .chars()
-        .take(max_chars)
-        .collect()
-}
+pub(crate) use zeph_common::secret_redact::sanitize_upstream_text as sanitize_provider_text;
 
 fn refusal_suffix(category: Option<&RefusalCategory>) -> String {
     category.map_or_else(String::new, |c| format!(" (category: {c})"))

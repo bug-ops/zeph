@@ -361,6 +361,14 @@ impl LlmProvider for CompatibleProvider {
         self.inner.chat_with_tools(messages, tools).await
     }
 
+    async fn chat_with_tools_extras(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<(ChatResponse, ChatExtras), LlmError> {
+        self.inner.chat_with_tools_extras(messages, tools).await
+    }
+
     fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
         self.inner.last_response_usage()
     }

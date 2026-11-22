@@ -650,6 +650,7 @@ fn tool_chat_request_serialization_uses_gpt5_completion_tokens() {
         top_p: None,
         frequency_penalty: None,
         presence_penalty: None,
+        logprobs: false,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(json.contains("\"max_completion_tokens\":77"));

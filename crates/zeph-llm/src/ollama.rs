@@ -635,6 +635,79 @@ impl OllamaProvider {
             .and_then(|lps| crate::provider::mean_negative_logprob(lps.iter().map(|l| l.logprob)));
         Ok((response.message.content, entropy))
     }
+
+    /// Tool-aware chat returning the response and, when requested and reported, the mean
+    /// negative log-probability of the generated tokens.
+    async fn chat_with_tools_inner(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        want_logprobs: bool,
+    ) -> Result<(ChatResponse, Option<f64>), LlmError> {
+        let ollama_tools: Vec<ToolInfo> = tools
+            .iter()
+            .map(|t| ToolInfo {
+                tool_type: ToolType::Function,
+                function: ToolFunctionInfo {
+                    name: t.name.to_string(),
+                    description: t.description.clone(),
+                    parameters: serde_json::from_value(t.parameters.clone()).unwrap_or_default(),
+                },
+            })
+            .collect();
+
+        let ollama_messages: Vec<ChatMessage> = AgentVisible::new(messages)
+            .iter()
+            .flat_map(convert_message_structured)
+            .collect();
+
+        let mut request =
+            ChatMessageRequest::new(self.model.clone(), ollama_messages).tools(ollama_tools);
+        if let Some(ref ov) = self.generation_overrides {
+            request = apply_generation_overrides(request, ov);
+        }
+
+        let response = self
+            .send_chat_request(&request, "Ollama chat_with_tools request", want_logprobs)
+            .await?;
+
+        if let Some(ref fd) = response.final_data {
+            self.usage.record(Some(ResponseUsage {
+                input: fd.prompt_eval_count,
+                output: fd.eval_count,
+                ..ResponseUsage::default()
+            }));
+        }
+
+        let entropy = response
+            .logprobs
+            .as_ref()
+            .and_then(|lps| crate::provider::mean_negative_logprob(lps.iter().map(|l| l.logprob)));
+
+        if response.message.tool_calls.is_empty() {
+            return Ok((ChatResponse::text(response.message.content), entropy));
+        }
+
+        let tool_calls: Vec<ToolUseRequest> = response
+            .message
+            .tool_calls
+            .into_iter()
+            .enumerate()
+            .map(|(i, tc)| ToolUseRequest {
+                id: format!("call_{i}").into(),
+                name: tc.function.name.into(),
+                input: tc.function.arguments,
+            })
+            .collect();
+
+        let text = if response.message.content.is_empty() {
+            None
+        } else {
+            Some(response.message.content)
+        };
+
+        Ok((ChatResponse::tool_use(text, tool_calls), entropy))
+    }
 }
 
 impl LlmProvider for OllamaProvider {
@@ -784,64 +857,21 @@ impl LlmProvider for OllamaProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
-        let ollama_tools: Vec<ToolInfo> = tools
-            .iter()
-            .map(|t| ToolInfo {
-                tool_type: ToolType::Function,
-                function: ToolFunctionInfo {
-                    name: t.name.to_string(),
-                    description: t.description.clone(),
-                    parameters: serde_json::from_value(t.parameters.clone()).unwrap_or_default(),
-                },
-            })
-            .collect();
+        Ok(self.chat_with_tools_inner(messages, tools, false).await?.0)
+    }
 
-        let ollama_messages: Vec<ChatMessage> = AgentVisible::new(messages)
-            .iter()
-            .flat_map(convert_message_structured)
-            .collect();
-
-        let mut request =
-            ChatMessageRequest::new(self.model.clone(), ollama_messages).tools(ollama_tools);
-        if let Some(ref ov) = self.generation_overrides {
-            request = apply_generation_overrides(request, ov);
-        }
-
-        let response = self
-            .send_chat_request(&request, "Ollama chat_with_tools request", false)
-            .await?;
-
-        if let Some(ref fd) = response.final_data {
-            self.usage.record(Some(ResponseUsage {
-                input: fd.prompt_eval_count,
-                output: fd.eval_count,
-                ..ResponseUsage::default()
-            }));
-        }
-
-        if response.message.tool_calls.is_empty() {
-            return Ok(ChatResponse::text(response.message.content));
-        }
-
-        let tool_calls: Vec<ToolUseRequest> = response
-            .message
-            .tool_calls
-            .into_iter()
-            .enumerate()
-            .map(|(i, tc)| ToolUseRequest {
-                id: format!("call_{i}").into(),
-                name: tc.function.name.into(),
-                input: tc.function.arguments,
-            })
-            .collect();
-
-        let text = if response.message.content.is_empty() {
-            None
-        } else {
-            Some(response.message.content)
-        };
-
-        Ok(ChatResponse::tool_use(text, tool_calls))
+    #[tracing::instrument(
+        name = "llm.chat_with_tools",
+        skip_all,
+        fields(model = self.model_identifier())
+    )]
+    async fn chat_with_tools_extras(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<(ChatResponse, ChatExtras), LlmError> {
+        let (response, entropy) = self.chat_with_tools_inner(messages, tools, true).await?;
+        Ok((response, ChatExtras { entropy }))
     }
 
     #[tracing::instrument(

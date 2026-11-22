@@ -3092,7 +3092,7 @@ mod tests {
             quarantine_summarizer: Option<&'a QuarantinedSummarizer>,
             last_confidence: &'a mut Option<f32>,
             last_skills_prompt: &'a mut String,
-            active_skill_names: &'a mut Vec<String>,
+            active_skill_names: &'a mut Vec<zeph_common::SkillName>,
             ctx_mgr: &'a mut ContextManager,
             sink: &'a mut RecordingSink,
         ) -> ContextAssemblyView<'a> {
@@ -3989,7 +3989,7 @@ mod tests {
             fixture: &'a Fixture,
             last_confidence: &'a mut Option<f32>,
             last_skills_prompt: &'a mut String,
-            active_skill_names: &'a mut Vec<String>,
+            active_skill_names: &'a mut Vec<zeph_common::SkillName>,
             sanitizer: &'a ContentSanitizer,
             ctx_mgr: &'a mut ContextManager,
             sink: &'a mut NoopSink,
@@ -4396,7 +4396,7 @@ mod tests {
             sink: NoopSink,
             confidence: Option<f32>,
             skills_prompt: String,
-            skill_names: Vec<String>,
+            skill_names: Vec<zeph_common::SkillName>,
         }
 
         impl Env {

@@ -15,7 +15,13 @@ impl<C: Channel> Agent<C> {
         if !cfg.enabled {
             return;
         }
-        let Some(selected_skill) = self.services.skill.active_skill_names.first().cloned() else {
+        let Some(selected_skill) = self
+            .services
+            .skill
+            .active_skill_names
+            .first()
+            .map(ToString::to_string)
+        else {
             return;
         };
         let Some(rl_head) = self.services.skill.rl_head.clone() else {

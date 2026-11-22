@@ -18,7 +18,12 @@ impl<C: Channel> Agent<C> {
         }
         self.services.learning_engine.mark_reflection_used();
 
-        let skill_name = self.services.skill.active_skill_names.first().cloned();
+        let skill_name = self
+            .services
+            .skill
+            .active_skill_names
+            .first()
+            .map(ToString::to_string);
 
         let Some(name) = skill_name else {
             return Ok(false);

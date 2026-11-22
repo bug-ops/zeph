@@ -63,13 +63,16 @@ pub(crate) fn fold_weakest_trust<'a>(
 /// [`SkillTrustLevel::Trusted`]: zeph_common::SkillTrustLevel::Trusted
 pub(crate) fn compute_effective_trust(
     skill_fallback_mode: bool,
-    active_names: &[String],
+    active_names: &[zeph_common::SkillName],
     trust_map: &std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
 ) -> zeph_common::SkillTrustLevel {
     if skill_fallback_mode || active_names.is_empty() {
         zeph_common::SkillTrustLevel::Trusted
     } else {
-        fold_weakest_trust(active_names.iter().map(String::as_str), trust_map)
+        fold_weakest_trust(
+            active_names.iter().map(zeph_common::SkillName::as_str),
+            trust_map,
+        )
     }
 }
 
@@ -123,14 +126,14 @@ NEVER compress these (keep verbatim):\n\
 /// must still be injected to preserve the compression rules.
 pub(super) fn should_inject_caveman_directive(
     caveman_active: bool,
-    active_skill_names: &[String],
+    active_skill_names: &[zeph_common::SkillName],
     effective_mode: crate::config::SkillPromptMode,
     skill_fallback_mode: bool,
 ) -> bool {
     if !caveman_active {
         return false;
     }
-    let caveman_skill_active = active_skill_names.iter().any(|n| n == "caveman");
+    let caveman_skill_active = active_skill_names.iter().any(|n| *n == "caveman");
     // Body is included only in Full mode without fallback — skip explicit push only then.
     let body_included = caveman_skill_active
         && effective_mode == crate::config::SkillPromptMode::Full
@@ -939,7 +942,7 @@ impl<C: Channel> Agent<C> {
 
         self.services.skill.active_skill_names = matched_indices
             .iter()
-            .filter_map(|&i| all_meta.get(i).map(|m| m.name.to_string()))
+            .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
             .collect();
 
         // #6701 (S7): a skill the D1 filter above dropped from `active_skill_names` (Quarantined
@@ -954,7 +957,7 @@ impl<C: Channel> Agent<C> {
         let skill_names = self.services.skill.active_skill_names.clone();
         let total = all_meta.len();
         self.update_metrics(|m| {
-            m.active_skills = skill_names;
+            m.active_skills = skill_names.into_iter().map(String::from).collect();
             m.total_skills = total;
         });
 
@@ -1823,7 +1826,7 @@ impl<C: Channel> Agent<C> {
             let (active, filtered_indices): (Vec<Skill>, Vec<usize>) = matched_indices
                 .iter()
                 .zip(self.services.skill.active_skill_names.iter())
-                .filter_map(|(&idx, name)| reg.skill(name).ok().map(|s| (s, idx)))
+                .filter_map(|(&idx, name)| reg.skill(name.as_str()).ok().map(|s| (s, idx)))
                 .filter(|(s, _idx)| {
                     let allowed = zeph_config::is_skill_allowed(
                         s.name(),
@@ -1960,9 +1963,14 @@ impl<C: Channel> Agent<C> {
     /// `active_skill_names` would still be passed to `record_skill_usage` — polluting the
     /// usage-count/confidence/RL-rerank learning signal with a skill whose body was never
     /// actually injected this turn.
-    fn filter_skills_to_record(skills_to_record: &mut Vec<String>, active_names: &[String]) {
-        let active_name_set: std::collections::HashSet<&str> =
-            active_names.iter().map(String::as_str).collect();
+    fn filter_skills_to_record(
+        skills_to_record: &mut Vec<String>,
+        active_names: &[zeph_common::SkillName],
+    ) {
+        let active_name_set: std::collections::HashSet<&str> = active_names
+            .iter()
+            .map(zeph_common::SkillName::as_str)
+            .collect();
         skills_to_record.retain(|name| active_name_set.contains(name.as_str()));
     }
 
@@ -2715,7 +2723,7 @@ mod tests {
             "quarantined-skill".to_string(),
             trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
         );
-        let active_names = vec!["quarantined-skill".to_string()];
+        let active_names = vec![crate::agent::state::skill_name("quarantined-skill")];
 
         let result = compute_effective_trust(true, &active_names, &trust_map);
         assert_eq!(
@@ -2732,7 +2740,7 @@ mod tests {
             "quarantined-skill".to_string(),
             trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
         );
-        let active_names = vec!["quarantined-skill".to_string()];
+        let active_names = vec![crate::agent::state::skill_name("quarantined-skill")];
 
         let result = compute_effective_trust(false, &active_names, &trust_map);
         assert_eq!(
@@ -2768,7 +2776,10 @@ mod tests {
             "quarantined-skill".to_string(),
             trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
         );
-        let active_names = vec!["trusted-skill".to_string(), "quarantined-skill".to_string()];
+        let active_names = vec![
+            crate::agent::state::skill_name("trusted-skill"),
+            crate::agent::state::skill_name("quarantined-skill"),
+        ];
 
         let result = compute_effective_trust(false, &active_names, &trust_map);
         assert_eq!(result, zeph_common::SkillTrustLevel::Quarantined);
@@ -2864,7 +2875,7 @@ mod tests {
     fn filter_skills_to_record_drops_names_absent_from_active_set() {
         let mut skills_to_record =
             vec!["trusted-skill".to_string(), "quarantined-skill".to_string()];
-        let active_names = vec!["trusted-skill".to_string()];
+        let active_names = vec![crate::agent::state::skill_name("trusted-skill")];
 
         Agent::<MockChannel>::filter_skills_to_record(&mut skills_to_record, &active_names);
 
@@ -2879,7 +2890,10 @@ mod tests {
     #[test]
     fn filter_skills_to_record_keeps_all_when_all_are_active() {
         let mut skills_to_record = vec!["a".to_string(), "b".to_string()];
-        let active_names = vec!["a".to_string(), "b".to_string()];
+        let active_names = vec![
+            crate::agent::state::skill_name("a"),
+            crate::agent::state::skill_name("b"),
+        ];
 
         Agent::<MockChannel>::filter_skills_to_record(&mut skills_to_record, &active_names);
 
@@ -3500,11 +3514,11 @@ mod tests {
 
     // ── should_inject_caveman_directive tests (#5026) ─────────────────────────
 
-    fn caveman_names() -> Vec<String> {
-        vec!["caveman".to_owned()]
+    fn caveman_names() -> Vec<zeph_common::SkillName> {
+        vec![crate::agent::state::skill_name("caveman")]
     }
 
-    fn no_names() -> Vec<String> {
+    fn no_names() -> Vec<zeph_common::SkillName> {
         Vec::new()
     }
 

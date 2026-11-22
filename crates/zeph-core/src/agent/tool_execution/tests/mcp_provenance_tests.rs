@@ -342,7 +342,7 @@ async fn reflection_text_of_a_failing_mcp_call_is_sanitized_as_mcp() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
     attach_mcp_tool_list(&mut agent);
     agent.services.mcp.set_tools(vec![github_mcp_tool()]);
     agent
