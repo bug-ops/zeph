@@ -2810,6 +2810,7 @@ async fn router_coe_shadow_usage_lands_in_auxiliary_not_primary_counters() {
             intra_threshold: 0.8,
             inter_threshold: 0.2,
             shadow_sample_rate: 0.0,
+            ..CoeConfig::default()
         },
         secondary,
         AnyProvider::Mock(embed),
@@ -2838,4 +2839,145 @@ async fn router_without_coe_reports_no_auxiliary() {
     let msgs = vec![Message::from_legacy(Role::User, "q")];
     r.chat(&msgs).await.unwrap();
     assert_eq!(r.last_response_usage().and_then(|u| u.auxiliary), None);
+}
+
+#[derive(Debug)]
+struct PrefixEmbed {
+    opposite: bool,
+}
+
+impl LlmProvider for PrefixEmbed {
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        None
+    }
+
+    fn chat(&self, _messages: &[Message]) -> impl Future<Output = Result<String, LlmError>> + Send {
+        std::future::ready(Ok(String::new()))
+    }
+
+    fn chat_stream(
+        &self,
+        _messages: &[Message],
+    ) -> impl Future<Output = Result<crate::provider::ChatStream, LlmError>> + Send {
+        std::future::ready(Err(LlmError::NoProviders))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    fn embed(&self, text: &str) -> impl Future<Output = Result<Vec<f32>, LlmError>> + Send {
+        let vector = if self.opposite && !text.starts_with("primary") {
+            vec![-1.0, 0.0]
+        } else {
+            vec![1.0, 0.0]
+        };
+        std::future::ready(Ok(vector))
+    }
+
+    fn supports_embeddings(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &'static str {
+        "prefix-embed"
+    }
+}
+
+const INTER_PRIMARY_TEXT: &str = "primary answer text that is long enough for the divergence guard";
+const INTER_SECONDARY_TEXT: &str =
+    "secondary answer text that is long enough for the divergence guard";
+
+/// Router whose `CoE` shadows every borderline-entropy turn and embeds via [`PrefixEmbed`].
+fn inter_divergence_router(
+    primary: AnyProvider,
+    secondary: AnyProvider,
+    opposite_embeddings: bool,
+) -> RouterProvider {
+    use crate::router::coe::{CoeConfig, CoeRouter};
+
+    let mut router = RouterProvider::new(vec![primary]).with_coe(
+        CoeConfig {
+            shadow_sample_rate: 1.0,
+            ..CoeConfig::default()
+        },
+        secondary,
+        AnyProvider::Mock(crate::mock::MockProvider::default()),
+    );
+    let coe = router.coe.take().expect("coe attached");
+    router.coe = Some(Arc::new(CoeRouter {
+        config: coe.config.clone(),
+        secondary: Arc::clone(&coe.secondary),
+        embed: Arc::new(PrefixEmbed {
+            opposite: opposite_embeddings,
+        }),
+        metrics: Arc::clone(&coe.metrics),
+    }));
+    router
+}
+
+fn inter_chat_router(opposite_embeddings: bool) -> RouterProvider {
+    // Entropy 0.5 is below intra_threshold (0.8) but borderline, so only inter-divergence decides.
+    let primary = crate::mock::MockProvider::with_responses(vec![INTER_PRIMARY_TEXT.into()])
+        .with_entropy(0.5);
+    let secondary = crate::mock::MockProvider::with_responses(vec![INTER_SECONDARY_TEXT.into()]);
+    inter_divergence_router(
+        AnyProvider::Mock(primary),
+        AnyProvider::Mock(secondary),
+        opposite_embeddings,
+    )
+}
+
+fn inter_tools_router(opposite_embeddings: bool) -> RouterProvider {
+    use crate::provider::ChatResponse;
+
+    let (primary, _) = crate::mock::MockProvider::default()
+        .with_tool_use(vec![ChatResponse::text(INTER_PRIMARY_TEXT)]);
+    let (secondary, _) = crate::mock::MockProvider::default()
+        .with_tool_use(vec![ChatResponse::text(INTER_SECONDARY_TEXT)]);
+    inter_divergence_router(
+        AnyProvider::Mock(primary.with_entropy(0.5)),
+        AnyProvider::Mock(secondary),
+        opposite_embeddings,
+    )
+}
+
+#[tokio::test]
+async fn router_coe_chat_inter_divergence_escalates_to_secondary() {
+    let router = inter_chat_router(true);
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+
+    assert_eq!(router.chat(&msgs).await.unwrap(), INTER_SECONDARY_TEXT);
+    assert_eq!(router.coe_metrics().unwrap(), (0, 0, 1, 0));
+}
+
+#[tokio::test]
+async fn router_coe_chat_identical_embeddings_keep_primary() {
+    let router = inter_chat_router(false);
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+
+    assert_eq!(router.chat(&msgs).await.unwrap(), INTER_PRIMARY_TEXT);
+    assert_eq!(router.coe_metrics().unwrap(), (1, 0, 0, 0));
+}
+
+#[tokio::test]
+async fn router_coe_chat_with_tools_inter_divergence_escalates_to_secondary() {
+    let router = inter_tools_router(true);
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+
+    let resp = router.chat_with_tools(&msgs, &[]).await.unwrap();
+
+    assert_matches!(resp, crate::provider::ChatResponse::Text { ref text, .. } if text == INTER_SECONDARY_TEXT);
+    assert_eq!(router.coe_metrics().unwrap(), (0, 0, 1, 0));
+}
+
+#[tokio::test]
+async fn router_coe_chat_with_tools_identical_embeddings_keep_primary() {
+    let router = inter_tools_router(false);
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+
+    let resp = router.chat_with_tools(&msgs, &[]).await.unwrap();
+
+    assert_matches!(resp, crate::provider::ChatResponse::Text { ref text, .. } if text == INTER_PRIMARY_TEXT);
+    assert_eq!(router.coe_metrics().unwrap(), (1, 0, 0, 0));
 }

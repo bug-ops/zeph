@@ -230,12 +230,35 @@ redaction pattern and hid context-length bodies from `body_is_context_length_err
 
 One `TokenUsage { input, output, cache_write, cache_read }` (`zeph-llm`, `Copy`, saturating `Add`) replaces the positional token counters: `AuxiliaryUsage`, `UsageTokens` and `TurnUsage` are removed and `cache_creation` is renamed `cache_write`. `CostTracker::record_usage`, `price_of`, `Channel::send_usage`, `LoopbackEvent::Usage` and `UsageRecord` (`zeph-memory`) take it; `price_of_auxiliary` is removed. Background and ensemble usage is billed at the serving provider's speed, cache counters and model price (PR #7078).
 
-### Chain-of-Entropy Scope (#7096)
+### Chain-of-Entropy Scope (#7096, #7143)
 
-CoE (`[llm.coe]`) covers `RouterProvider::chat()` only: logprobs are requested and intra-entropy
-escalation fires for auxiliary `chat()` calls (skill matching, JSON retry, …), not for the main
-agent turn, which goes through `chat_with_tools` / `chat_stream`. This is the documented scope,
-not a defect; wrapping the tool-use and streaming paths is a separate enhancement.
+CoE (`[llm.coe]`) covers `RouterProvider::chat()` and `RouterProvider::chat_with_tools()`, so every
+router `chat_with_tools` caller (main turn, subagents, orchestration, scheduler) is entropy-checked.
+`chat_stream` is excluded by design: delivered chunks cannot be replaced by a shadow answer, and no
+main-turn path streams through the router. CoE exists only for the ema and thompson strategies
+(`with_coe` ignores cascade and bandit). The tool path applies it in the ordered fallback loop;
+Bandit returns earlier, and a Cascade router has no CoE.
+
+- Privacy: with `[llm.coe]` enabled the (masked) main-turn conversation, including tool results, is
+  also sent to `secondary_provider` on shadowed turns, and on high-entropy or sampled turns both
+  answers go to the embedding provider.
+
+- Tool path: the primary is called through `chat_with_tools_extras` (logprobs requested on OpenAI
+  and Ollama; a 400 not caused by context length is retried once without them and latched per
+  instance). CoE is skipped when the secondary does not support tool use. A non-vision secondary
+  receives the messages with image parts stripped (spec 072 C3).
+- A tool-call primary answer is kept without a shadow call and without a metric change; only a text
+  answer can escalate. A secondary tool-call answer may replace a primary text answer; the
+  replacement inherits the primary's thinking-replay report (merged) and compaction summary.
+- The shadow stage (secondary call and inter-divergence) runs under `CoeConfig::shadow_budget =
+  min(30 s, timeouts.llm_seconds / 4)`, a runtime value derived in bootstrap (no TOML key). On
+  expiry or secondary error the primary is kept and `embed_failures` is incremented. A primary that
+  finishes within `llm_seconds - shadow_budget` is never lost to CoE; a zero budget keeps the
+  primary without polling the secondary.
+- Limitation: after a tool-path escalation `last_active_provider` and the served usage stay with
+  the primary, and no quality outcomes are recorded on the tool path (the router writes them to
+  `last_active_provider`, which would attribute both to the primary). Matches the documented
+  auxiliary-pricing limitation of `chat()`.
 
 ### Key Invariants
 
@@ -291,7 +314,7 @@ not a defect; wrapping the tool-use and streaming paths is a separate enhancemen
 - `ChatResponse::Text { text, replay, compaction }` carries the summary of a text-only reply exactly as `ToolUse` does; it is never dropped. `replay` is the thinking-replay report (`ChatResponse::replay()`/`set_replay()` read it for either shape); Claude fills it on text replies, including the truncated-by-`max_tokens` path, and the streaming drainer does the same.
 - `usage.iterations[]` entries of kind `compaction` are billed in addition to the top-level counters and exposed as `ResponseUsage::auxiliary` (`TokenUsage { input, output, cache_read, cache_write }`, the single usage type shared by `CostTracker`, `Channel::send_usage` and ACP); the top-level counters stay the context-size value. Unknown iteration kinds are not billed (warning).
 - `LlmProvider::last_response_usage()` (and `LlmProviderDyn`) returns one immutable `ResponseUsage { input, output, cache: Option<CacheUsage { creation, read }>, reasoning: Option<u64>, auxiliary: Option<TokenUsage> }` snapshot; the method is required, `None` means the provider reported nothing. A provider builds the whole snapshot for a response and publishes it once through `UsageTracker::record` (one lock), so a reader never mixes two responses and cache/reasoning never carry over from an earlier response. A new request clears the snapshot (`send_with_retry` / stream open). `UsageTracker::clone` yields a fresh tracker: usage belongs to the instance that made the call. The router reports the serving provider's snapshot; a CoE shadow call is added to it as `auxiliary` (billed, never counted toward context size) (#6956).
-- `LlmError::ApiError { provider, status, detail: Option<ApiErrorDetail { kind: Option<String>, message: String }> }` carries the scrubbed, length-capped provider error cause parsed from the `{error:{type,message}}`, `{error:{status,message}}` and `{error:"..."}` shapes (#7066); raw API-body logs are demoted to `debug` and one ERROR is emitted per failed native turn. CoE `chat_with_extras` is called only when `router.coe` is set and requests `logprobs`; a 400 to a logprobs request is retried once without them behind a per-instance latch (#7052).
+- `LlmError::ApiError { provider, status, detail: Option<ApiErrorDetail { kind: Option<String>, message: String }> }` carries the scrubbed, length-capped provider error cause parsed from the `{error:{type,message}}`, `{error:{status,message}}` and `{error:"..."}` shapes (#7066); raw API-body logs are demoted to `debug` and one ERROR is emitted per failed native turn. CoE `chat_with_extras` / `chat_with_tools_extras` are called only when `router.coe` is set and request `logprobs`; a 400 to a logprobs request is retried once without them behind a per-instance latch (#7052).
 
 ### Beta latches
 

@@ -47,6 +47,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot};
@@ -382,8 +383,14 @@ pub struct TaskSnapshot {
 type BoxFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 type BoxFactory = Box<dyn Fn() -> BoxFuture + Send + Sync>;
 
+/// Identity of one registration, so a completion from a replaced same-name task cannot
+/// unregister or restart its successor (#7141).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpawnId(u64);
+
 struct TaskEntry {
     name: Arc<str>,
+    spawn_id: SpawnId,
     status: TaskStatus,
     started_at: Instant,
     restart_count: u32,
@@ -411,11 +418,36 @@ enum CompletionKind {
 
 struct Completion {
     name: Arc<str>,
+    spawn_id: SpawnId,
     kind: CompletionKind,
 }
 
 struct SupervisorState {
     tasks: HashMap<Arc<str>, TaskEntry>,
+}
+
+impl SupervisorState {
+    /// Insert `entry`, aborting and replacing any same-name predecessor.
+    fn register(&mut self, entry: TaskEntry) {
+        if let Some(old) = self.tasks.remove(&entry.name) {
+            old.abort_handle.abort();
+        }
+        self.tasks.insert(Arc::clone(&entry.name), entry);
+    }
+
+    /// Entry for `name` only if it still belongs to the registration `id`.
+    fn current_entry_mut(&mut self, name: &str, id: SpawnId) -> Option<&mut TaskEntry> {
+        self.tasks.get_mut(name).filter(|e| e.spawn_id == id)
+    }
+
+    /// Remove the entry for `name` only if it still belongs to the registration `id`.
+    fn remove_current(&mut self, name: &str, id: SpawnId) -> Option<TaskEntry> {
+        if self.tasks.get(name).is_some_and(|e| e.spawn_id == id) {
+            self.tasks.remove(name)
+        } else {
+            None
+        }
+    }
 }
 
 struct Inner {
@@ -430,6 +462,13 @@ struct Inner {
     blocking_semaphore: Arc<tokio::sync::Semaphore>,
     /// Notified when `active_count()` reaches zero so `shutdown_all` wakes immediately.
     shutdown_notify: Arc<tokio::sync::Notify>,
+    next_spawn_id: AtomicU64,
+}
+
+impl Inner {
+    fn next_spawn_id(&self) -> SpawnId {
+        SpawnId(self.next_spawn_id.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 // ── Main type ────────────────────────────────────────────────────────────────
@@ -510,6 +549,7 @@ impl TaskSupervisor {
             cancel: cancel.clone(),
             blocking_semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            next_spawn_id: AtomicU64::new(0),
         });
 
         // Only start the reap driver when a Tokio runtime is available. In synchronous
@@ -679,11 +719,12 @@ impl TaskSupervisor {
         let completion_tx = self.inner.completion_tx.clone();
         let name_arc: Arc<str> = Arc::from(name);
 
+        let spawn_id = self.inner.next_spawn_id();
         let (abort_handle, jh) = Self::do_spawn(name, &factory, cancel);
-        Self::wire_completion_reporter(Arc::clone(&name_arc), jh, completion_tx);
 
         let entry = TaskEntry {
             name: Arc::clone(&name_arc),
+            spawn_id,
             status: TaskStatus::Running,
             started_at: Instant::now(),
             restart_count: 0,
@@ -695,13 +736,9 @@ impl TaskSupervisor {
             },
         };
 
-        {
-            let mut state = self.inner.state.lock();
-            if let Some(old) = state.tasks.remove(&name_arc) {
-                old.abort_handle.abort();
-            }
-            state.tasks.insert(Arc::clone(&name_arc), entry);
-        }
+        self.inner.state.lock().register(entry);
+        // Registration precedes the reporter, so no completion can precede the entry.
+        Self::wire_completion_reporter(name_arc, spawn_id, jh, completion_tx);
 
         TaskHandle {
             name,
@@ -770,7 +807,12 @@ impl TaskSupervisor {
         let inner = Arc::clone(&self.inner);
         let name_clone = Arc::clone(&name);
         let completion_tx = self.inner.completion_tx.clone();
+        let spawn_id = self.inner.next_spawn_id();
 
+        // The outer task is spawned while holding the state lock and the entry is inserted in
+        // the same scope: the outer locks state before it can send a completion, so the insert
+        // happens-before every completion.
+        let mut state = self.inner.state.lock();
         // Wrap the blocking spawn in an async task that first acquires a semaphore
         // permit, bounding the number of concurrently running blocking tasks to 8.
         let outer = tokio::spawn(async move {
@@ -789,7 +831,7 @@ impl TaskSupervisor {
             // Update registry with the real abort handle now that spawn_blocking is live.
             {
                 let mut state = inner.state.lock();
-                if let Some(entry) = state.tasks.get_mut(&name_clone) {
+                if let Some(entry) = state.current_entry_mut(&name_clone, spawn_id) {
                     entry.abort_handle = abort;
                 }
             }
@@ -811,30 +853,23 @@ impl TaskSupervisor {
             // _permit released here, freeing the semaphore slot.
             let _ = completion_tx.send(Completion {
                 name: name_clone,
+                spawn_id,
                 kind,
             });
         });
         let abort = outer.abort_handle();
 
-        // Register in registry so snapshot/shutdown sees the task.
-        {
-            let mut state = self.inner.state.lock();
-            if let Some(old) = state.tasks.remove(&name) {
-                old.abort_handle.abort();
-            }
-            state.tasks.insert(
-                Arc::clone(&name),
-                TaskEntry {
-                    name: Arc::clone(&name),
-                    status: TaskStatus::Running,
-                    started_at: Instant::now(),
-                    restart_count: 0,
-                    restart_policy: RestartPolicy::RunOnce,
-                    abort_handle: abort.clone(),
-                    factory: None,
-                },
-            );
-        }
+        state.register(TaskEntry {
+            name,
+            spawn_id,
+            status: TaskStatus::Running,
+            started_at: Instant::now(),
+            restart_count: 0,
+            restart_policy: RestartPolicy::RunOnce,
+            abort_handle: abort.clone(),
+            factory: None,
+        });
+        drop(state);
 
         BlockingHandle { rx, abort }
     }
@@ -932,25 +967,18 @@ impl TaskSupervisor {
             .instrument(span),
         );
         let abort = join_handle.abort_handle();
+        let spawn_id = self.inner.next_spawn_id();
 
-        {
-            let mut state = self.inner.state.lock();
-            if let Some(old) = state.tasks.remove(&name) {
-                old.abort_handle.abort();
-            }
-            state.tasks.insert(
-                Arc::clone(&name),
-                TaskEntry {
-                    name: Arc::clone(&name),
-                    status: TaskStatus::Running,
-                    started_at: Instant::now(),
-                    restart_count: 0,
-                    restart_policy: RestartPolicy::RunOnce,
-                    abort_handle: abort.clone(),
-                    factory: None,
-                },
-            );
-        }
+        self.inner.state.lock().register(TaskEntry {
+            name: Arc::clone(&name),
+            spawn_id,
+            status: TaskStatus::Running,
+            started_at: Instant::now(),
+            restart_count: 0,
+            restart_policy: RestartPolicy::RunOnce,
+            abort_handle: abort.clone(),
+            factory: None,
+        });
 
         let completion_tx = self.inner.completion_tx.clone();
         tokio::spawn(async move {
@@ -970,7 +998,11 @@ impl TaskSupervisor {
                 }
                 _ => CompletionKind::Cancelled,
             };
-            let _ = completion_tx.send(Completion { name, kind });
+            let _ = completion_tx.send(Completion {
+                name,
+                spawn_id,
+                kind,
+            });
         });
         BlockingHandle { rx, abort }
     }
@@ -1112,6 +1144,7 @@ impl TaskSupervisor {
     /// Wire a completion reporter: drives `jh` and sends the result to `completion_tx`.
     fn wire_completion_reporter(
         name: Arc<str>,
+        spawn_id: SpawnId,
         jh: tokio::task::JoinHandle<bool>,
         completion_tx: mpsc::UnboundedSender<Completion>,
     ) {
@@ -1122,7 +1155,11 @@ impl TaskSupervisor {
                 Err(e) if e.is_panic() => CompletionKind::Panicked,
                 Err(_) => CompletionKind::Cancelled,
             };
-            let _ = completion_tx.send(Completion { name, kind });
+            let _ = completion_tx.send(Completion {
+                name,
+                spawn_id,
+                kind,
+            });
         });
     }
 
@@ -1224,7 +1261,7 @@ impl TaskSupervisor {
         if inner.cancel.is_cancelled() {
             {
                 let mut state = inner.state.lock();
-                state.tasks.remove(&completion.name);
+                state.remove_current(&completion.name, completion.spawn_id);
             }
             inner.shutdown_notify.notify_waiters();
             return;
@@ -1249,7 +1286,7 @@ impl TaskSupervisor {
             tokio::time::sleep(delay).await;
         }
 
-        Self::do_restart(inner, &completion.name, attempt);
+        Self::do_restart(inner, &completion.name, completion.spawn_id, attempt);
     }
 
     /// Phase 1: classify the completion under lock and return restart parameters if needed.
@@ -1260,7 +1297,13 @@ impl TaskSupervisor {
         completion: &Completion,
     ) -> Option<(u32, u32, Duration)> {
         let mut state = inner.state.lock();
-        let entry = state.tasks.get_mut(&completion.name)?;
+        let Some(entry) = state.current_entry_mut(&completion.name, completion.spawn_id) else {
+            tracing::debug!(
+                task.name = %completion.name,
+                "ignoring completion of a replaced same-name task"
+            );
+            return None;
+        };
 
         match completion.kind {
             CompletionKind::Panicked => {
@@ -1289,7 +1332,7 @@ impl TaskSupervisor {
                 } else {
                     entry.status = TaskStatus::Completed;
                 }
-                state.tasks.remove(&completion.name);
+                state.remove_current(&completion.name, completion.spawn_id);
                 None
             }
             RestartPolicy::Restart { max, base_delay } => {
@@ -1305,7 +1348,7 @@ impl TaskSupervisor {
                         };
                     } else {
                         entry.status = TaskStatus::Completed;
-                        state.tasks.remove(&completion.name);
+                        state.remove_current(&completion.name, completion.spawn_id);
                     }
                     return None;
                 }
@@ -1334,10 +1377,10 @@ impl TaskSupervisor {
     }
 
     /// Phase 3: TOCTOU check, collect spawn params under lock, then spawn outside.
-    fn do_restart(inner: &Arc<Inner>, name: &Arc<str>, attempt: u32) {
+    fn do_restart(inner: &Arc<Inner>, name: &Arc<str>, spawn_id: SpawnId, attempt: u32) {
         let spawn_params = {
             let mut state = inner.state.lock();
-            let Some(entry) = state.tasks.get_mut(name.as_ref()) else {
+            let Some(entry) = state.current_entry_mut(name, spawn_id) else {
                 tracing::debug!(
                     task.name = %name,
                     "task removed during restart delay — skipping"
@@ -1384,18 +1427,31 @@ impl TaskSupervisor {
             }
             .instrument(span),
         );
-        let new_abort = jh.abort_handle();
 
-        {
-            let mut state = inner.state.lock();
-            if let Some(entry) = state.tasks.get_mut(name.as_ref()) {
-                entry.restart_count = attempt;
-                entry.status = TaskStatus::Running;
-                entry.abort_handle = new_abort;
-            }
+        if Self::adopt_restart(inner, &name, spawn_id, attempt, jh.abort_handle()) {
+            Self::wire_completion_reporter(name, spawn_id, jh, completion_tx);
         }
+    }
 
-        Self::wire_completion_reporter(name, jh, completion_tx);
+    /// Record a freshly spawned restart instance on its entry. Returns `false` and aborts the
+    /// instance when the entry no longer belongs to `spawn_id` (a same-name spawn replaced it
+    /// while the instance was being created), so a restarted task never runs unregistered.
+    fn adopt_restart(
+        inner: &Arc<Inner>,
+        name: &str,
+        spawn_id: SpawnId,
+        attempt: u32,
+        new_abort: AbortHandle,
+    ) -> bool {
+        let mut state = inner.state.lock();
+        let Some(entry) = state.current_entry_mut(name, spawn_id) else {
+            new_abort.abort();
+            return false;
+        };
+        entry.restart_count = attempt;
+        entry.status = TaskStatus::Running;
+        entry.abort_handle = new_abort;
+        true
     }
 }
 
@@ -2558,5 +2614,70 @@ mod tests {
             observed <= 8,
             "observed {observed} concurrent blocking tasks; expected ≤ 8 (semaphore cap)"
         );
+    }
+
+    fn spawn_pending_restart(sup: &TaskSupervisor, name: &'static str) {
+        let _ = sup.spawn(TaskDescriptor {
+            name,
+            restart: RestartPolicy::Restart {
+                max: 3,
+                base_delay: Duration::from_millis(1),
+            },
+            factory: || std::future::pending::<()>(),
+        });
+    }
+
+    fn entry_spawn_id(sup: &TaskSupervisor, name: &str) -> SpawnId {
+        sup.inner.state.lock().tasks[name].spawn_id
+    }
+
+    fn mark_restarting(sup: &TaskSupervisor, name: &str) {
+        sup.inner.state.lock().tasks.get_mut(name).unwrap().status =
+            TaskStatus::Restarting { attempt: 1, max: 3 };
+    }
+
+    #[tokio::test]
+    async fn do_restart_with_stale_spawn_id_leaves_replacement_untouched() {
+        let (sup, _cancel) = make_supervisor();
+        spawn_pending_restart(&sup, "s5-stale");
+        let stale = entry_spawn_id(&sup, "s5-stale");
+        spawn_pending_restart(&sup, "s5-stale");
+        assert_ne!(stale, entry_spawn_id(&sup, "s5-stale"));
+        mark_restarting(&sup, "s5-stale");
+
+        TaskSupervisor::do_restart(&sup.inner, &Arc::from("s5-stale"), stale, 1);
+
+        let guard = sup.inner.state.lock();
+        let entry = &guard.tasks["s5-stale"];
+        assert_eq!(entry.restart_count, 0);
+        assert_matches!(entry.status, TaskStatus::Restarting { .. });
+    }
+
+    #[tokio::test]
+    async fn adopt_restart_aborts_instance_when_entry_was_replaced() {
+        let (sup, _cancel) = make_supervisor();
+        spawn_pending_restart(&sup, "s5-adopt");
+        let stale = entry_spawn_id(&sup, "s5-adopt");
+        spawn_pending_restart(&sup, "s5-adopt");
+        let fresh = entry_spawn_id(&sup, "s5-adopt");
+
+        let orphan = tokio::spawn(std::future::pending::<()>());
+        let adopted =
+            TaskSupervisor::adopt_restart(&sup.inner, "s5-adopt", stale, 1, orphan.abort_handle());
+        assert!(!adopted);
+        assert!(orphan.await.unwrap_err().is_cancelled());
+        assert_eq!(entry_spawn_id(&sup, "s5-adopt"), fresh);
+        assert_eq!(sup.inner.state.lock().tasks["s5-adopt"].restart_count, 0);
+
+        let live = tokio::spawn(std::future::pending::<()>());
+        assert!(TaskSupervisor::adopt_restart(
+            &sup.inner,
+            "s5-adopt",
+            fresh,
+            1,
+            live.abort_handle()
+        ));
+        assert!(!live.is_finished());
+        live.abort();
     }
 }

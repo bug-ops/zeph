@@ -172,6 +172,17 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
         messages: &'a [Message],
     ) -> BoxFuture<'a, Result<(String, ChatExtras), LlmError>>;
 
+    /// Send messages with tool definitions and return the response together with per-call extras.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`chat_with_tools`](Self::chat_with_tools).
+    fn chat_with_tools_extras<'a>(
+        &'a self,
+        messages: &'a [Message],
+        tools: &'a [ToolDefinition],
+    ) -> BoxFuture<'a, Result<(ChatResponse, ChatExtras), LlmError>>;
+
     /// Return the request payload that will be sent to the provider, for debug dumps.
     #[must_use]
     fn debug_request_json(
@@ -293,6 +304,14 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
         messages: &'a [Message],
     ) -> BoxFuture<'a, Result<(String, ChatExtras), LlmError>> {
         Box::pin(LlmProvider::chat_with_extras(self, messages))
+    }
+
+    fn chat_with_tools_extras<'a>(
+        &'a self,
+        messages: &'a [Message],
+        tools: &'a [ToolDefinition],
+    ) -> BoxFuture<'a, Result<(ChatResponse, ChatExtras), LlmError>> {
+        Box::pin(LlmProvider::chat_with_tools_extras(self, messages, tools))
     }
 
     fn debug_request_json(

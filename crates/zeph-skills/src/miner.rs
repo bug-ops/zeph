@@ -18,6 +18,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use zeph_common::http::{BodyLimit, read_capped, read_prefix};
 use zeph_common::secret::Secret;
+use zeph_common::secret_redact::sanitize_upstream_text;
 
 use crate::embedding::{SkillEmbedding, embed_skills_with_timeout};
 use crate::error::SkillError;
@@ -40,6 +41,16 @@ const README_BODY_LIMIT: BodyLimit = BodyLimit::from_const(MAX_README_BYTES);
 
 /// Bytes of a GitHub error body kept for the diagnostic message.
 const GITHUB_ERROR_BODY_LIMIT: BodyLimit = BodyLimit::from_const(4096);
+
+/// Characters of the scrubbed GitHub error body kept in the error message.
+const GITHUB_ERROR_MESSAGE_CHARS: usize = 500;
+
+/// Build the error for a non-success GitHub search response from its scrubbed body prefix.
+async fn github_search_error(status: reqwest::StatusCode, resp: reqwest::Response) -> SkillError {
+    let body = read_prefix(resp, GITHUB_ERROR_BODY_LIMIT).await;
+    let text = sanitize_upstream_text(&String::from_utf8_lossy(&body), GITHUB_ERROR_MESSAGE_CHARS);
+    SkillError::Other(format!("GitHub search returned {status}: {text}"))
+}
 
 /// Read a GitHub JSON response through the capped reader and decode it.
 async fn read_github_json(resp: reqwest::Response) -> Result<serde_json::Value, SkillError> {
@@ -473,11 +484,7 @@ impl SkillMiner {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = read_prefix(resp, GITHUB_ERROR_BODY_LIMIT).await;
-            return Err(SkillError::Other(format!(
-                "GitHub search returned {status}: {}",
-                String::from_utf8_lossy(&body)
-            )));
+            return Err(github_search_error(status, resp).await);
         }
 
         let json = read_github_json(resp).await?;
@@ -1005,5 +1012,32 @@ mod tests {
         let resp = github_response(vec![b'r'; MAX_README_BYTES * 4]).await;
         let bytes = read_prefix(resp, README_BODY_LIMIT).await;
         assert_eq!(bytes.len(), MAX_README_BYTES);
+    }
+
+    #[tokio::test]
+    async fn github_search_error_scrubs_strips_and_caps_body() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let token = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+        let (head, tail) = token.split_at(10);
+        let mut body = format!("bad {token} {head}\u{200B}{tail} \u{1b}[31m\u{7}").into_bytes();
+        body.resize(GITHUB_ERROR_BODY_LIMIT.get() * 2, b'x');
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        let resp = reqwest::get(server.uri()).await.unwrap();
+        let status = resp.status();
+
+        let SkillError::Other(msg) = github_search_error(status, resp).await else {
+            panic!("expected SkillError::Other");
+        };
+        let text = msg.strip_prefix("GitHub search returned 500 Internal Server Error: ");
+        let text = text.unwrap_or_else(|| panic!("unexpected prefix: {msg}"));
+        assert!(!text.contains("ghp_") && !text.contains(tail), "{text}");
+        assert!(!text.contains('\u{200B}') && !text.contains('\u{1b}') && !text.contains('\u{7}'));
+        assert_eq!(text.chars().count(), GITHUB_ERROR_MESSAGE_CHARS);
     }
 }

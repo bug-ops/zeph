@@ -1148,7 +1148,7 @@ async fn refused_self_reflection_drops_its_dangling_prompt() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
     agent.msg.messages.clear();
     agent
         .msg

@@ -120,7 +120,7 @@ pub(crate) struct SkillState {
     /// Called inside `reload_skills()` so that plugins installed via `/plugins add` after
     /// startup are discovered on the next watcher event without restarting the agent.
     pub(crate) plugin_dirs_supplier: Option<Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>>,
-    pub(crate) active_skill_names: Vec<String>,
+    pub(crate) active_skill_names: Vec<zeph_common::SkillName>,
     pub(crate) last_skills_prompt: String,
     pub(crate) prompt_mode: SkillPromptMode,
     /// Custom secrets available at runtime: key=hyphenated name, value=secret.
@@ -1908,3 +1908,10 @@ pub(super) mod skill;
 
 #[cfg(test)]
 mod tests;
+
+/// Test helper: parse a literal as a [`zeph_common::SkillName`].
+#[cfg(test)]
+pub(crate) fn skill_name(raw: &str) -> zeph_common::SkillName {
+    zeph_common::SkillName::parse(raw)
+        .unwrap_or_else(|e| panic!("invalid test skill name {raw:?}: {e}"))
+}

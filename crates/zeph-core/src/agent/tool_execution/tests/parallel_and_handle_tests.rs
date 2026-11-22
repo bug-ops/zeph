@@ -739,10 +739,16 @@ async fn inject_active_skill_env_injects_only_active_skill_secrets() {
         .insert("other_key".into(), Secret::new("other-val"));
 
     // No active skills — inject_active_skill_env should be a no-op
-    assert_eq!(agent.services.skill.active_skill_names, [] as [String; 0]);
+    assert_eq!(
+        agent.services.skill.active_skill_names,
+        [] as [zeph_common::SkillName; 0]
+    );
     agent.inject_active_skill_env();
     // tool_executor.set_skill_env was not called (no-op path)
-    assert_eq!(agent.services.skill.active_skill_names, [] as [String; 0]);
+    assert_eq!(
+        agent.services.skill.active_skill_names,
+        [] as [zeph_common::SkillName; 0]
+    );
 }
 
 #[test]
@@ -780,7 +786,7 @@ fn inject_active_skill_env_calls_set_skill_env_with_correct_map() {
         .services
         .skill
         .active_skill_names
-        .push("gh-skill".into());
+        .push(crate::agent::state::skill_name("gh-skill"));
 
     agent.inject_active_skill_env();
 
@@ -824,7 +830,7 @@ fn inject_active_skill_env_clears_after_call() {
         .services
         .skill
         .active_skill_names
-        .push("tok-skill".into());
+        .push(crate::agent::state::skill_name("tok-skill"));
 
     // First call — injects env
     agent.inject_active_skill_env();

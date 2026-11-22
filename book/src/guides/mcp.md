@@ -124,7 +124,7 @@ Add and remove MCP servers at runtime via chat commands:
 
 `/mcp list` also prints a "Shadowed tools" section when two servers expose tools with the same sanitized id; the first server wins dispatch and the TUI shows a `shadowed:N` badge for the affected server.
 
-An MCP tool whose id equals a native tool id is dropped from the exposed tool list and reported once at startup, so a server can never override a built-in tool. Tools and servers follow the configured server order, so the shadowing winner stays stable across `tools/list_changed` refreshes.
+An MCP tool whose id equals a native tool id is dropped from the exposed tool list and reported once at startup, so a server can never override a built-in tool. This includes the tools the agent loop answers itself (`compress_context`, `request_compaction`, `start_focus`, `complete_focus`, `skill_state_patch`, `ask_user`): an MCP tool with one of these ids is hidden even while that built-in is disabled, and `/mcp list` reports it under "native or reserved built-in tool". Tools and servers follow the configured server order, so the shadowing winner stays stable across `tools/list_changed` refreshes.
 
 After adding or removing a server, Qdrant registry syncs automatically for semantic tool matching.
 

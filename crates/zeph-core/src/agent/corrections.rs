@@ -133,8 +133,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .skill
             .active_skill_names
             .first()
-            .cloned()
-            .unwrap_or_default();
+            .map_or_default(|n| n.as_str().to_owned());
         let conv_id_bg = conv_id;
         let gate = self.services.learning_engine.config.as_ref().map_or_else(
             || {
@@ -378,7 +377,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     .skill
                     .active_skill_names
                     .first()
-                    .map(String::as_str),
+                    .map(zeph_common::SkillName::as_str),
                 kind_str,
             )
             .await

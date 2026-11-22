@@ -522,7 +522,7 @@ fn build_gonka_provider(
     })
     .with_provider_name(entry.effective_name());
 
-    Ok(AnyProvider::Gonka(provider))
+    Ok(AnyProvider::Gonka(Box::new(provider)))
 }
 
 /// Resolved connection parameters for a `CocoonClient`, shared by the provider-build and

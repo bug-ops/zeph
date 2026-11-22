@@ -309,7 +309,7 @@ async fn native_tool_success_outcome_does_not_panic() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![make_tool_use_request("id-s", "bash")];
     agent
@@ -342,7 +342,7 @@ async fn native_tool_error_output_does_not_panic() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![make_tool_use_request("id-e", "bash")];
     agent
@@ -375,7 +375,7 @@ async fn native_tool_exit_code_output_does_not_panic() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![make_tool_use_request("id-x", "bash")];
     agent
@@ -408,7 +408,7 @@ async fn native_tool_executor_error_does_not_panic() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![make_tool_use_request("id-err", "bash")];
     agent
@@ -477,7 +477,7 @@ async fn native_tool_network_error_records_tool_failure_not_success() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![make_tool_use_request("id-net-err", "memory_search")];
     agent
@@ -625,7 +625,7 @@ async fn native_tool_injection_pattern_populates_flagged_urls() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![make_tool_use_request("id-inj", "bash")];
     agent
@@ -686,7 +686,7 @@ async fn native_tool_explicit_scheme_flagged_url_matches_scheme_relative_tool_ar
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![make_tool_use_request("id-inj", "bash")];
     agent
@@ -801,7 +801,7 @@ async fn self_reflection_early_return_pushes_tool_results_for_all_tool_calls() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![
         make_tool_use_request("id-batch-1", "bash"),
@@ -939,7 +939,7 @@ async fn nested_self_reflection_keeps_the_turn_budget_and_queued_hints() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     for i in 0..3 {
         agent.attach_runtime_note(i);
@@ -1013,7 +1013,7 @@ async fn self_reflection_single_tool_failure_produces_one_tool_result() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![make_tool_use_request("id-single-1", "bash")];
     agent
@@ -1115,7 +1115,7 @@ async fn self_reflection_middle_tool_failure_no_orphans() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![
         make_tool_use_request("id-mid-1", "bash"),
@@ -1196,7 +1196,7 @@ async fn self_reflection_err_pushes_tool_results_for_all_calls() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     // Three tool calls in one batch.
     let tool_calls = vec![
@@ -1277,7 +1277,7 @@ async fn self_reflection_err_single_tool_pushes_tool_result() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     // Single tool call in the batch.
     let tool_calls = vec![make_tool_use_request("id-r1", "bash")];
@@ -1328,7 +1328,7 @@ async fn self_reflection_err_mid_batch_pushes_all_tool_results() {
         .services
         .skill
         .active_skill_names
-        .push("test-skill".into());
+        .push(crate::agent::state::skill_name("test-skill"));
 
     let tool_calls = vec![
         make_tool_use_request("id-r1", "bash"),

@@ -2037,6 +2037,95 @@ mod tests {
         }
     }
 
+    /// #7146: two agents built for the SAME session id on one shared supervisor (a serve session
+    /// restarted while the old actor drains) must register distinct scoped task names, or the
+    /// second spawn replaces the first agent's `cancel_bridge` entry (#7136).
+    #[test]
+    fn build_agent_factory_scopes_task_names_per_agent_instance() {
+        let result = std::thread::Builder::new()
+            .name("agent-factory-task-scope-test".into())
+            .stack_size(TEST_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build test runtime")
+                    .block_on(build_agent_factory_scopes_task_names_per_agent_instance_body());
+            })
+            .expect("failed to spawn test thread")
+            .join();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    async fn build_agent_factory_scopes_task_names_per_agent_instance_body() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("shared-session");
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        let mut live_agents = Vec::new();
+        for _ in 0..2 {
+            let config = zeph_core::config::Config::default();
+            let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+            let (condenser, token_counter) = make_test_condenser();
+            let mut deps = make_gate_test_deps(
+                Arc::clone(&memory),
+                session_config,
+                condenser,
+                token_counter,
+                crate::agent_setup::PolicyGatePieces::default(),
+            );
+            deps.shell_ingredients.task_supervisor = supervisor.clone();
+
+            let (_, build_agent) =
+                Box::pin(build_agent_factory(deps, session_id.clone(), cid, false)).await;
+            let (channel, handle) = zeph_core::LoopbackChannel::pair(64);
+            let mut agent = build_agent(channel);
+            handle
+                .input_tx
+                .send(zeph_core::channel::ChannelMessage {
+                    text: "hello".to_owned(),
+                    attachments: vec![],
+                    is_guest_context: false,
+                    is_from_bot: false,
+                    owner_key: None,
+                })
+                .await
+                .unwrap();
+            let zeph_core::LoopbackHandle {
+                input_tx,
+                output_rx,
+                cancel_signal,
+            } = handle;
+            drop(input_tx);
+            agent.run().await.unwrap();
+            live_agents.push((agent, output_rx, cancel_signal));
+        }
+
+        let bridges: Vec<String> = supervisor
+            .snapshot()
+            .iter()
+            .filter(|t| t.name.contains("cancel_bridge"))
+            .map(|t| t.name.to_string())
+            .collect();
+        assert_eq!(
+            bridges.len(),
+            2,
+            "both live agents keep a bridge: {bridges:?}"
+        );
+        assert_ne!(bridges[0], bridges[1]);
+        for name in &bridges {
+            assert!(
+                name.contains(".shared-session."),
+                "scoped name must embed the session id: {name}"
+            );
+        }
+    }
+
     async fn build_agent_factory_wires_interaction_config_body() {
         let memory = make_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();

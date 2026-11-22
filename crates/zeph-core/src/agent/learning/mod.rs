@@ -31,6 +31,15 @@ impl<C: Channel> Agent<C> {
         self.services.learning_engine.is_enabled()
     }
 
+    fn active_skill_name_strings(&self) -> Vec<String> {
+        self.services
+            .skill
+            .active_skill_names
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
     async fn is_skill_trusted_for_learning(&self, skill_name: &str) -> bool {
         let Some(memory) = &self.services.memory.persistence.memory else {
             return true;
@@ -56,10 +65,11 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = &self.services.memory.persistence.memory else {
             return;
         };
+        let names = self.active_skill_name_strings();
         let batch_result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             memory.sqlite().record_skill_outcomes_batch(
-                &self.services.skill.active_skill_names,
+                &names,
                 self.services.memory.persistence.conversation_id,
                 outcome,
                 error_context,
@@ -79,12 +89,11 @@ impl<C: Channel> Agent<C> {
         }
 
         if outcome != "success" {
-            for name in &self.services.skill.active_skill_names {
+            for name in &names {
                 self.check_rollback(name).await;
             }
         }
 
-        let names: Vec<String> = self.services.skill.active_skill_names.clone();
         for name in &names {
             self.check_trust_transition(name).await;
         }
@@ -123,13 +132,15 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
+        let names = self.active_skill_name_strings();
+
         // Batch-insert each outcome entry (one DB call per entry, but only once per tool —
         // not once per tool × skill as was the case before batching).
         for o in &outcomes {
             let batch_result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 memory.sqlite().record_skill_outcomes_batch(
-                    &self.services.skill.active_skill_names,
+                    &names,
                     self.services.memory.persistence.conversation_id,
                     &o.outcome,
                     o.error_context.as_deref(),
@@ -151,11 +162,10 @@ impl<C: Channel> Agent<C> {
 
         // Run rollback + trust checks ONCE per skill (not once per tool result).
         if had_failure {
-            for name in &self.services.skill.active_skill_names.clone() {
+            for name in &names {
                 self.check_rollback(name).await;
             }
         }
-        let names: Vec<String> = self.services.skill.active_skill_names.clone();
         for name in &names {
             self.check_trust_transition(name).await;
         }

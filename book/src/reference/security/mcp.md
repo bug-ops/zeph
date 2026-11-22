@@ -117,7 +117,7 @@ Collision warnings appear at connection time and when a dynamic server is added 
 
 `/mcp list` shows a "Shadowed tools" section listing every tool hidden by an MCP-vs-MCP id collision (the first server wins dispatch), and the TUI skills panel shows a `shadowed:N` badge next to the affected server.
 
-A tool that collides with a native tool id (a built-in such as `shell` or `web_search`) is stricter: the native tool always wins, the MCP tool is dropped from the exposed list, and the collision is reported once. Results are attributed to the server that was actually dispatched.
+A tool that collides with a native tool id (a built-in such as `shell` or `web_search`, or a reserved agent-loop built-in such as `compress_context` or `ask_user`, even while it is disabled) is stricter: the native tool always wins, the MCP tool is dropped from the exposed list, and the collision is reported once. Results are attributed to the server that was actually dispatched.
 
 ## Tool-List Snapshot Locking
 

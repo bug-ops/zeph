@@ -96,7 +96,9 @@ impl LspHookRunner {
         )
         .await
         {
-            servers.contains(&self.config.mcp_server_id)
+            servers
+                .iter()
+                .any(|s| *s == self.config.mcp_server_id.as_str())
         } else {
             tracing::warn!("lsp_hooks: is_available check timed out after 2s");
             false

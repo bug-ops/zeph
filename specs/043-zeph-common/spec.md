@@ -142,6 +142,7 @@ THEN the same hex string is returned (deterministic)
 | FR-014 | `types::McpServerId` SHALL be an `Arc<str>` identity newtype without `Default` or validation, used wherever an MCP server identity crosses a crate boundary (`ToolResultSource::Mcp`, `DataFlowViolation::SensitivityTrustMismatch`, MCP registries; PR #7078) | must |
 | FR-015 | `native_tools::WebEgressTool` SHALL be the single source of the native web-egress tool ids (`web_scrape`, `fetch`, `web_search`) with `is_web_egress_tool` / `is_web_egress_output` predicates (PR #7140, see [[006-tools/spec]]) | must |
 | FR-016 | `task_supervisor::AbortOnDrop<R>` SHALL wrap a `BlockingHandle<R>` and abort the supervised task when dropped; `unique_session_scope(session_id)` SHALL return `{session_id}.{instance}` unique within the process (PR #7148) | must |
+| FR-017 | `secret_redact::sanitize_upstream_text(text, max_chars)` SHALL map whitespace controls to a space, mark ANSI CSI sequences and the other control and bypass codepoints as a separator, scrub secret shapes, drop the tail a shape left behind a separator, delete the separators, scrub again and cap at `max_chars` characters, so no shape adjacent to or split by a control character survives; known limits: a token split by a newline, and a key behind `\u{9b}` or `ESC (B`, are not redacted (same as before); used for provider error text (`zeph-llm`) and the skill miner GitHub error body (#7145) | must |
 
 ---
 

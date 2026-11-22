@@ -143,7 +143,10 @@ async fn list_servers_follows_configured_order_not_alphabetical() {
 #[tokio::test]
 async fn list_servers_after_register_for_testing_reports_connected_state() {
     let mgr = manager(&["srv"]);
-    assert_eq!(mgr.list_servers().await, Vec::<String>::new());
+    assert_eq!(
+        mgr.list_servers().await,
+        Vec::<zeph_common::types::McpServerId>::new()
+    );
     mgr.register_connected_for_testing("srv", vec![tool("srv", "t")])
         .await;
     assert_eq!(mgr.list_servers().await, ["srv"]);

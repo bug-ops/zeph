@@ -16,7 +16,10 @@ use super::embed_cache::TurnEmbedCache;
 use super::{RouterProvider, RouterStrategy, messages_contain_image, strip_image_parts};
 use crate::embed::owned_strs;
 use crate::error::LlmError;
-use crate::provider::{ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, ToolDefinition};
+use crate::provider::{
+    ChatExtras, ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, ResponseUsage,
+    ToolDefinition,
+};
 use crate::status::StatusReporter;
 use zeph_common::math::cosine_similarity;
 
@@ -24,9 +27,19 @@ const EMBED_MAX_RETRIES: u32 = 3;
 const EMBED_BASE_DELAY_MS: u64 = 500;
 
 impl RouterProvider {
-    /// Apply a [`CoeOutcome`]: update quality outcomes after an escalation, fold the shadow
-    /// call's usage into the served usage as `auxiliary`, and return the final text.
-    fn finish_coe(&self, coe: &CoeRouter, outcome: CoeOutcome) -> String {
+    /// Fold the shadow call's usage into the served usage as `auxiliary`.
+    fn fold_shadow_usage(&self, shadow: Option<ResponseUsage>) {
+        if let Some(shadow) = shadow {
+            self.state.record_shadow_usage(shadow);
+        }
+    }
+
+    /// Apply a [`CoeOutcome`] of the plain `chat()` path: update quality outcomes after an
+    /// escalation, fold the shadow usage, and return the final text.
+    ///
+    /// The tool path calls only [`Self::fold_shadow_usage`]: `record_quality_outcome` writes to
+    /// `last_active_provider`, which would attribute both outcomes to the primary there.
+    fn finish_coe(&self, coe: &CoeRouter, outcome: CoeOutcome<String>) -> String {
         if matches!(
             outcome.decision,
             CoeDecision::EscalateIntra | CoeDecision::EscalateInter
@@ -34,10 +47,8 @@ impl RouterProvider {
             self.record_quality_outcome(&outcome.primary_name, false);
             self.record_quality_outcome(coe.secondary.name(), true);
         }
-        if let Some(shadow) = outcome.shadow_usage {
-            self.state.record_shadow_usage(shadow);
-        }
-        outcome.text
+        self.fold_shadow_usage(outcome.shadow_usage);
+        outcome.response
     }
 }
 
@@ -185,16 +196,15 @@ impl LlmProvider for RouterProvider {
                             router.spawn_asi_update(p.name(), r.clone(), turn_id, resp_emb);
 
                             // CoE: pass already-obtained primary result to avoid double call.
-                            if let Some(ref coe_router) = router.coe
-                                && let Ok(outcome) = run_coe(
+                            if let Some(ref coe_router) = router.coe {
+                                let outcome = run_coe(
                                     coe_router,
                                     p.name().to_owned(),
-                                    r.clone(),
+                                    r,
                                     extras,
-                                    &messages,
+                                    coe_router.secondary.chat(&messages),
                                 )
-                                .await
-                            {
+                                .await;
                                 return Ok(router.finish_coe(coe_router, outcome));
                             }
 
@@ -205,16 +215,15 @@ impl LlmProvider for RouterProvider {
                         router.spawn_asi_update(p.name(), r.clone(), turn_id, None);
 
                         // CoE: pass already-obtained primary result to avoid double call.
-                        if let Some(ref coe_router) = router.coe
-                            && let Ok(outcome) = run_coe(
+                        if let Some(ref coe_router) = router.coe {
+                            let outcome = run_coe(
                                 coe_router,
                                 p.name().to_owned(),
-                                r.clone(),
+                                r,
                                 extras,
-                                &messages,
+                                coe_router.secondary.chat(&messages),
                             )
-                            .await
-                        {
+                            .await;
                             return Ok(router.finish_coe(coe_router, outcome));
                         }
 
@@ -749,8 +758,20 @@ impl LlmProvider for RouterProvider {
                     );
                 }
                 let start = std::time::Instant::now();
-                match p.chat_with_tools(dispatch_messages_for(p), &tools).await {
-                    Ok(r) => {
+                let coe = router
+                    .coe
+                    .as_ref()
+                    .filter(|c| c.secondary.supports_tool_use());
+                let result = if coe.is_some() {
+                    p.chat_with_tools_extras(dispatch_messages_for(p), &tools)
+                        .await
+                } else {
+                    p.chat_with_tools(dispatch_messages_for(p), &tools)
+                        .await
+                        .map(|r| (r, ChatExtras::default()))
+                };
+                match result {
+                    Ok((r, extras)) => {
                         router.record_availability(
                             p.name(),
                             true,
@@ -759,6 +780,25 @@ impl LlmProvider for RouterProvider {
                         // Track which sub-provider served this tool call for reputation attribution.
                         router.state.record_served(p);
                         *router.state.last_active_provider.lock() = Some(p.name().to_owned());
+                        if let Some(coe) = coe {
+                            // spec-072 C3: the secondary gets the same vision safety net.
+                            let secondary_messages =
+                                if has_image && !coe.secondary.supports_vision() {
+                                    stripped_messages.as_deref().unwrap_or(&messages)
+                                } else {
+                                    &messages
+                                };
+                            let outcome = run_coe(
+                                coe,
+                                p.name().to_owned(),
+                                r,
+                                extras,
+                                coe.secondary.chat_with_tools(secondary_messages, &tools),
+                            )
+                            .await;
+                            router.fold_shadow_usage(outcome.shadow_usage);
+                            return Ok(outcome.response);
+                        }
                         return Ok(r);
                     }
                     Err(e) => {

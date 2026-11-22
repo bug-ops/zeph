@@ -3,6 +3,7 @@
 
 use rmcp::model::{ElicitResult, ElicitationAction};
 
+use super::tool_execution::BuiltinTool;
 use super::{Agent, Channel, LlmProvider};
 
 /// Which MCP servers' tools an agent may see on `tools/list_changed` refreshes.
@@ -65,7 +66,7 @@ fn format_shadowed_tools(
         }
     }
     if !native_shadows.is_empty() {
-        out.push_str("\n\nTools hidden by a native tool with the same id (native tool wins):");
+        out.push_str("\n\nTools hidden by a native or reserved built-in tool with the same id (native tool wins):");
         for n in native_shadows {
             let _ = write!(out, "\n- {} (id: {})", n.qualified, n.sanitized_id);
         }
@@ -75,7 +76,7 @@ fn format_shadowed_tools(
 
 /// Render the `/mcp list` reply: per-server tool counts, total, and the shadowed-tools section.
 fn format_mcp_list(
-    server_ids: &[String],
+    server_ids: &[zeph_common::types::McpServerId],
     tools: &[zeph_mcp::McpTool],
     collisions: &[zeph_mcp::tool::ToolCollision],
     native_shadows: &[zeph_mcp::tool::NativeToolShadow],
@@ -103,6 +104,13 @@ impl<C: Channel> Agent<C> {
             .into_iter()
             .filter(|d| !d.is_mcp_tool())
             .map(|d| zeph_common::ToolName::new(d.id.as_ref()))
+            .chain(
+                BuiltinTool::ALL
+                    .iter()
+                    .copied()
+                    .flat_map(|b| b.tool_names().iter().copied())
+                    .map(zeph_common::ToolName::new),
+            )
             .collect();
         let shadows = zeph_mcp::tool::detect_native_shadows(self.services.mcp.tools(), &native);
         self.services.mcp.set_native_ids(native);
@@ -114,7 +122,7 @@ impl<C: Channel> Agent<C> {
                 server_id = %s.server_id,
                 tool = %s.qualified,
                 tool_id = %s.sanitized_id,
-                "MCP tool sanitized_id collides with a native tool; the native tool wins dispatch and the MCP tool is unreachable"
+                "MCP tool sanitized_id collides with a native or reserved built-in tool; the native tool wins dispatch and the MCP tool is unreachable"
             );
         }
         self.services.mcp.native_shadows = shadows;
@@ -947,10 +955,10 @@ mod tests {
             qualified_b: "a:b_c".into(),
             trust_b: McpTrustLevel::Untrusted,
         };
-        let out = format_mcp_list(&["a".to_owned(), "a.b".to_owned()], &[], &[col], &[]);
+        let out = format_mcp_list(&["a".into(), "a.b".into()], &[], &[col], &[]);
         assert!(out.starts_with("Connected MCP servers:\n- a (0 tools)"));
         assert!(out.contains("Shadowed tools"));
-        assert!(format_mcp_list(&["a".to_owned()], &[], &[], &[]).ends_with("Total: 0 tool(s)"));
+        assert!(format_mcp_list(&["a".into()], &[], &[], &[]).ends_with("Total: 0 tool(s)"));
     }
 
     #[tokio::test]
@@ -1002,11 +1010,11 @@ mod tests {
             server_id: "memory".into(),
             qualified: "memory:search".into(),
         };
-        let out = format_mcp_list(&["memory".to_owned()], &[], &[], &[native]);
+        let out = format_mcp_list(&["memory".into()], &[], &[], &[native]);
         assert!(!out.contains("Shadowed tools (same sanitized id"), "{out}");
         assert!(
             out.ends_with(
-                "Tools hidden by a native tool with the same id (native tool wins):\n- memory:search (id: memory_search)"
+                "Tools hidden by a native or reserved built-in tool with the same id (native tool wins):\n- memory:search (id: memory_search)"
             ),
             "{out}"
         );
@@ -1075,7 +1083,7 @@ mod tests {
         logs_assert(|lines: &[&str]| {
             let n = lines
                 .iter()
-                .filter(|l| l.contains("collides with a native tool"))
+                .filter(|l| l.contains("collides with a native or reserved built-in tool"))
                 .count();
             if n == 1 {
                 Ok(())

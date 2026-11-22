@@ -36,7 +36,10 @@ fn make_entry(id: &str) -> ServerEntry {
 #[tokio::test]
 async fn list_servers_empty() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
-    assert_eq!(mgr.list_servers().await, [] as [String; 0]);
+    assert_eq!(
+        mgr.list_servers().await,
+        [] as [zeph_common::types::McpServerId; 0]
+    );
 }
 
 #[test]
@@ -90,7 +93,10 @@ async fn connect_all_skips_failing_servers() {
     assert_eq!(tools.as_slice(), [] as [McpTool; 0]);
     assert_eq!(outcomes.len(), 2);
     assert!(outcomes.iter().all(|o| !o.connected));
-    assert_eq!(mgr.list_servers().await, [] as [String; 0]);
+    assert_eq!(
+        mgr.list_servers().await,
+        [] as [zeph_common::types::McpServerId; 0]
+    );
 }
 
 #[tokio::test]
@@ -193,7 +199,7 @@ async fn list_servers_returns_sorted() {
     // No servers connected (all fail), so list is empty
     mgr.connect_all().await;
     let ids = mgr.list_servers().await;
-    assert_eq!(ids, [] as [String; 0]);
+    assert_eq!(ids, [] as [zeph_common::types::McpServerId; 0]);
     // Verify sort contract: even for an empty list, sort is a no-op
     let sorted = {
         let mut v = ids.clone();
@@ -209,7 +215,10 @@ async fn remove_server_preserves_other_entries() {
     // With no connected servers, remove always returns ServerNotFound
     assert!(mgr.remove_server("a").await.is_err());
     assert!(mgr.remove_server("b").await.is_err());
-    assert_eq!(mgr.list_servers().await, [] as [String; 0]);
+    assert_eq!(
+        mgr.list_servers().await,
+        [] as [zeph_common::types::McpServerId; 0]
+    );
 }
 
 #[tokio::test]
@@ -493,7 +502,10 @@ async fn connect_all_with_http_entries_skips_failing() {
     );
     let (tools, _outcomes) = mgr.connect_all().await;
     assert_eq!(tools.as_slice(), [] as [McpTool; 0]);
-    assert_eq!(mgr.list_servers().await, [] as [String; 0]);
+    assert_eq!(
+        mgr.list_servers().await,
+        [] as [zeph_common::types::McpServerId; 0]
+    );
 }
 
 impl McpManager {
