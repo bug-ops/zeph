@@ -8,6 +8,14 @@
 //! parse a JSON array out of a raw LLM response; each caller keeps its own policy for
 //! what to do when extraction fails (empty-result fallback vs. hard error).
 
+/// Strips a Markdown code fence (with any language tag) from an LLM response.
+///
+/// Returns a slice of `raw` holding the fenced payload, or the trimmed input when it is not fenced.
+#[must_use]
+pub fn strip_code_fence(_raw: &str) -> &str {
+    todo!("#7175")
+}
+
 /// Extract the substring spanning the first `[` and the last `]` in `raw`.
 ///
 /// Returns `None` when `raw` has no `[`, no `]` after it, or when the `]` does not come
