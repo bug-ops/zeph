@@ -8,21 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `zeph-common`: `TaskSupervisor` ignores completions of a replaced same-name task, registers entries before any completion can be reported, and aborts a restarted instance whose entry was replaced (#7141, #7146).
-- `zeph-core`, `zeph-mcp`: MCP tools whose sanitized id equals a reserved agent built-in name are shadowed and reported, even while the built-in is disabled (#7142).
-- `zeph-skills`, `zeph-common`: skill miner scrubs and control-strips the GitHub error body via the new `sanitize_upstream_text`, which `zeph-llm` also adopts (#7145).
-- `zeph-llm`: provider error text now turns tabs and newlines into spaces and strips zero-width and bidi bypass codepoints around secret scrubbing (#7145).
-- `zeph-llm`: **Breaking** `AnyProvider::Gonka` now holds `Box<GonkaProvider>`, clearing `clippy::large_enum_variant` with the `gonka` feature (#7147).
+- `zeph-common`: `TaskSupervisor` ignores completions of a replaced same-name task, registers entries before any completion can be reported, and aborts a restarted instance whose entry was replaced (#7173).
+- `zeph-core`, `zeph-mcp`: MCP tools whose sanitized id equals a reserved agent built-in name are shadowed and reported, even while the built-in is disabled (#7173).
+- `zeph-skills`, `zeph-common`: skill miner scrubs and control-strips the GitHub error body via the new `sanitize_upstream_text`, which `zeph-llm` also adopts (#7173).
+- `zeph-llm`: provider error text now turns tabs and newlines into spaces and strips zero-width and bidi bypass codepoints around secret scrubbing (#7173).
+- `zeph-llm`: **Breaking** `AnyProvider::Gonka` now holds `Box<GonkaProvider>`, clearing `clippy::large_enum_variant` with the `gonka` feature (#7173).
 
 ### Added
 
-- `zeph-llm`: chain-of-entropy escalation now covers `chat_with_tools` with a bounded shadow stage; **Breaking**: `run_coe`/`CoeOutcome` crate-private, `CoeConfig::shadow_budget` added, `LlmProviderDyn::chat_with_tools_extras` added (#7143).
-- `zeph-llm`: with `[llm.coe]` enabled, the masked main-turn conversation now also reaches `secondary_provider` and, on high-entropy or sampled turns, the embedding provider (#7143).
+- `zeph-llm`: chain-of-entropy escalation now covers `chat_with_tools` with a bounded shadow stage; **Breaking**: `run_coe`/`CoeOutcome` crate-private, `CoeConfig::shadow_budget` added, `LlmProviderDyn::chat_with_tools_extras` added (#7173).
+- `zeph-llm`: with `[llm.coe]` enabled, the masked main-turn conversation now also reaches `secondary_provider` and, on high-entropy or sampled turns, the embedding provider (#7173).
 
 ### Changed
 
 - **Breaking:** `rust-agent-handoff` skill: handoff protocol v2 (spec 032) replaces nested `.yaml` files with Markdown files with flat YAML frontmatter; per-role output sections move from the skill's `references/` into the `.zeph/agents/` definitions (#7160).
-- **Breaking**: `McpManager::list_servers` and `McpCaller::list_servers` return `Vec<McpServerId>`; `active_skill_names` is `Vec<SkillName>`; tool-call attribution is built once per dispatch batch (#7144).
+- **Breaking**: `McpManager::list_servers` and `McpCaller::list_servers` return `Vec<McpServerId>`; `active_skill_names` is `Vec<SkillName>`; tool-call attribution is built once per dispatch batch (#7173).
 - Workspace: fix the isolated `profiling-alloc` build and synchronize the debug dump redaction test with completion of the asynchronous file write.
 - Workspace: fix lint compatibility for isolated features and Rust 1.98, and compile the context budget doctest with its new input type.
 - `zeph-bench`: replace the tau2 tool schema module-wide dead-code suppression with item-level expectations that explain the schema-only fields.
