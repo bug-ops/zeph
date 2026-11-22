@@ -2561,7 +2561,7 @@ pub trait LlmProvider: Send + Sync {
             augmented.insert(0, Message::from_legacy(Role::System, instruction));
 
             let raw = self.chat(&augmented).await?;
-            let cleaned = strip_json_fences(&raw);
+            let cleaned = zeph_common::llm_response::strip_code_fence(&raw);
             match serde_json::from_str::<T>(cleaned) {
                 Ok(val) => Ok(val),
                 Err(first_err) => {
@@ -2574,7 +2574,7 @@ pub trait LlmProvider: Send + Sync {
                         ),
                     ));
                     let retry_raw = self.chat(&augmented).await?;
-                    let retry_cleaned = strip_json_fences(&retry_raw);
+                    let retry_cleaned = zeph_common::llm_response::strip_code_fence(&retry_raw);
                     serde_json::from_str::<T>(retry_cleaned).map_err(|e| {
                         LlmError::StructuredParse(format!("parse failed after retry: {e}"))
                     })
@@ -2582,17 +2582,6 @@ pub trait LlmProvider: Send + Sync {
             }
         }
     }
-}
-
-/// Strip markdown code fences from LLM output. Only handles outer fences;
-/// JSON containing trailing triple backticks in string values may be
-/// incorrectly trimmed (acceptable for MVP — see review R2).
-fn strip_json_fences(s: &str) -> &str {
-    s.trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim()
 }
 
 #[cfg(test)]
@@ -3267,46 +3256,6 @@ mod tests {
         } else {
             panic!("expected ToolOutput");
         }
-    }
-
-    // --- M27: strip_json_fences tests ---
-
-    #[test]
-    fn strip_json_fences_plain_json() {
-        assert_eq!(strip_json_fences(r#"{"a": 1}"#), r#"{"a": 1}"#);
-    }
-
-    #[test]
-    fn strip_json_fences_with_json_fence() {
-        assert_eq!(strip_json_fences("```json\n{\"a\": 1}\n```"), r#"{"a": 1}"#);
-    }
-
-    #[test]
-    fn strip_json_fences_with_plain_fence() {
-        assert_eq!(strip_json_fences("```\n{\"a\": 1}\n```"), r#"{"a": 1}"#);
-    }
-
-    #[test]
-    fn strip_json_fences_whitespace() {
-        assert_eq!(strip_json_fences("  \n  "), "");
-    }
-
-    #[test]
-    fn strip_json_fences_empty() {
-        assert_eq!(strip_json_fences(""), "");
-    }
-
-    #[test]
-    fn strip_json_fences_outer_whitespace() {
-        assert_eq!(
-            strip_json_fences("  ```json\n{\"a\": 1}\n```  "),
-            r#"{"a": 1}"#
-        );
-    }
-
-    #[test]
-    fn strip_json_fences_only_opening_fence() {
-        assert_eq!(strip_json_fences("```json\n{\"a\": 1}"), r#"{"a": 1}"#);
     }
 
     // --- M27: chat_typed tests ---

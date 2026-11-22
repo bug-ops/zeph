@@ -388,17 +388,7 @@ pub(crate) fn parse_and_validate_pub(content: &str) -> Result<GeneratedSkill, Sk
 }
 
 fn extract_skill_md(raw: &str) -> String {
-    let trimmed = raw.trim();
-    // Remove ```markdown or ``` wrapping.
-    if let Some(inner) = trimmed
-        .strip_prefix("```markdown")
-        .or_else(|| trimmed.strip_prefix("```yaml"))
-        .or_else(|| trimmed.strip_prefix("```"))
-        .and_then(|s| s.trim_start_matches('\n').rsplit_once("```"))
-    {
-        return inner.0.trim().to_string();
-    }
-    trimmed.to_string()
+    zeph_common::llm_response::strip_code_fence(raw).to_owned()
 }
 
 /// Parse the LLM output as SKILL.md and run all validations.

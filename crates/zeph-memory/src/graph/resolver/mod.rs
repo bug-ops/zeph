@@ -1210,20 +1210,8 @@ impl<'a> EntityResolver<'a> {
 
 /// Extract a JSON object from a string that may contain markdown code fences.
 fn extract_json(s: &str) -> &str {
-    let trimmed = s.trim();
-    // Strip ```json ... ``` or ``` ... ```
-    if let Some(inner) = trimmed.strip_prefix("```json")
-        && let Some((body, _)) = inner.rsplit_once("```")
-    {
-        return body.trim();
-    }
-    if let Some(inner) = trimmed.strip_prefix("```")
-        && let Some((body, _)) = inner.rsplit_once("```")
-    {
-        return body.trim();
-    }
-    // Find first '{' to last '}'
-    zeph_common::llm_response::extract_json_object_slice(trimmed).unwrap_or(trimmed)
+    let body = zeph_common::llm_response::strip_code_fence(s);
+    zeph_common::llm_response::extract_json_object_slice(body).unwrap_or(body)
 }
 
 #[cfg(test)]

@@ -10,10 +10,66 @@
 
 /// Strips a Markdown code fence (with any language tag) from an LLM response.
 ///
-/// Returns a slice of `raw` holding the fenced payload, or the trimmed input when it is not fenced.
+/// LLMs routinely wrap JSON, YAML or Markdown payloads in a fence. This is the single shared
+/// unwrapping step; callers parse the returned slice.
+///
+/// The result borrows from `raw` and is trimmed. Input that does not start with a fence
+/// (after trimming) is returned trimmed and otherwise unchanged. After the opening fence an
+/// optional tag of `[A-Za-z0-9_.+-]` is read:
+///
+/// - a `{` or `[` right after the tag (and optional blanks) starts the payload there;
+/// - otherwise a multi-line input treats the whole first line as the info string;
+/// - otherwise (single line) everything after the opening fence is the payload.
+///
+/// The closing fence is the last run of three backticks followed only by blanks up to the end
+/// of its line; anything after it is dropped. A missing closer takes the rest of the input.
+/// Fences of four or more backticks and tilde fences are not detected.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::llm_response::strip_code_fence;
+///
+/// assert_eq!(strip_code_fence("```json\n{\"a\": 1}\n```\nHope this helps!"), r#"{"a": 1}"#);
+/// assert_eq!(strip_code_fence("  plain  "), "plain");
+/// ```
 #[must_use]
-pub fn strip_code_fence(_raw: &str) -> &str {
-    todo!("#7175")
+pub fn strip_code_fence(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    let Some(after_open) = trimmed.strip_prefix(FENCE) else {
+        return trimmed;
+    };
+    strip_closing_fence(fence_body(after_open)).trim()
+}
+
+const FENCE: &str = "```";
+
+/// Returns the payload part of `after_open` (the text following the opening fence).
+fn fence_body(after_open: &str) -> &str {
+    let after_tag = after_open.trim_start_matches(|c: char| {
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-')
+    });
+    let payload = after_tag.trim_start_matches([' ', '\t']);
+    if payload.starts_with(['{', '[']) {
+        return payload;
+    }
+    after_open
+        .split_once('\n')
+        .map_or(after_open, |(_, rest)| rest)
+}
+
+/// Cuts `body` at its last fence that is followed only by blanks on its line.
+fn strip_closing_fence(body: &str) -> &str {
+    body.rmatch_indices(FENCE)
+        .find_map(|(at, _)| {
+            let (head, tail) = body.split_at_checked(at)?;
+            let rest = tail.strip_prefix(FENCE)?;
+            let line = rest.split_once('\n').map_or(rest, |(line, _)| line);
+            line.bytes()
+                .all(|b| matches!(b, b' ' | b'\t' | b'\r'))
+                .then_some(head)
+        })
+        .unwrap_or(body)
 }
 
 /// Extract the substring spanning the first `[` and the last `]` in `raw`.
