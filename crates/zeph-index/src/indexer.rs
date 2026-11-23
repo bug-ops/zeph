@@ -22,6 +22,7 @@
 //! LLM API cost.
 
 use std::collections::HashSet;
+use std::mem::DropGuard;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -297,7 +298,7 @@ impl CodeIndexer {
             tracing::info!("index_project already running, skipping concurrent request");
             return Ok(IndexReport::default());
         }
-        let _guard = IndexingGuard(Arc::clone(&self.indexing));
+        let _guard = indexing_guard(Arc::clone(&self.indexing));
 
         let start = std::time::Instant::now();
         let mut report = IndexReport::default();
@@ -710,12 +711,10 @@ fn chunk_to_insert(chunk: &CodeChunk) -> ChunkInsert<'_> {
 }
 
 /// RAII guard that resets the re-entrancy flag when dropped.
-struct IndexingGuard(Arc<AtomicBool>);
-
-impl Drop for IndexingGuard {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
+fn indexing_guard(
+    flag: Arc<AtomicBool>,
+) -> DropGuard<Arc<AtomicBool>, impl FnOnce(Arc<AtomicBool>)> {
+    DropGuard::new(flag, |flag| flag.store(false, Ordering::Release))
 }
 
 #[cfg(test)]
@@ -988,7 +987,7 @@ mod tests {
         {
             // Simulate acquiring the guard.
             flag.store(true, Ordering::Relaxed);
-            let _guard = IndexingGuard(Arc::clone(&flag));
+            let _guard = indexing_guard(Arc::clone(&flag));
             assert!(flag.load(Ordering::Relaxed));
         }
         // Guard dropped — flag must be false.

@@ -112,7 +112,7 @@ impl EndpointPool {
             }
         }
         let n = nodes.len();
-        let failed_until = (0..n).map(|_| AtomicU64::new(0)).collect();
+        let failed_until = Vec::from_fn(n, |_| AtomicU64::new(0));
         Ok(Self {
             nodes,
             cursor: AtomicUsize::new(0),

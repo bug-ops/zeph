@@ -1354,24 +1354,26 @@ mod tests {
     fn sweep_old_transcripts_removes_oldest() {
         let dir = tempfile::tempdir().unwrap();
 
+        // Reverse the name order so the oldest files by mtime are file03 and file04.
         for i in 0..5u32 {
             let path = dir.path().join(format!("file{i:02}.jsonl"));
             std::fs::write(&path, b"").unwrap();
-            // Vary mtime by touching the file — not reliable without explicit mtime set,
-            // but tempdir files get sequential syscall timestamps in practice.
-            // We set the mtime explicitly via filetime crate... but we have no filetime dep.
-            // Instead we just verify count is correct.
+            let mtime =
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(1_000 - i));
+            std::fs::set_times(&path, std::fs::FileTimes::new().set_modified(mtime)).unwrap();
         }
 
         let deleted = sweep_old_transcripts(dir.path(), 3).unwrap();
         assert_eq!(deleted, 2);
 
-        let remaining: Vec<_> = std::fs::read_dir(dir.path())
+        let mut remaining: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(std::result::Result::ok)
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(remaining.len(), 3);
+        remaining.sort();
+        assert_eq!(remaining, ["file00.jsonl", "file01.jsonl", "file02.jsonl"]);
     }
 
     #[test]

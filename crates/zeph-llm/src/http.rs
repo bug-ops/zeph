@@ -25,8 +25,7 @@ pub(crate) async fn read_body(response: reqwest::Response) -> Result<String, Llm
             BodyReadError::TooLarge { limit } => LlmError::ResponseTooLarge { limit },
             BodyReadError::Transport(e) => LlmError::Http(e),
         })?;
-    Ok(String::from_utf8(bytes)
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+    Ok(String::from_utf8(bytes).unwrap_or_else(std::string::FromUtf8Error::into_utf8_lossy))
 }
 
 /// Read a response body through [`read_body`] and decode it as JSON.

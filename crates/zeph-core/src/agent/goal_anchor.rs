@@ -9,6 +9,7 @@
 //! a previous goal or attempt can never overwrite newer state (spec 004-18 FR-006).
 
 use std::future::Future;
+use std::mem::DropGuard;
 use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
@@ -311,12 +312,9 @@ impl GoalAnchor {
         let anchor = self.clone();
         let (goal_id, attempt) = (ticket.goal_id, ticket.attempt);
         async move {
-            let mut guard = PendingGuard {
-                anchor,
-                goal_id,
-                attempt,
-                armed: true,
-            };
+            let guard = DropGuard::new(anchor, move |anchor| {
+                anchor.settle(goal_id, attempt, Outcome::Transient);
+            });
             let outcome = match tokio::time::timeout(timeout, work).await {
                 Ok(Ok(Some(entity))) => Outcome::Found(entity),
                 Ok(Ok(None)) => {
@@ -332,30 +330,7 @@ impl GoalAnchor {
                     Outcome::Transient
                 }
             };
-            guard.finish(outcome);
-        }
-    }
-}
-
-/// Settles an abandoned resolution as a transient failure so no in-flight state outlives its task.
-struct PendingGuard {
-    anchor: GoalAnchor,
-    goal_id: GoalId,
-    attempt: AnchorAttempt,
-    armed: bool,
-}
-
-impl PendingGuard {
-    fn finish(&mut self, outcome: Outcome) {
-        self.armed = false;
-        self.anchor.settle(self.goal_id, self.attempt, outcome);
-    }
-}
-
-impl Drop for PendingGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            self.finish(Outcome::Transient);
+            DropGuard::dismiss(guard).settle(goal_id, attempt, outcome);
         }
     }
 }

@@ -186,7 +186,7 @@ pub(crate) fn extract_block(yaml_str: &str, key: &str) -> Option<String> {
         if in_block {
             if line.starts_with(' ') || line.starts_with('\t') || line.trim().is_empty() {
                 // Collect indented content; strip one level of indentation (2 spaces).
-                let stripped = line.strip_prefix("  ").unwrap_or(line);
+                let stripped = line.trim_prefix("  ");
                 lines.push(stripped);
             } else {
                 // A non-indented line means we've exited the block.

@@ -52,7 +52,7 @@ pub struct ListTasksParams {}
 /// Units: `s` = seconds, `m` = minutes, `h` = hours, `d` = days. Leading `+` is optional.
 /// Returns `None` for zero duration, trailing digits without unit, or unknown unit characters.
 fn parse_relative(s: &str) -> Option<chrono::Duration> {
-    let s = s.strip_prefix('+').unwrap_or(s);
+    let s = s.trim_prefix('+');
     let mut total_secs: i64 = 0;
     let mut num_buf = String::new();
     for ch in s.chars() {

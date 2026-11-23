@@ -826,7 +826,7 @@ fn matches_pattern(root: &Path, path: &Path, matcher: Option<&glob::Pattern>) ->
     let Some(matcher) = matcher else {
         return true;
     };
-    let relative = path.strip_prefix(root).unwrap_or(path);
+    let relative = path.trim_prefix(root);
     matcher.matches_path(relative)
 }
 

@@ -269,7 +269,7 @@ fn generate_sb_profile_for_home(policy: &SandboxPolicy, home: &Path) -> String {
     for domain in &policy.denied_domains {
         if let Some(base) = domain.strip_prefix("*.") {
             let escaped_base = escape_sb(base);
-            let escaped_suffix = escape_sb(domain.strip_prefix('*').unwrap_or(domain));
+            let escaped_suffix = escape_sb(domain.trim_prefix('*'));
             rules.push(format!("(deny network* (remote host \"{escaped_base}\"))"));
             rules.push(format!(
                 "(deny network* (remote host-suffix \"{escaped_suffix}\"))"

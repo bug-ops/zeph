@@ -864,7 +864,7 @@ async fn ingest_one(
         Err(e) => return IngestOneResult::Error(format!("ledger check failed: {e}")),
     }
 
-    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let content = String::from_utf8_lossy_owned(bytes);
     // M1: thread source_uri into Qdrant payload so points can be filtered by source.
     let doc = make_document(uri.clone(), content);
 

@@ -514,7 +514,7 @@ impl GeminiProvider {
                     .any(|s| s == "generateContent")
             })
             .map(|m| {
-                let id = m.name.strip_prefix("models/").unwrap_or(&m.name).to_owned();
+                let id = m.name.trim_prefix("models/").to_owned();
                 crate::model_cache::RemoteModelInfo {
                     display_name: m.display_name,
                     id,
@@ -672,8 +672,8 @@ fn inline_refs_inner(
         .map(str::to_owned)
     {
         let name = ref_val
-            .trim_start_matches("#/$defs/")
-            .trim_start_matches("#/definitions/");
+            .trim_prefix("#/$defs/")
+            .trim_prefix("#/definitions/");
         if let Some(resolved) = defs.get(name) {
             let mut resolved = resolved.clone();
             inline_refs_inner(&mut resolved, defs, depth - 1);
