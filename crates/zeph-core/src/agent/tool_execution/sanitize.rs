@@ -65,6 +65,12 @@ impl ToolOutputOrigin {
         }
     }
 
+    /// `true` for a `load_skill` resource read: file content that no first-party integrity check
+    /// covers, so the first-party scan exemptions must not apply to it.
+    fn reads_unhashed_files(&self) -> bool {
+        self.claim_source() == Some(zeph_tools::ClaimSource::SkillResource)
+    }
+
     fn is_harness_text(&self) -> bool {
         matches!(self, Self::HarnessAuthored | Self::LocalPolicyDenial)
     }
@@ -101,7 +107,7 @@ impl ToolOutputOrigin {
         &self,
         resolved: &ResolvedToolSource,
     ) -> VigilExemption {
-        if resolved.provenance() == ToolProvenance::Mcp {
+        if resolved.provenance() == ToolProvenance::Mcp || self.reads_unhashed_files() {
             return VigilExemption::Ineligible;
         }
         match (self, resolved.source()) {
@@ -545,7 +551,7 @@ impl<C: Channel> Agent<C> {
                     | zeph_sanitizer::MemorySourceHint::LlmSummary
             )
         ) || origin.is_harness_text()
-            || is_internal_tool(tool_name, provenance);
+            || (is_internal_tool(tool_name, provenance) && !origin.reads_unhashed_files());
         if !skip_ml && self.services.security.sanitizer.has_classifier_backend() {
             let ml_verdict = self
                 .services
@@ -1050,5 +1056,40 @@ mod tests {
                 "MCP-served `{name}` must not skip ML classification"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod unhashed_file_exemption_tests {
+    use super::*;
+
+    #[test]
+    fn file_claim_drops_vigil_exemption_for_load_skill() {
+        let ids = McpToolIds::default();
+        let resource = ToolOutputOrigin::Executed(Some(zeph_tools::ClaimSource::SkillResource));
+        let resolved = resource.resolve("load_skill", &ids);
+        assert!(resource.reads_unhashed_files());
+        assert_eq!(
+            resource.vigil_exemption(&resolved),
+            VigilExemption::Ineligible
+        );
+    }
+
+    #[test]
+    fn plain_file_claim_keeps_exemptions_of_other_tools() {
+        let ids = McpToolIds::default();
+        let read = ToolOutputOrigin::Executed(Some(zeph_tools::ClaimSource::FileSystem));
+        let resolved = read.resolve("read", &ids);
+        assert!(!read.reads_unhashed_files());
+        assert_eq!(read.vigil_exemption(&resolved), VigilExemption::Eligible);
+    }
+
+    #[test]
+    fn unclaimed_load_skill_body_keeps_vigil_exemption() {
+        let ids = McpToolIds::default();
+        let body = ToolOutputOrigin::Executed(None);
+        let resolved = body.resolve("load_skill", &ids);
+        assert!(!body.reads_unhashed_files());
+        assert_eq!(body.vigil_exemption(&resolved), VigilExemption::Eligible);
     }
 }

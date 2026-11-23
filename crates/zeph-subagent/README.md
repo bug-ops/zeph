@@ -18,7 +18,7 @@ Manages the full lifecycle of sub-agents: loading YAML definitions from disk, sp
 | `def` | `SubAgentDef` — YAML definition with frontmatter (model, tools, skills, grants, hooks, max_turns) and system prompt body |
 | `manager` | `SubAgentManager` — spawn, cancel, status tracking, and communication channels |
 | `grants` | `PermissionGrants`, `Grant`, `GrantKind`, `SecretRequest` — zero-trust delegation |
-| `filter` | `FilteredToolExecutor` — scoped tool access with `tools.except` additional denylist; `PlanModeExecutor` — restricts to read-only tools |
+| `filter` | `FilteredToolExecutor` — scoped tool access with `tools.except` additional denylist, alias-aware via `ToolMatchKey` (`shell`/`sh` = `bash`), `policy_allows`, scoped implicit `load_skill`; `PlanModeExecutor` — restricts to read-only tools |
 | `hooks` | `HookDef`, `HookMatcher`, `SubagentHooks` — `PreToolUse`/`PostToolUse` per-agent hooks; `SubagentStart`/`SubagentStop` config-level hooks |
 | `transcript` | `TranscriptWriter`, `TranscriptReader` — JSONL-backed history with `.meta.json` sidecars; prefix-based ID lookup; resume-by-ID; keyed-BLAKE3 hash-chained entries with vault-anchor downgrade resistance (opt-in, see [Transcript integrity](#transcript-integrity)) |
 | `forward` | `ForwardSurfaces` — opt-in, per-turn forwarding of a running sub-agent's full text/thinking output to the TUI detail view and/or `--bare` stdout via a per-task `mpsc` ingress and a manager-owned sanitizing drain; disabled by default (`forward_transcript`) |
@@ -64,26 +64,25 @@ zeph agents fleet --status running --limit 20   # sessions recorded in the fleet
 ---
 name: researcher
 description: Performs web research tasks
-model: claude-sonnet-5
-max_turns: 20
-tools: [web_scrape, read_file]
-skills: [research]
-permission_mode: default   # default | accept_edits | dont_ask | bypass | plan
-
-grants:
-  tools: [web_scrape]
+model: inherit            # or a provider name from [[llm.providers]]
+tools:
+  allow: [web_scrape, read]   # runtime tool ids; shell/sh are aliases of bash
+skills:
+  include: ["research"]
+permissions:
+  permission_mode: default   # default | accept_edits | dont_ask | bypass_permissions | plan
+  max_turns: 20
   secrets: [ZEPH_SEARCH_API_KEY]
-
+  instructions: none         # opt out of the parent's instruction files
 hooks:
-  pre_tool_use:
-    - pattern: "web_scrape|fetch_url"
-      command: "echo 'scraping: $TOOL_NAME'"
-      timeout_secs: 5
-      on_error: continue   # continue | abort
+  PreToolUse:
+    - matcher: "web_scrape|fetch"
+      hooks:
+        - type: command
+          command: "echo scraping"
 ---
 
-You are a research assistant. Use web_scrape to gather information.
-Always cite your sources.
+You are a research assistant.
 ```
 
 > [!IMPORTANT]

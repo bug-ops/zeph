@@ -801,4 +801,6 @@ fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
 }
 
 #[cfg(test)]
+mod mcp_list_tests;
+#[cfg(test)]
 mod tests;

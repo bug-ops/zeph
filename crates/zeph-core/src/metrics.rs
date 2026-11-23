@@ -62,6 +62,12 @@ impl SecurityEvent {
 pub const SECURITY_EVENT_CAP: usize = 100;
 
 impl MetricsSnapshot {
+    /// Number of loaded MCP tools, derived from [`Self::mcp_tools`].
+    #[must_use]
+    pub fn mcp_tool_count(&self) -> usize {
+        self.mcp_tools.len()
+    }
+
     /// Append `event` to the security-event ring buffer, evicting the oldest at
     /// [`SECURITY_EVENT_CAP`].
     pub fn push_security_event(&mut self, event: SecurityEvent) {
@@ -400,12 +406,13 @@ pub struct MetricsSnapshot {
     pub total_skills: usize,
     /// Total configured MCP servers (connected + failed).
     pub mcp_server_count: usize,
-    pub mcp_tool_count: usize,
     /// Number of successfully connected MCP servers.
     pub mcp_connected_count: usize,
     /// Per-server connection status list.
     pub mcp_servers: Vec<McpServerStatus>,
     pub active_mcp_tools: Vec<String>,
+    /// Sorted qualified names of every loaded MCP tool.
+    pub mcp_tools: Vec<String>,
     pub sqlite_message_count: u64,
     pub sqlite_conversation_id: Option<zeph_memory::ConversationId>,
     pub qdrant_available: bool,
@@ -947,7 +954,7 @@ mod tests {
         assert_eq!(m.api_calls, 0);
         assert_eq!(m.active_skills, [] as [String; 0]);
         assert_eq!(m.active_mcp_tools, [] as [String; 0]);
-        assert_eq!(m.mcp_tool_count, 0);
+        assert_eq!(m.mcp_tool_count(), 0);
         assert_eq!(m.mcp_server_count, 0);
         assert_eq!(m.provider_name, "");
         assert_eq!(m.summaries_count, 0);

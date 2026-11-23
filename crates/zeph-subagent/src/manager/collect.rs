@@ -98,6 +98,7 @@ impl SubAgentManager {
                 turns_used,
                 trust_schema: handle.trust_schema,
                 inherited_trust: handle.inherited_trust,
+                provider: handle.provider.clone(),
             };
             if let Err(e) = TranscriptWriter::write_meta_async(dir, task_id, &meta).await {
                 tracing::warn!(error = %e, task_id, "failed to write final transcript meta");
@@ -224,6 +225,10 @@ impl SubAgentManager {
     /// [`tokio::task::block_in_place`] on multi-thread runtimes so the Tokio executor
     /// thread is not stalled. Falls back to a direct call on `current_thread` runtimes
     /// (e.g. single-threaded unit tests) where `block_in_place` would panic.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "These distinct spawn inputs are written together into one sidecar; a grouping type would only be built at the two call sites"
+    )]
     pub(crate) fn create_transcript_writer(
         &mut self,
         config: &SubAgentConfig,
@@ -232,6 +237,7 @@ impl SubAgentManager {
         resumed_from: Option<&str>,
         trust_schema: TranscriptTrustSchema,
         inherited_trust: Option<TurnContextTrust>,
+        provider: &str,
     ) -> Option<TranscriptWriter> {
         if !config.transcript_enabled {
             return None;
@@ -250,6 +256,7 @@ impl SubAgentManager {
             turns_used: 0,
             trust_schema,
             inherited_trust,
+            provider: Some(provider.to_owned()),
         };
         let task_id = task_id.to_owned();
         run_blocking(move || {

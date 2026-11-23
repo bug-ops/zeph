@@ -176,6 +176,36 @@ fn step_ensemble_verify(state: &mut WizardState) -> anyhow::Result<()> {
     }
 }
 
+/// Prompt for the sub-agent delegation mode (spec 042-subagent-delegation-mode-parity).
+fn step_agents_delegation_mode(state: &mut WizardState) -> anyhow::Result<()> {
+    let delegation_items = [
+        "proactive (main agent may decide on its own to delegate to a sub-agent)",
+        "explicit_request_only (only /agent spawn — the main agent may never decide on its own)",
+        "disabled (no spawn from any code path; definitions remain listable)",
+    ];
+    let delegation_sel = Select::new()
+        .with_prompt(
+            "Delegation mode — who may trigger a sub-agent spawn? (see spec \
+             042-subagent-delegation-mode-parity; useful to restrict in \
+             semi-trusted channels such as Telegram/Discord/webhook ingestion)",
+        )
+        .items(delegation_items)
+        // Default to explicit_request_only (index 1), not proactive: a brand-new
+        // interactive wizard run has no prior deployment behavior to preserve, so the
+        // suggested answer for a first-time operator should be the more conservative
+        // option. `DelegationMode::default() = Proactive` remains correct for the
+        // struct-level default (FR-008, preserves existing `enabled=true` deployments) —
+        // this only changes the wizard's suggested answer.
+        .default(1)
+        .interact()?;
+    state.agents_delegation_mode = match delegation_sel {
+        1 => zeph_config::DelegationMode::ExplicitRequestOnly,
+        2 => zeph_config::DelegationMode::Disabled,
+        _ => zeph_config::DelegationMode::Proactive,
+    };
+    Ok(())
+}
+
 pub(super) fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 9/10: Sub-Agent Defaults ==\n");
 
@@ -185,31 +215,7 @@ pub(super) fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
 
     if state.agents_enabled {
-        let delegation_items = [
-            "proactive (main agent may decide on its own to delegate to a sub-agent)",
-            "explicit_request_only (only /agent spawn — the main agent may never decide on its own)",
-            "disabled (no spawn from any code path; definitions remain listable)",
-        ];
-        let delegation_sel = Select::new()
-            .with_prompt(
-                "Delegation mode — who may trigger a sub-agent spawn? (see spec \
-                 042-subagent-delegation-mode-parity; useful to restrict in \
-                 semi-trusted channels such as Telegram/Discord/webhook ingestion)",
-            )
-            .items(delegation_items)
-            // Default to explicit_request_only (index 1), not proactive: a brand-new
-            // interactive wizard run has no prior deployment behavior to preserve, so the
-            // suggested answer for a first-time operator should be the more conservative
-            // option. `DelegationMode::default() = Proactive` remains correct for the
-            // struct-level default (FR-008, preserves existing `enabled=true` deployments) —
-            // this only changes the wizard's suggested answer.
-            .default(1)
-            .interact()?;
-        state.agents_delegation_mode = match delegation_sel {
-            1 => zeph_config::DelegationMode::ExplicitRequestOnly,
-            2 => zeph_config::DelegationMode::Disabled,
-            _ => zeph_config::DelegationMode::Proactive,
-        };
+        step_agents_delegation_mode(state)?;
     }
 
     let modes = ["default", "accept_edits", "dont_ask"];
@@ -280,6 +286,19 @@ pub(super) fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
         )
         .default(true)
         .interact()?;
+
+    state.agents_instructions = if Confirm::new()
+        .with_prompt(
+            "Let sub-agents inherit the parent's instruction files (zeph.md, CLAUDE.md, ...)? \
+             Costs prompt tokens on every sub-agent turn; 'no' sets [agents] instructions = \"none\".",
+        )
+        .default(true)
+        .interact()?
+    {
+        zeph_config::SubagentInstructions::Inherit
+    } else {
+        zeph_config::SubagentInstructions::None
+    };
 
     println!();
     Ok(())

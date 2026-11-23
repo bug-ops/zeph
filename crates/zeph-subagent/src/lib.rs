@@ -63,12 +63,18 @@ pub mod resolve;
 pub mod state;
 pub mod transcript;
 
+/// Internals exposed for acceptance tests only; not part of the public API.
+#[doc(hidden)]
+pub mod testing {
+    pub use crate::agent_loop::{HistoryPins, trim_message_history_pinned as trim_message_history};
+}
+
 pub use budget::SessionSpawnBudget;
 pub use command::{AgentCommand, AgentsCommand};
 pub use cwd_guard::CwdLock;
 pub use def::{
-    MemoryScope, ModelSpec, PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions,
-    ToolPolicy, is_valid_agent_name,
+    DefinitionWarning, HookEvent, MemoryScope, ModelSpec, PermissionMode, SkillFilter, SubAgentDef,
+    SubAgentPermissions, ToolListKind, ToolPolicy, is_valid_agent_name,
 };
 pub use durable::{
     DurableResolverSeat, SubagentResult, await_durable_subagent, make_durable_promise,
@@ -76,7 +82,7 @@ pub use durable::{
 };
 pub use error::SubAgentError;
 pub use filter::{
-    FilteredToolExecutor, NetworkDenyToolExecutor, PlanModeExecutor, filter_skills,
+    FilteredToolExecutor, NetworkDenyToolExecutor, PlanModeExecutor, SkillScope, filter_skills,
     normalize_tool_id,
 };
 pub use fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
@@ -89,8 +95,8 @@ pub use hooks::{
     matching_hooks, pre_tool_block_message,
 };
 pub use manager::{
-    CredentialScrub, PreExecutionVerifiers, SpawnContext, SpawnOrigin, SubAgentHandle,
-    SubAgentManager, SubAgentStatus, intersect_allowlists,
+    CredentialScrub, InheritedInstructions, PreExecutionVerifiers, SpawnContext, SpawnOrigin,
+    SubAgentHandle, SubAgentManager, SubAgentStatus, intersect_allowlists,
 };
 pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;

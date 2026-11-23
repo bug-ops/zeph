@@ -141,6 +141,19 @@ confusability_threshold = 0.0     # 0.0 disables confusability reporting
 
 On-demand tool that fetches the full SKILL.md body for a named skill — allows agent to inspect skill details without injecting into every turn.
 
+### Resource path argument (#7159)
+
+`load_skill` takes `skill_name` and an optional `path`. With `path` it returns one skill-local resource file instead of the body.
+
+- `SkillResourcePath::parse` (zeph-skills `resource.rs`) is the only constructor: relative, at least two plain components, first component `scripts`, `references` or `assets`, no `..`, backslash or NUL, at most 512 bytes.
+- `SkillTrustGate::resolve_resource` runs the same gate as `resolve_body` (Blocked refusal, integrity check, sanitize for non-Trusted, Quarantined wrap and trust-floor fold) and additionally requires the path to be in the skill's discovered resource list.
+- `load_skill_resource` canonicalizes and checks containment, reads at most `MAX_SKILL_RESOURCE_BYTES` (256 KiB) plus one byte, and requires UTF-8. The read runs on `spawn_blocking`.
+- Resource files are outside the SKILL.md integrity hash (`compute_skill_hash` covers SKILL.md only), so resource content is treated as untrusted even for a Trusted skill: it always passes `sanitize_skill_text` (Trusted bodies stay raw), and the output carries the dedicated `claim_source = SkillResource`, which makes the agent drop the first-party `load_skill` exemptions (ML classifier `INTERNAL_TOOLS`, VIGIL `exempt_tools`) for that result only; other tools, including file-system tools with a `FileSystem` claim, keep their configured exemptions. The body path is unchanged (#7159, security F2).
+- `load_skill_resource` refuses anything that is not a regular file (checked before and after open), so a FIFO or device swapped in after discovery cannot block the read (security F4).
+- Only UTF-8 text resources up to 256 KiB can be loaded; binary assets are still listed (discovery does not read files) but `load_skill` refuses them, so the sub-agent hint and the tool description state "text files only" (reviewer S4).
+- The resource listing is split: `format_resource_paths` (skill-relative paths only) is used in the main-agent prompt, where the `load_skill` tool description already documents `path`; `format_resource_listing` adds the one-line `load_skill` hint and is used in sub-agent skill bodies only when `load_skill` is callable. Absolute paths never reach the prompt.
+- Sub-agents: an implicit, scoped `load_skill` is exposed only when `skills.include` is non-empty, `tools` is an allow list without `load_skill` and no deny, except or global-disallowed entry names it. The scope is the included skills; other names are Blocked. The resource listing is appended to sub-agent skill bodies only when `load_skill` is visible to the sub-agent.
+
 ## Key Invariants
 
 - `SkillRegistry` is always `Arc<RwLock<>>` — never cloned
@@ -150,6 +163,7 @@ On-demand tool that fetches the full SKILL.md body for a named skill — allows 
 - `disambiguation_threshold` check runs before any skill injection; default is 0.20
 - `min_injection_score` check is a secondary gate applied after disambiguation — both thresholds must be cleared for injection; default is 0.20
 - NEVER inject a skill that fails the `min_injection_score` gate even if it clears `disambiguation_threshold`
+- NEVER read a `load_skill` resource path that did not pass `SkillResourcePath::parse`, is not in the skill's resource list, or resolves outside the skill directory (#7159)
 - The system prompt built at agent construction or by `reload_skills()` (no per-turn query
   available) is catalog-only (name + description); NEVER force-load or inject full skill bodies
   at these call sites — see § Construction-Time / Reload-Time Skill Prompt Contract (#6413)

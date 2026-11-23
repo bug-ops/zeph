@@ -17,12 +17,14 @@
 //! the exact same pipeline instead of maintaining its own copy (#6079).
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 use zeph_common::{SkillTrustLevel, TurnTrustFloor};
 use zeph_skills::prompt::{sanitize_skill_text, wrap_quarantined};
 use zeph_skills::registry::SkillRegistry;
+use zeph_skills::resource::{SkillResourcePath, load_skill_resource};
 use zeph_skills::trust::compute_skill_hash;
 use zeph_tools::executor::ToolError;
 
@@ -216,6 +218,115 @@ impl SkillTrustGate {
     /// # }
     /// ```
     pub async fn resolve_body(&self, skill_name: &str) -> Result<SkillBodyResolution, ToolError> {
+        let (trust, skill_name_safe) = match self.pre_read_gate(skill_name).await? {
+            Ok(gate) => gate,
+            Err(refused) => return Ok(refused),
+        };
+
+        // Clone body out of the read guard before any further await — never hold lock across await.
+        let body = {
+            let guard = self.registry.read();
+            guard.body(skill_name).map(str::to_owned)
+        };
+
+        Ok(match body {
+            Ok(raw_body) => {
+                SkillBodyResolution::Body(self.gate_content(trust, &skill_name_safe, raw_body))
+            }
+            Err(_) => SkillBodyResolution::NotFound(format!("skill not found: {skill_name_safe}")),
+        })
+    }
+
+    /// Resolve a skill-local resource file (`path`, relative to the skill directory) through the
+    /// same trust pipeline as [`resolve_body`](Self::resolve_body) (#7159).
+    ///
+    /// `path` must parse as a [`SkillResourcePath`] and appear in the skill's discovered resource
+    /// list; anything else resolves to `NotFound` without touching the filesystem. The read runs on
+    /// the blocking pool. Output never echoes an unsanitized `skill_name` or `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when a `spawn_blocking` task (integrity check or resource read)
+    /// panics or is cancelled.
+    #[tracing::instrument(name = "core.skill_loader.load_resource", skip_all)]
+    pub async fn resolve_resource(
+        &self,
+        skill_name: &str,
+        path: &str,
+    ) -> Result<SkillBodyResolution, ToolError> {
+        let (trust, skill_name_safe) = match self.pre_read_gate(skill_name).await? {
+            Ok(gate) => gate,
+            Err(refused) => return Ok(refused),
+        };
+        let path_safe = sanitize_skill_text(path);
+        let not_found = || {
+            SkillBodyResolution::NotFound(format!(
+                "resource not found: {path_safe} in skill {skill_name_safe}"
+            ))
+        };
+        let Ok(resource_path) = SkillResourcePath::parse(path) else {
+            return Ok(not_found());
+        };
+
+        let dir = {
+            let guard = self.registry.read();
+            match (guard.skill_dir(skill_name), guard.resources(skill_name)) {
+                (Some(dir), Ok(resources)) => {
+                    let listed = [&resources.scripts, &resources.references, &resources.assets]
+                        .into_iter()
+                        .flatten()
+                        .any(|p| {
+                            p.strip_prefix(&dir)
+                                .is_ok_and(|rel| rel == Path::new(resource_path.as_str()))
+                        });
+                    listed.then_some(dir)
+                }
+                (None, _) => {
+                    return Ok(SkillBodyResolution::NotFound(format!(
+                        "skill not found: {skill_name_safe}"
+                    )));
+                }
+                _ => None,
+            }
+        };
+        let Some(dir) = dir else {
+            return Ok(not_found());
+        };
+
+        let read_path = resource_path.clone();
+        let loaded = tokio::task::spawn_blocking(move || load_skill_resource(&dir, &read_path))
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: format!("spawn_blocking join error: {e}"),
+            })?;
+        Ok(match loaded {
+            // Resource files are outside the SKILL.md integrity hash, so even a Trusted skill's
+            // resources are sanitized like external content (#7159, security F2).
+            Ok(raw) => {
+                let effective = if trust == SkillTrustLevel::Trusted {
+                    SkillTrustLevel::Verified
+                } else {
+                    trust
+                };
+                SkillBodyResolution::Body(self.gate_content(effective, &skill_name_safe, raw))
+            }
+            Err(e) => {
+                tracing::warn!(skill = %skill_name, err = %e, "skill resource load failed");
+                SkillBodyResolution::Refused(format!(
+                    "resource could not be loaded: {path_safe} in skill {skill_name_safe}"
+                ))
+            }
+        })
+    }
+
+    /// Steps shared by body and resource resolution before any content read: resolve the trust
+    /// level, refuse `Blocked` skills, and run the optional integrity re-check.
+    ///
+    /// The outer `Result` carries tool errors; the inner `Err` is a ready-to-return refusal.
+    async fn pre_read_gate(
+        &self,
+        skill_name: &str,
+    ) -> Result<Result<(SkillTrustLevel, String), SkillBodyResolution>, ToolError> {
         let snapshot = self.resolve_snapshot(skill_name);
         let trust = snapshot
             .as_ref()
@@ -224,56 +335,38 @@ impl SkillTrustGate {
         // and could carry injection markers (e.g. `<|im_start|>`).
         let skill_name_safe = sanitize_skill_text(skill_name);
 
-        // Blocked skills are refused before any body read — executor defense layer.
         if trust == SkillTrustLevel::Blocked {
-            return Ok(SkillBodyResolution::Refused(format!(
+            return Ok(Err(SkillBodyResolution::Refused(format!(
                 "skill is blocked by policy: {skill_name_safe}"
-            )));
+            ))));
         }
 
-        // Per-invocation integrity check: re-hash SKILL.md when requires_trust_check is set.
         if let Some(entry) = snapshot.as_ref().filter(|s| s.requires_trust_check)
             && let Some(message) = self
                 .check_integrity(skill_name, &skill_name_safe, entry)
                 .await?
         {
-            return Ok(SkillBodyResolution::Refused(message));
+            return Ok(Err(SkillBodyResolution::Refused(message)));
         }
+        Ok(Ok((trust, skill_name_safe)))
+    }
 
-        // Clone body out of the read guard before any further await — never hold lock across await.
-        let body = {
-            let guard = self.registry.read();
-            guard.body(skill_name).map(str::to_owned)
-        };
-
-        match body {
-            Ok(raw_body) => {
-                // Apply the same pipeline as `format_skills_prompt`: sanitize for non-Trusted,
-                // additionally wrap for Quarantined.
-                let sanitized = if trust == SkillTrustLevel::Trusted {
-                    raw_body
-                } else {
-                    sanitize_skill_text(&raw_body)
-                };
-                let wrapped = if trust == SkillTrustLevel::Quarantined {
-                    // #6701 (RC-3): an explicit invoke_skill/load_skill of a Quarantined skill
-                    // is allowed (see specs/005-skills/spec.md § Agent-Invocable Skills), but
-                    // reading its body now degrades the turn's trust floor for the remainder
-                    // of the turn — closing the gap where invocation previously degraded
-                    // nothing. Monotonic: never raises trust, only ever lowers it.
-                    if let Some(floor) = &self.turn_trust_floor {
-                        floor.fold(SkillTrustLevel::Quarantined);
-                    }
-                    wrap_quarantined(&skill_name_safe, &sanitized)
-                } else {
-                    sanitized
-                };
-                Ok(SkillBodyResolution::Body(wrapped))
-            }
-            Err(_) => Ok(SkillBodyResolution::NotFound(format!(
-                "skill not found: {skill_name_safe}"
-            ))),
+    /// Apply the `format_skills_prompt` pipeline to freshly read content: sanitize for
+    /// non-Trusted, additionally wrap (and fold the turn trust floor) for Quarantined.
+    fn gate_content(&self, trust: SkillTrustLevel, skill_name_safe: &str, raw: String) -> String {
+        if trust == SkillTrustLevel::Trusted {
+            return raw;
         }
+        let sanitized = sanitize_skill_text(&raw);
+        if trust != SkillTrustLevel::Quarantined {
+            return sanitized;
+        }
+        // #6701 (RC-3): reading a Quarantined skill's content degrades the turn's trust floor
+        // for the remainder of the turn. Monotonic: never raises trust, only ever lowers it.
+        if let Some(floor) = &self.turn_trust_floor {
+            floor.fold(SkillTrustLevel::Quarantined);
+        }
+        wrap_quarantined(skill_name_safe, &sanitized)
     }
 }
 

@@ -287,9 +287,10 @@ impl PolicyEnforcer {
 /// `ShellExecutor` registers as `tool_id="bash"` but users naturally write `tool="shell"`.
 /// Both forms (and `"sh"`) are normalized to `"shell"` before matching.
 fn resolve_tool_alias(name: &str) -> &str {
-    match name {
-        "bash" | "sh" => "shell",
-        other => other,
+    if crate::tool_id::SHELL_TOOL_ALIASES.contains(&name) {
+        "shell"
+    } else {
+        name
     }
 }
 
@@ -972,6 +973,50 @@ tool = "shell"
             enforcer.evaluate("bash", &empty_params(), &ctx),
             PolicyDecision::Deny { .. },
             "rule tool='sh' must match runtime tool_id='bash' via alias"
+        );
+    }
+
+    fn deny_rule_enforcer(tool: &str) -> PolicyEnforcer {
+        let config = PolicyConfig {
+            enabled: true,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![PolicyRuleConfig {
+                effect: PolicyEffect::Deny,
+                tool: tool.to_owned(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            policy_file: None,
+            policy_provider: ProviderName::default(),
+        };
+        PolicyEnforcer::compile(&config).unwrap()
+    }
+
+    // #7154: policy globs keep matching the canonical `shell` name, not the runtime id `bash`.
+    #[test]
+    fn glob_shell_star_deny_rule_denies_bash_sh_and_shell() {
+        let enforcer = deny_rule_enforcer("shell*");
+        let ctx = make_context(SkillTrustLevel::Trusted);
+        for name in ["bash", "sh", "shell"] {
+            assert_matches!(
+                enforcer.evaluate(name, &empty_params(), &ctx),
+                PolicyDecision::Deny { .. },
+                "tool = \"shell*\" must deny {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn glob_b_star_rule_does_not_match_bash_call() {
+        let enforcer = deny_rule_enforcer("b*");
+        let ctx = make_context(SkillTrustLevel::Trusted);
+        assert_matches!(
+            enforcer.evaluate("bash", &empty_params(), &ctx),
+            PolicyDecision::Allow { .. },
+            "aliases resolve to `shell` before globbing, so `b*` must not match a bash call"
         );
     }
 

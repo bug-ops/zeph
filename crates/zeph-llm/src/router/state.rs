@@ -60,6 +60,12 @@ pub struct RouterState {
     /// `record_quality_outcome` to attribute the RAPS signal to the correct provider.
     pub last_active_provider: Arc<Mutex<Option<String>>>,
 
+    /// Latest `CoE` escalation, cleared by the next dispatch that sets `last_active_provider`.
+    ///
+    /// `last_active_provider` then names the secondary (a pool member or not); runtime
+    /// capability commands (`/think-tokens`) keep targeting the replaced primary instead.
+    pub escalation: Arc<Mutex<Option<CoeEscalation>>>,
+
     /// Usage of the most recent successful inner response, backing `last_response_usage`.
     /// Never held across an `.await`.
     last_served: Arc<Mutex<Option<ServedUsage>>>,
@@ -106,6 +112,15 @@ pub struct RouterState {
     pub dedicated_embed_provider: Option<Arc<AnyProvider>>,
 }
 
+/// Names of the providers involved in a `CoE` escalation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoeEscalation {
+    /// Provider that answered first and was replaced.
+    pub primary: String,
+    /// Provider whose answer was served.
+    pub secondary: String,
+}
+
 /// Usage of the most recent response served through the router.
 #[derive(Debug, Clone)]
 struct ServedUsage {
@@ -114,6 +129,12 @@ struct ServedUsage {
 }
 
 impl RouterState {
+    /// Record the sub-provider that served a dispatch and end any pending escalation marker.
+    pub(crate) fn set_active_provider(&self, name: &str) {
+        *self.last_active_provider.lock() = Some(name.to_owned());
+        *self.escalation.lock() = None;
+    }
+
     /// Snapshot the usage of `provider` right after it served a complete response.
     ///
     /// Reads the instance that made the call: most backends keep their usage tracker by value
@@ -139,6 +160,30 @@ impl RouterState {
         let mut aux = snapshot.auxiliary.unwrap_or_default();
         aux += crate::provider::TokenUsage::from(shadow);
         snapshot.auxiliary = Some(aux);
+    }
+
+    /// Make the escalated `CoE` secondary the served response.
+    ///
+    /// The secondary's usage becomes the served usage; the discarded primary's tokens move to
+    /// `auxiliary` because they were billed but never describe the served context.
+    pub(crate) fn record_escalated_usage(&self, secondary: Option<crate::provider::ResponseUsage>) {
+        let mut guard = self.last_served.lock();
+        let primary = guard.as_mut().and_then(|s| s.snapshot.take());
+        let Some(mut snapshot) = secondary else {
+            if let Some(served) = guard.as_mut() {
+                served.snapshot = primary;
+            }
+            return;
+        };
+        if let Some(primary) = primary {
+            let mut aux = snapshot.auxiliary.unwrap_or_default();
+            aux += crate::provider::TokenUsage::from(primary);
+            snapshot.auxiliary = Some(aux);
+        }
+        *guard = Some(ServedUsage {
+            snapshot: Some(snapshot),
+            stream_source: None,
+        });
     }
 
     /// Like [`Self::record_served`] for a stream that is still being consumed.
@@ -180,6 +225,7 @@ impl RouterState {
             provider_models: Arc::new(provider_models),
             provider_order: Arc::new(Mutex::new((0..n).collect())),
             last_active_provider: Arc::new(Mutex::new(None)),
+            escalation: Arc::new(Mutex::new(None)),
             last_served: Arc::new(Mutex::new(None)),
             last_memory_confidence: Arc::new(AtomicU32::new(u32::MAX)),
             turn_counter: Arc::new(AtomicU64::new(0)),

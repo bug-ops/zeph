@@ -19,6 +19,32 @@ use super::builder::build_pre_execution_verifiers;
 use super::{Agent, error};
 use crate::channel::Channel;
 
+/// Skill material resolved for one sub-agent spawn by `Agent::filtered_skills_for`.
+#[derive(Debug, Default)]
+pub(super) struct SubagentSkills {
+    /// Skill bodies for the one-shot system prompt, `None` when no skill applies.
+    pub(super) bodies: Option<Vec<String>>,
+    /// Skills the sub-agent may read through the implicit `load_skill` grant (empty = no grant).
+    pub(super) scope: zeph_subagent::SkillScope,
+}
+
+/// Skill body for a sub-agent prompt, followed by the skill's resource listing when the
+/// sub-agent can call `load_skill` to read those resources.
+fn render_subagent_skill_body(
+    skill: &zeph_skills::loader::Skill,
+    load_skill_visible: bool,
+) -> String {
+    let listing = load_skill_visible
+        .then(|| {
+            zeph_skills::resource::format_resource_listing(&skill.resources, &skill.meta.skill_dir)
+        })
+        .flatten();
+    match listing {
+        Some(listing) => format!("{}\n\n{listing}", skill.body),
+        None => skill.body.clone(),
+    }
+}
+
 /// Number of trailing forwarded-transcript lines surfaced per subagent in
 /// [`crate::metrics::SubAgentMetrics::live_transcript`] (issue #6359, FR-005).
 const LIVE_TRANSCRIPT_TAIL_LINES: usize = 20;
@@ -615,11 +641,15 @@ impl<C: Channel> Agent<C> {
         }
     }
     async fn handle_agent_background(&mut self, name: &str, prompt: &str) -> Option<String> {
-        let provider = self.provider.clone();
+        let provider = match self.provider_for_spawn(name) {
+            Ok(provider) => provider,
+            Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
+        };
         let tool_executor = Arc::clone(&self.tool_executor);
         let skills = self.filtered_skills_for(name).await;
         let cfg = self.services.orchestration.subagent_config.clone();
         let mut spawn_ctx = self.build_spawn_context(&cfg);
+        spawn_ctx.skill_scope = skills.scope;
         // Background durable: seat wired so child can resolve; on a fresh run the promise
         // (await side) is dropped — background results are collected via poll_subagents. On a
         // resumed run whose child already finished, replay short-circuits below instead.
@@ -657,7 +687,7 @@ impl<C: Channel> Agent<C> {
                 prompt,
                 provider,
                 tool_executor,
-                skills,
+                skills.bodies,
                 &cfg,
                 spawn_ctx,
             )
@@ -734,11 +764,15 @@ impl<C: Channel> Agent<C> {
     }
 
     async fn handle_agent_spawn_foreground(&mut self, name: &str, prompt: &str) -> Option<String> {
-        let provider = self.provider.clone();
+        let provider = match self.provider_for_spawn(name) {
+            Ok(provider) => provider,
+            Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
+        };
         let tool_executor = Arc::clone(&self.tool_executor);
         let skills = self.filtered_skills_for(name).await;
         let cfg = self.services.orchestration.subagent_config.clone();
         let mut spawn_ctx = self.build_spawn_context(&cfg);
+        spawn_ctx.skill_scope = skills.scope;
         // Wire the durable resolver seat so the child can resolve its promise on exit. On a
         // fresh run the promise (await side) is dropped here; foreground result is collected
         // via poll_subagent_until_done which reads the join-handle output directly. On a
@@ -766,7 +800,7 @@ impl<C: Channel> Agent<C> {
                 prompt,
                 provider,
                 tool_executor,
-                skills,
+                skills.bodies,
                 &cfg,
                 spawn_ctx,
             )
@@ -835,7 +869,10 @@ impl<C: Channel> Agent<C> {
             }
         };
         let skills = self.filtered_skills_for(&def_name).await;
-        let provider = self.provider.clone();
+        let provider = match self.provider_for_spawn(&def_name) {
+            Ok(provider) => provider,
+            Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
+        };
         let tool_executor = Arc::clone(&self.tool_executor);
         // Built before borrowing `subagent_manager` mutably below (build_spawn_context takes
         // `&self`). Previously this call site passed `None`, which meant resumed sub-agents
@@ -845,7 +882,8 @@ impl<C: Channel> Agent<C> {
         // `pre_execution_verifiers` off `spawn_context` (see `manager/spawn.rs::resume`). The
         // allowlist carries the parent's permission-policy and channel allowlists (#7035) and
         // the verifiers carry a grounding-URL snapshot taken now, at resume time.
-        let spawn_ctx = self.build_spawn_context(&cfg);
+        let mut spawn_ctx = self.build_spawn_context(&cfg);
+        spawn_ctx.skill_scope = skills.scope;
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let (task_id, _) = match mgr
             .resume(
@@ -853,7 +891,7 @@ impl<C: Channel> Agent<C> {
                 prompt,
                 provider,
                 tool_executor,
-                skills,
+                skills.bodies,
                 &cfg,
                 Some(&spawn_ctx),
             )
@@ -913,15 +951,32 @@ impl<C: Channel> Agent<C> {
     /// included even if it alone exceeds the budget, so a single oversized skill never starves
     /// the whole set. Any skills left out are surfaced via a synthetic marker entry rather than
     /// silently dropped.
-    pub(super) async fn filtered_skills_for(&mut self, agent_name: &str) -> Option<Vec<String>> {
-        let def_skills = {
-            let mgr = self.services.orchestration.subagent_manager.as_ref()?;
-            mgr.definitions()
-                .iter()
-                .find(|d| d.name == agent_name)?
-                .skills
-                .clone()
+    ///
+    /// The returned [`SubagentSkills::scope`] is the implicit `load_skill` grant for the
+    /// definition (see [`zeph_subagent::filter::implicit_load_skill_scope`]); resource listings
+    /// are appended to the bodies only when the sub-agent can actually call `load_skill`.
+    pub(super) async fn filtered_skills_for(&mut self, agent_name: &str) -> SubagentSkills {
+        let cfg = self.services.orchestration.subagent_config.clone();
+        let Some(mut def) = self
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .and_then(|mgr| {
+                mgr.definitions()
+                    .iter()
+                    .find(|d| d.name == agent_name)
+                    .cloned()
+            })
+        else {
+            return SubagentSkills::default();
         };
+        for tool in &cfg.default_disallowed_tools {
+            if !def.disallowed_tools.contains(tool) {
+                def.disallowed_tools.push(tool.clone());
+            }
+        }
+        let def_skills = def.skills.clone();
 
         // #6713 (S1): this must resolve the trust map fresh rather than reading the cached
         // `trust_snapshot` directly — on the slash-command/@mention spawn path, nothing has
@@ -949,17 +1004,29 @@ impl<C: Channel> Agent<C> {
             Ok(skills) => skills,
             Err(e) => {
                 tracing::warn!(error = %e, "skill filtering failed for sub-agent");
-                return None;
+                return SubagentSkills::default();
             }
         };
         if skills.is_empty() {
-            return None;
+            return SubagentSkills::default();
         }
+
+        let matched: Vec<String> = skills
+            .iter()
+            .map(|s| s.meta.name.as_str().to_owned())
+            .collect();
+        let (scope, load_skill_visible) = self.load_skill_grant(&def, &matched);
+        let render = |skill: &zeph_skills::loader::Skill| {
+            render_subagent_skill_body(skill, load_skill_visible)
+        };
 
         // #6421 scope: only the empty-include "inherit everything" case is capped. An explicit,
         // hand-curated include list is trusted as-is (see doc comment above).
         if !def_skills.include.is_empty() {
-            return Some(skills.into_iter().map(|s| s.body).collect());
+            return SubagentSkills {
+                bodies: Some(skills.iter().map(render).collect()),
+                scope,
+            };
         }
 
         let total = skills.len();
@@ -971,13 +1038,14 @@ impl<C: Channel> Agent<C> {
         let mut omitted_names: Vec<&str> = Vec::new();
 
         for skill in &skills {
-            let skill_tokens = counter.count_tokens(&skill.body);
+            let rendered = render(skill);
+            let skill_tokens = counter.count_tokens(&rendered);
             if !bodies.is_empty() && running_tokens + skill_tokens > budget {
                 omitted_names.push(skill.meta.name.as_str());
                 continue;
             }
             running_tokens += skill_tokens;
-            bodies.push(skill.body.clone());
+            bodies.push(rendered);
         }
 
         if !omitted_names.is_empty() {
@@ -995,8 +1063,37 @@ impl<C: Channel> Agent<C> {
             ));
         }
 
-        Some(bodies)
+        SubagentSkills {
+            bodies: Some(bodies),
+            scope,
+        }
     }
+    /// The implicit `load_skill` scope for `def` and whether `load_skill` is callable by the
+    /// sub-agent at all (scoped grant or an ordinary policy allow); both are `false`/empty when
+    /// the parent executor does not expose `load_skill`.
+    fn load_skill_grant(
+        &self,
+        def: &zeph_subagent::SubAgentDef,
+        matched: &[String],
+    ) -> (zeph_subagent::SkillScope, bool) {
+        let parent_has_load_skill = self
+            .tool_executor
+            .tool_definitions_erased()
+            .iter()
+            .any(|d| d.id.as_ref() == "load_skill");
+        if !parent_has_load_skill {
+            return (zeph_subagent::SkillScope::default(), false);
+        }
+        let scope = zeph_subagent::filter::implicit_load_skill_scope(def, matched);
+        let visible = scope.is_some()
+            || zeph_subagent::filter::policy_allows(
+                &def.tools,
+                &def.disallowed_tools,
+                "load_skill",
+            );
+        (scope.unwrap_or_default(), visible)
+    }
+
     /// The effective delegation mode currently in force (spec 042, issue #5857).
     ///
     /// Reads directly from `subagent_config` (always present, independent of whether a
@@ -1060,12 +1157,103 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Resolve the provider a sub-agent definition selects through its `model` field (#7153).
+    ///
+    /// - `None` or `inherit`: a clone of the parent's active provider.
+    /// - A name found in `[[llm.providers]]`: a provider built from that entry, case-insensitively.
+    /// - A name that matches no entry while the registry is wired: [`SubAgentError::UnknownProvider`],
+    ///   so nothing is spawned under the wrong model.
+    /// - Registry not wired (lightweight embedders): the parent's provider, with a warning.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`zeph_subagent::SubAgentError::UnknownProvider`] as described above.
+    #[tracing::instrument(name = "core.subagent.resolve_provider", skip_all, fields(def = %def.name))]
+    pub(crate) fn resolve_subagent_provider(
+        &self,
+        def: &zeph_subagent::SubAgentDef,
+    ) -> Result<zeph_llm::any::AnyProvider, zeph_subagent::SubAgentError> {
+        use super::learning::PoolProviderResolution;
+
+        let Some(zeph_config::ModelSpec::Named(name)) = &def.model else {
+            return Ok(self.provider.clone());
+        };
+        match self.resolve_pool_entry_provider(name) {
+            PoolProviderResolution::Resolved(mut provider) => {
+                if let Some(tx) = &self.services.session.status_tx {
+                    provider.set_status_tx(
+                        tx.clone()
+                            .with_source(zeph_llm::status::StatusSource::Provider),
+                    );
+                }
+                Ok(*provider)
+            }
+            PoolProviderResolution::RegistryNotWired => {
+                tracing::warn!(
+                    def = %def.name,
+                    provider = %name,
+                    "provider registry not wired, sub-agent inherits the parent provider"
+                );
+                Ok(self.provider.clone())
+            }
+            PoolProviderResolution::Unresolvable => {
+                Err(zeph_subagent::SubAgentError::UnknownProvider {
+                    def_name: def.name.clone(),
+                    provider: name.clone(),
+                })
+            }
+        }
+    }
+
+    /// Provider for a spawn by definition name; an unknown definition falls through to the
+    /// parent provider so the manager reports the missing definition itself.
+    pub(super) fn provider_for_spawn(
+        &self,
+        def_name: &str,
+    ) -> Result<zeph_llm::any::AnyProvider, zeph_subagent::SubAgentError> {
+        let def = self
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .and_then(|mgr| mgr.definitions().iter().find(|d| d.name == def_name));
+        match def {
+            Some(def) => self.resolve_subagent_provider(def),
+            None => Ok(self.provider.clone()),
+        }
+    }
+
+    /// The parent's rendered instruction block for a spawned sub-agent (#7157).
+    ///
+    /// `[agents] instructions = "none"` is a global kill switch: no block is passed and a
+    /// definition cannot opt back in. Under `inherit` the parent's already-resolved blocks are
+    /// passed as is (no re-discovery, no disk I/O); the manager lets a definition opt out with
+    /// `permissions.instructions: none`. `None` also when the parent has no instruction blocks.
+    fn inherited_instructions(
+        &self,
+        cfg: &zeph_config::SubAgentConfig,
+    ) -> Option<zeph_subagent::InheritedInstructions> {
+        if cfg.instructions == zeph_config::SubagentInstructions::None {
+            return None;
+        }
+        let rendered = crate::context::render_instruction_blocks(&self.runtime.instructions.blocks);
+        let bytes = rendered.len();
+        let inherited = zeph_subagent::InheritedInstructions::new(rendered)?;
+        tracing::debug!(
+            instructions_bytes = bytes,
+            approx_tokens = bytes / 4,
+            "sub-agent inherits the parent instruction block"
+        );
+        Some(inherited)
+    }
+
     /// Build a `SpawnContext` from current agent state for sub-agent spawning.
     pub(super) fn build_spawn_context(
         &self,
         cfg: &zeph_config::SubAgentConfig,
     ) -> zeph_subagent::SpawnContext {
         zeph_subagent::SpawnContext {
+            inherited_instructions: self.inherited_instructions(cfg),
             parent_messages: self.extract_parent_messages(cfg),
             parent_cancel: Some(self.runtime.lifecycle.cancel_token.clone()),
             parent_provider_name: {
@@ -3093,6 +3281,7 @@ mod tests {
         let bodies = agent
             .filtered_skills_for("helper")
             .await
+            .bodies
             .expect("3 skills with a huge budget must return Some");
 
         assert_eq!(
@@ -3119,6 +3308,7 @@ mod tests {
         let bodies = agent
             .filtered_skills_for("helper")
             .await
+            .bodies
             .expect("at least the first skill must always be included");
 
         let marker_count = bodies
@@ -3181,6 +3371,7 @@ mod tests {
         let bodies = agent
             .filtered_skills_for("helper")
             .await
+            .bodies
             .expect("at least the first skill must always be included");
 
         let marker = bodies
@@ -3248,6 +3439,7 @@ mod tests {
         let bodies = agent
             .filtered_skills_for("curated")
             .await
+            .bodies
             .expect("explicit include must still match all 5 skill-* skills");
 
         assert_eq!(
@@ -3340,6 +3532,7 @@ mod tests {
         let bodies = agent
             .filtered_skills_for("helper")
             .await
+            .bodies
             .expect("the Trusted skill alone must still be returned");
 
         assert_eq!(

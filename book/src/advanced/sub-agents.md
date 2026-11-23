@@ -191,17 +191,19 @@ You are a helpful assistant. Complete the given task concisely.
 ---
 name: code-reviewer
 description: Reviews code changes for correctness and style
-model: claude-sonnet-5
-background: false
-max_turns: 10
+model: quality
 memory: project
 tools:
   allow:
-    - shell
+    - read
+    - grep
+    - bash
     - web_scrape
   except:
-    - shell_sudo
+    - web_scrape
 permissions:
+  background: false
+  max_turns: 10
   permission_mode: accept_edits
   secrets:
     - github-token
@@ -240,15 +242,18 @@ Report findings as a structured list with severity (critical/warning/info).
 |-------|------|---------|-------------|
 | `name` | string | required | Unique identifier |
 | `description` | string | required | Human-readable description |
-| `model` | string | inherited | LLM model override |
-| `background` | bool | `false` | Run as a background task; secret requests are auto-denied inline |
-| `max_turns` | u32 | `20` | Maximum LLM turns before the agent is stopped |
+| `model` | string | `inherit` | Name of a provider declared in `[[llm.providers]]`, or `inherit` for the parent's provider; an unknown name fails the spawn |
 | `memory` | string | — | Persistent memory scope: `user`, `project`, or `local` (see [Persistent Memory](#persistent-memory)) |
 | `tools.allow` | string[] | — | Only these tools are available (mutually exclusive with `deny`) |
 | `tools.deny` | string[] | — | All tools except these (mutually exclusive with `allow`) |
-| `tools.except` | string[] | `[]` | Additional denylist applied on top of `allow`/`deny`; deny always wins over allow; exact match on tool ID |
+| `tools.except` | string[] | `[]` | Additional denylist applied on top of `allow`/`deny`; deny always wins over allow; matched by runtime tool id (see [Tool IDs](#tool-ids)) |
 | `permissions.permission_mode` | enum | `default` | Tool call approval policy (see below) |
 | `permissions.secrets` | string[] | `[]` | Vault keys the agent MAY request |
+| `permissions.background` | bool | `false` | Run as a background task; secret requests are auto-denied inline |
+| `permissions.max_turns` | u32 | `20` | Maximum LLM turns before the agent is stopped |
+| `permissions.max_history_messages` | usize | `200` | In-memory history cap; `0` disables eviction. Keep it at least `2 * max_turns + 2` or older turns are evicted before the agent finishes (a load warning is logged otherwise) |
+| `permissions.worktree` | bool | `false` | Run in a dedicated git worktree when the worktree subsystem is enabled |
+| `permissions.instructions` | enum | follows `[agents] instructions` | `none` opts this agent out of inheriting the parent's instruction files (see [Instruction Inheritance](#instruction-inheritance)); cannot opt in over a global `none` |
 | `permissions.timeout_secs` | u64 | `600` | Hard kill deadline |
 | `permissions.ttl_secs` | u64 | `300` | TTL for granted permissions |
 | `skills.include` | string[] | all | Glob patterns to include (`*` wildcard) |
@@ -261,6 +266,10 @@ Report findings as a structured list with severity (critical/warning/info).
 If neither `tools.allow` nor `tools.deny` is specified, the sub-agent inherits all tools from the main agent.
 
 Matched skill bodies are capped by `[skills] subagent_skill_token_budget` (default `12000` tokens, config-wide, not per-agent) — applies only when `skills.include` is empty; an explicit, hand-curated `include` list is never capped — see [Skill Filtering](#skill-filtering) below.
+
+### Tool IDs
+
+Tool lists and hook matchers name tools by their runtime id: `bash`, `read`, `write`, `edit`, `grep`, `find_path`, `list_directory`, `web_scrape`, `fetch`, `load_skill`, MCP tools as `mcp__<server>__<tool>`, and so on. Matching is case-insensitive, and `shell` and `sh` are accepted as aliases of `bash`, so `Bash`, `shell` and `bash` all name the same tool. An argument pattern such as `Bash(cargo *)` is **not enforced**: the entry applies to the whole tool and a warning is logged when the definition is loaded. A list entry that matches no registered tool is reported at spawn time.
 
 ### `permission_mode` Values
 
@@ -285,27 +294,29 @@ Matched skill bodies are capped by `[skills] subagent_skill_token_budget` (defau
 ```yaml
 tools:
   allow:
-    - shell
+    - read
+    - bash
     - web_scrape
   except:
-    - shell_sudo    # blocked even though shell is in allow
+    - web_scrape    # blocked even though web_scrape is in allow
 ```
 
 Use `except` to tighten an existing allow list without rewriting it.
 
-### `background` — Fire-and-Forget Execution
+### `permissions.background` — Fire-and-Forget Execution
 
-When `background: true`, the agent runs without blocking the conversation. Secret requests that would normally open an interactive prompt are auto-denied inline instead, so the main session is never paused waiting for user input.
+When `permissions.background: true`, the agent runs without blocking the conversation. Secret requests that would normally open an interactive prompt are auto-denied inline instead, so the main session is never paused waiting for user input.
 
 ```yaml
 ---
 name: nightly-linter
 description: Runs cargo clippy on the workspace nightly
-background: true
-max_turns: 5
 tools:
   allow:
-    - shell
+    - bash
+permissions:
+  background: true
+  max_turns: 5
 ---
 
 Run `cargo clippy --workspace -- -D warnings` and report any new warnings introduced since the last run.
@@ -313,15 +324,16 @@ Run `cargo clippy --workspace -- -D warnings` and report any new warnings introd
 
 Results appear in `/agent status` and the TUI panel when the task completes.
 
-### `max_turns` — Turn Limit
+### `permissions.max_turns` — Turn Limit
 
-`max_turns` caps the number of LLM turns the agent may take. The agent is stopped automatically when the limit is reached, preventing runaway inference loops.
+`permissions.max_turns` caps the number of LLM turns the agent may take. The agent is stopped automatically when the limit is reached, preventing runaway inference loops.
 
 ```yaml
 ---
 name: summarizer
 description: Summarizes long documents
-max_turns: 3
+permissions:
+  max_turns: 3
 ---
 
 Summarize the provided content in three bullet points.
@@ -331,33 +343,17 @@ The default is `20`. Set a lower value for narrow, well-defined tasks.
 
 ### `delegation_mode` — Autonomous Spawning Control
 
-`delegation_mode` controls whether the main agent can autonomously spawn this sub-agent via the orchestration scheduler, or whether spawns must be initiated by direct user action.
-
-Three modes are available:
+`delegation_mode` is a **global** setting under `[agents]` in `config.toml`; there is no per-definition key (a definition that sets it fails to load). It controls whether the main agent can autonomously spawn sub-agents via the orchestration scheduler, or whether spawns must be initiated by direct user action.
 
 | Mode | Description |
 |------|-------------|
-| `proactive` (default) | The orchestration scheduler can autonomously spawn this agent. This is the default and preserves the subsystem's prior behavior. |
-| `explicit_request_only` | The agent can only be spawned via direct user action: `/agent spawn`, `/agent resume`, `/subagent spawn`. The orchestration scheduler cannot autonomously spawn it. Useful for channels where prompt injection is a risk (Telegram, Discord, webhooks). |
-| `disabled` | No spawn path is available (read-only operations like `/agent list` still work). Set `enabled: false` in config to disable all sub-agents globally. |
-
-Example:
-
-```yaml
----
-name: code-reviewer
-description: Reviews code for correctness and style
-delegation_mode: explicit_request_only  # only spawn via /agent spawn, not via scheduler
----
-
-You are a code reviewer...
-```
-
-Override in `config.toml`:
+| `proactive` (default) | The orchestration scheduler can autonomously spawn sub-agents. |
+| `explicit_request_only` | Sub-agents can only be spawned via direct user action: `/agent spawn`, `/agent resume`, `/subagent spawn`. Useful for channels where prompt injection is a risk (Telegram, Discord, webhooks). |
+| `disabled` | No spawn path is available (read-only operations like `/agent list` still work). Set `enabled = false` to disable all sub-agents globally. |
 
 ```toml
 [agents]
-delegation_mode = "explicit_request_only"  # applies to all agents without explicit override
+delegation_mode = "explicit_request_only"
 ```
 
 Or via CLI:
@@ -412,11 +408,11 @@ $ zeph agents show code-reviewer
 Name:        code-reviewer
 Description: Reviews code for correctness
 Source:      project/code-reviewer.md
-Model:       claude-sonnet-5
+Model:       quality
 Mode:        Default
 Max turns:   10
 Background:  false
-Tools:       allow ["shell", "web_scrape"]
+Tools:       allow ["bash", "web_scrape"]
 
 System prompt:
 You are a code reviewer...
@@ -428,7 +424,7 @@ You are a code reviewer...
 $ zeph agents create reviewer --description "Code review helper"
 Created .zeph/agents/reviewer.md
 
-$ zeph agents create reviewer --description "Code review helper" --model claude-sonnet-5
+$ zeph agents create reviewer --description "Code review helper" --model quality
 Created .zeph/agents/reviewer.md
 
 $ zeph agents create reviewer --description "Global helper" --dir ~/.config/zeph/agents/
@@ -437,7 +433,7 @@ Created /Users/you/.config/zeph/agents/reviewer.md
 
 Options:
 - `--description` / `-d` — short description (required)
-- `--model` — model override (optional)
+- `--model` — provider name from `[[llm.providers]]` (optional)
 - `--dir` — target directory (default: `.zeph/agents/`)
 
 ### Edit
@@ -521,10 +517,10 @@ The memory directory is created automatically on first spawn. If the directory a
 
 ### Auto-Enabled File Tools
 
-When an agent uses `tools.allow` (allowlist mode) and has memory enabled, Zeph automatically adds `Read`, `Write`, and `Edit` to the allowed tool list. A warning is logged so you know the tools were implicitly added:
+When an agent uses `tools.allow` (allowlist mode) and has memory enabled, Zeph automatically adds `read`, `write`, and `edit` to the allowed tool list. A warning is logged so you know the tools were implicitly added:
 
 ```
-WARN auto-enabled file tools for memory access — add ["Read", "Write", "Edit"]
+WARN auto-enabled file tools for memory access — add ["read", "write", "edit"]
      to tools.allow to suppress this warning
 ```
 
@@ -533,10 +529,10 @@ To silence the warning, explicitly include the file tools in your allowlist:
 ```yaml
 tools:
   allow:
-    - shell
-    - Read
-    - Write
-    - Edit
+    - bash
+    - read
+    - write
+    - edit
 ```
 
 If all three file tools are blocked (via `tools.except` or `tools.deny`), memory is silently disabled — the directory is not created and no content is injected.
@@ -567,23 +563,24 @@ Control which tools a sub-agent can use:
   ```yaml
   tools:
     allow:
-      - shell
+      - bash
       - web_scrape
   ```
 - **Deny list** — all tools except listed:
   ```yaml
   tools:
     deny:
-      - shell
+      - bash
   ```
 - **Except list** — additional block on top of allow or deny (deny always wins):
   ```yaml
   tools:
     allow:
-      - shell
+      - read
+      - bash
       - web_scrape
     except:
-      - shell_sudo
+      - web_scrape
   ```
 - **Inherit all** — omit both `allow` and `deny`
 
@@ -696,13 +693,19 @@ hooks:
 
 ### Matcher Syntax
 
-The `matcher` field is a pipe-separated list of tokens. A tool matches when its name contains any of the listed tokens (case-sensitive substring match):
+The `matcher` field is a pipe-separated list of tokens. A token matches a tool when either rule holds:
+
+1. the tool name **contains** the token (case-sensitive substring), as before; or
+2. the token and the tool name denote the same tool (see [Tool IDs](#tool-ids)): case-insensitive, `shell`/`sh`/`bash` are one tool.
+
+Argument patterns such as `Bash(cargo *)` are ignored (the whole tool matches) and a warning is logged at load time. The same rule applies to `if: "tool:<name>"` conditions and to the main agent's `[hooks]`. Runtime tool ids:
 
 | Matcher | Matches | Does not match |
 |---------|---------|----------------|
-| `"Bash"` | `Bash` | `Edit`, `Write` |
-| `"Edit\|Write"` | `Edit`, `WriteFile` | `Bash`, `Read` |
-| `"Shell"` | `Shell`, `ShellExec` | `Bash` |
+| `"bash"` | `bash` | `read`, `write` |
+| `"Bash"`, `"Shell"` | `bash` | `read` |
+| `"edit\|write"` | `edit`, `write` | `bash`, `read` |
+| `"mcp__github"` | `mcp__github__create_issue` | `bash` |
 
 ### Hook Definition Fields
 
@@ -711,7 +714,7 @@ The `matcher` field is a pipe-separated list of tokens. A tool matches when its 
 | `type` | string | required | Hook type — currently only `"command"` is supported |
 | `command` | string | required | Shell command to execute (passed to `sh -c`) |
 | `timeout_secs` | u64 | `30` | Maximum execution time before the hook is killed |
-| `fail_closed` | bool | `false` | When `true`, a non-zero exit or timeout causes the calling operation to fail; when `false`, errors are logged and execution continues |
+| `fail_closed` | bool | `false` | When `true`, a non-zero exit or timeout blocks the tool call (sub-agent `PreToolUse` hooks honor it); when `false`, errors are logged and execution continues |
 
 ### Config-Level Hooks (SubagentStart / SubagentStop)
 
@@ -849,7 +852,7 @@ Sub-agents inherit context from the parent agent to reduce cold-start overhead:
 
 - **Conversation history**: the parent's recent conversation history is forwarded to the sub-agent's initial context, giving it awareness of what has been discussed
 - **Cancellation**: the parent's cancellation token is propagated so that cancelling the parent also cancels active sub-agents
-- **Model inheritance**: sub-agents inherit the parent's active model unless overridden in the definition's `model` field
+- **Model inheritance**: sub-agents inherit the parent's active provider unless the definition's `model` names a provider from `[[llm.providers]]`
 
 Sub-agents no longer exit after a single text-only LLM response — they continue the conversation loop until the task is complete or `max_turns` is reached.
 
@@ -878,7 +881,18 @@ Both `summary` and `last_assistant_turn` content spliced into the task prompt is
 summary_max_chars = 600
 ```
 
-**Model inheritance**: sub-agents use the parent's active provider unless the definition's `model` field specifies an override. This means a sub-agent spawned during a `gpt-5.4` session will use `gpt-5.4` unless pinned to a different model in the definition.
+**Model inheritance**: sub-agents use the parent's active provider unless the definition's `model` names a provider declared in `[[llm.providers]]` (matched case-insensitively). An unknown name fails the spawn with an error that names the definition and the provider, with no side effects; `inherit` or an absent `model` clones the parent's provider. The provider that served a session is recorded in its transcript sidecar.
+
+### Instruction Inheritance
+
+By default a sub-agent's system prompt receives the parent's already-rendered instruction blocks (`CLAUDE.md`, `AGENTS.md`, ...) right after the definition body, so project rules reach delegated work. The block is the parent's text as is; spawning does no extra disk I/O and a `--bare` or `--safe-mode` parent passes nothing. The block is part of every sub-agent turn, so it costs tokens each turn; the size is logged at spawn.
+
+```toml
+[agents]
+instructions = "inherit"   # "inherit" (default) | "none"
+```
+
+`instructions = "none"` is a global kill switch: no sub-agent receives the block and a definition cannot override it. With `inherit`, a single definition can opt out with `permissions.instructions: none`; a definition can only opt out, never opt in over a global `none`.
 
 ### MCP Tool Awareness
 

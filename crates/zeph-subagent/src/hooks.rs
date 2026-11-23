@@ -82,6 +82,7 @@ use thiserror::Error;
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;
 use tokio::time::timeout;
+use zeph_tools::tool_id::ToolMatchKey;
 
 pub use zeph_config::{HookAction, HookDef, HookMatcher, SubagentHooks};
 
@@ -225,7 +226,7 @@ pub fn hook_if_matches(condition: &str, tool_name: Option<&str>) -> bool {
                 );
                 return false;
             }
-            tool_name.is_some_and(|t| !t.is_empty() && t.contains(value))
+            tool_name.is_some_and(|t| !t.is_empty() && token_matches(value, t))
         }
         unknown => {
             tracing::warn!(
@@ -281,7 +282,10 @@ pub enum HookError {
 ///
 /// Matching rules:
 /// - Each [`HookMatcher`]`.matcher` is a `|`-separated list of tokens.
-/// - A token matches if `tool_name` **contains** the token (case-sensitive substring).
+/// - A token matches if `tool_name` **contains** the token (case-sensitive substring), **or**
+///   the token and `tool_name` name the same tool: case-insensitive, argument patterns such
+///   as `Bash(cargo *)` ignored, `shell`/`sh`/`bash` treated as one tool. The second rule is
+///   additive, so no substring match is lost.
 /// - Empty tokens are ignored.
 ///
 /// # Examples
@@ -294,6 +298,7 @@ pub enum HookError {
 ///
 /// assert_eq!(matching_hooks(&matchers, "Edit").len(), 1);
 /// assert!(matching_hooks(&matchers, "Shell").is_empty());
+/// assert_eq!(matching_hooks(&matchers, "write").len(), 1); // case-insensitive
 /// ```
 #[must_use]
 pub fn matching_hooks<'a>(matchers: &'a [HookMatcher], tool_name: &str) -> Vec<&'a HookDef> {
@@ -303,7 +308,7 @@ pub fn matching_hooks<'a>(matchers: &'a [HookMatcher], tool_name: &str) -> Vec<&
             .matcher
             .split('|')
             .filter(|token| !token.is_empty())
-            .any(|token| tool_name.contains(token));
+            .any(|token| token_matches(token, tool_name));
         if matched {
             result.extend(m.hooks.iter());
         }
@@ -312,6 +317,12 @@ pub fn matching_hooks<'a>(matchers: &'a [HookMatcher], tool_name: &str) -> Vec<&
 }
 
 // ── Hook env helpers ──────────────────────────────────────────────────────────
+
+/// Additive hook-token rule: the legacy case-sensitive substring test OR canonical tool-id
+/// equality (case-insensitive, argument patterns stripped, shell aliases resolved).
+fn token_matches(token: &str, tool_name: &str) -> bool {
+    tool_name.contains(token) || ToolMatchKey::new(token) == ToolMatchKey::new(tool_name)
+}
 
 /// Maximum byte length of `ZEPH_TOOL_ARGS_JSON` to avoid `E2BIG` when spawning hook processes.
 ///

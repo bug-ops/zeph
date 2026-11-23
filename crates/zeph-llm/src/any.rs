@@ -40,8 +40,8 @@ use std::sync::Arc;
 use crate::provider::{
     ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, ToolDefinition,
 };
-use crate::router::RouterProvider;
 use crate::router::triage::TriageRouter;
+use crate::router::{QualityTarget, RouterProvider};
 use crate::status::StatusSender;
 use zeph_config::ThinkingConfig;
 
@@ -454,13 +454,13 @@ impl AnyProvider {
     ///
     /// Must only be called for semantic failures (bad tool arguments, parse errors),
     /// never for network errors or transient failures.
-    pub fn record_quality_outcome(&self, provider_name: &str, success: bool) {
+    pub fn record_quality_outcome(&self, target: QualityTarget<'_>, success: bool) {
         match self {
-            Self::Router(p) => p.record_quality_outcome(provider_name, success),
-            Self::Masked(p) => p.inner().record_quality_outcome(provider_name, success),
+            Self::Router(p) => p.record_quality_outcome(target, success),
+            Self::Masked(p) => p.inner().record_quality_outcome(target, success),
             _ => {
                 tracing::trace!(
-                    provider_name,
+                    ?target,
                     success,
                     provider_variant = self.name(),
                     "record_quality_outcome: no-op (non-router provider; quality signals require RouterProvider)"

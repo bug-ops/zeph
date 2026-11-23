@@ -10,8 +10,8 @@ use std::assert_matches;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        119,
-        "MIGRATIONS registry must contain all 119 sequential steps"
+        120,
+        "MIGRATIONS registry must contain all 120 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2205,7 +2205,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 119);
+    assert_eq!(MIGRATIONS.len(), 120);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2439,6 +2439,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_acp_ide_mcp_config",
         "migrate_interaction_config",
         "migrate_retired_claude_sonnet_model",
+        "migrate_agents_instructions",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

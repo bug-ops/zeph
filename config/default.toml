@@ -1259,6 +1259,9 @@ max_concurrent = 1
 # guards against a shallow, low-concurrency but high-frequency sequential delegation loop
 # (issue #6545). 0 = unlimited.
 max_spawns_per_session = 100
+# Give sub-agents the parent's instruction files: "inherit" | "none" ("none" is a global kill
+# switch; a definition can only opt out via permissions.instructions).
+instructions = "inherit"
 # Allow sub-agents to use bypass_permissions mode (enable only in trusted environments)
 allow_bypass_permissions = false
 # Enable writing JSONL transcripts for sub-agent sessions (required for /agent resume)

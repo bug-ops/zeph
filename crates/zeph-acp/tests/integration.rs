@@ -674,84 +674,76 @@ async fn drain_until_stop_collects_text_chunks() {
 /// `session/update` notification handler (mirroring the ACP client examples' pattern) so it can
 /// assert on content actually delivered over the wire, not just on `PromptResponse.stop_reason`.
 #[tokio::test(flavor = "current_thread")]
-#[cfg_attr(
-    feature = "acp-http",
-    expect(
-        clippy::large_futures,
-        reason = "The round-trip test intentionally runs its local ACP server and client in one future."
-    )
-)]
 async fn review_command_output_is_delivered_to_client() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let workdir = temp_workdir();
-            let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(
-                text_chunks_spawner(vec!["review", " ", "output"]),
-                test_config("test-agent"),
-                sw,
-                sr,
-                "acp-local".to_owned(),
-            );
-            let collected = Arc::new(std::sync::Mutex::new(String::new()));
-            let collected_for_handler = Arc::clone(&collected);
-            let client_fut = acp::Client
-                .v1()
-                .on_receive_notification(
-                    move |notification: acp::v1::schema::SessionNotification, _cx| {
-                        let collected = Arc::clone(&collected_for_handler);
-                        async move {
-                            if let acp::v1::schema::SessionUpdate::AgentMessageChunk(chunk) =
-                                notification.update
-                                && let acp::v1::schema::ContentBlock::Text(text) = chunk.content
-                            {
-                                collected.lock().unwrap().push_str(&text.text);
-                            }
-                            Ok(())
+    Box::pin(local.run_until(async {
+        let workdir = temp_workdir();
+        let (sw, sr, cw, cr) = duplex_pair();
+        let server_fut = serve_connection(
+            text_chunks_spawner(vec!["review", " ", "output"]),
+            test_config("test-agent"),
+            sw,
+            sr,
+            "acp-local".to_owned(),
+        );
+        let collected = Arc::new(std::sync::Mutex::new(String::new()));
+        let collected_for_handler = Arc::clone(&collected);
+        let client_fut = acp::Client
+            .v1()
+            .on_receive_notification(
+                move |notification: acp::v1::schema::SessionNotification, _cx| {
+                    let collected = Arc::clone(&collected_for_handler);
+                    async move {
+                        if let acp::v1::schema::SessionUpdate::AgentMessageChunk(chunk) =
+                            notification.update
+                            && let acp::v1::schema::ContentBlock::Text(text) = chunk.content
+                        {
+                            collected.lock().unwrap().push_str(&text.text);
                         }
-                    },
-                    acp::on_receive_notification!(),
-                )
-                .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                    cx.send_request(acp::v1::schema::InitializeRequest::new(
-                        acp::schema::ProtocolVersion::LATEST,
-                    ))
+                        Ok(())
+                    }
+                },
+                acp::on_receive_notification!(),
+            )
+            .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                let content = vec![acp::v1::schema::ContentBlock::Text(
+                    acp::v1::schema::TextContent::new("/review"),
+                )];
+                let resp = cx
+                    .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
                     .block_task()
                     .await?;
 
-                    let session_id = cx
-                        .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
-                        .block_task()
-                        .await?
-                        .session_id;
-
-                    let content = vec![acp::v1::schema::ContentBlock::Text(
-                        acp::v1::schema::TextContent::new("/review"),
-                    )];
-                    let resp = cx
-                        .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
-                        .block_task()
-                        .await?;
-
-                    assert_eq!(resp.stop_reason, acp::v1::schema::StopReason::EndTurn);
-                    Ok(())
-                });
-            tokio::select! {
-                res = server_fut => panic!("server exited before client: {res:?}"),
-                result = client_fut => {
-                    assert!(result.is_ok(), "review round-trip test failed: {result:?}");
-                }
+                assert_eq!(resp.stop_reason, acp::v1::schema::StopReason::EndTurn);
+                Ok(())
+            });
+        tokio::select! {
+            res = server_fut => panic!("server exited before client: {res:?}"),
+            result = client_fut => {
+                assert!(result.is_ok(), "review round-trip test failed: {result:?}");
             }
-            assert_eq!(
-                *collected.lock().unwrap(),
-                "review output",
-                "the spawner's chunks must have reached the client as AgentMessageChunk \
+        }
+        assert_eq!(
+            *collected.lock().unwrap(),
+            "review output",
+            "the spawner's chunks must have reached the client as AgentMessageChunk \
                  notifications — before #6673 this would be empty since /review never called \
                  acquire_prompt_channels"
-            );
-        })
-        .await;
+        );
+    }))
+    .await;
 }
 
 /// AC #10: `session/cancel` prior to prompt causes the prompt to complete with
@@ -1065,217 +1057,189 @@ async fn close_session_removes_session_from_memory() {
 /// configured, permanently removes the persisted row too — a deleted session must never
 /// resurrect via `session/load`/`session/resume` (#6271).
 #[tokio::test(flavor = "current_thread")]
-#[cfg_attr(
-    feature = "acp-http",
-    expect(
-        clippy::large_futures,
-        reason = "The test drives the session deletion flow as one local ACP future."
-    )
-)]
 async fn delete_session_removes_session_from_list() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let workdir = temp_workdir();
-            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
-            let sqlite_path = db_dir
-                .path()
-                .join("acp-delete-test.db")
-                .to_string_lossy()
-                .into_owned();
-            let (sw, sr, cw, cr) = duplex_pair();
-            let config = AcpServerConfig {
-                sqlite_path: Some(sqlite_path.clone()),
-                ..test_config("test-agent")
-            };
-            let server_fut =
-                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client_fut =
-                acp::Client
-                    .v1()
-                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::v1::schema::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
+    Box::pin(local.run_until(async {
+        let workdir = temp_workdir();
+        let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+        let sqlite_path = db_dir
+            .path()
+            .join("acp-delete-test.db")
+            .to_string_lossy()
+            .into_owned();
+        let (sw, sr, cw, cr) = duplex_pair();
+        let config = AcpServerConfig {
+            sqlite_path: Some(sqlite_path.clone()),
+            ..test_config("test-agent")
+        };
+        let server_fut = serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
+        let client_fut = acp::Client
+            .v1()
+            .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
 
-                        let session_id = cx
-                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
-                            .block_task()
-                            .await?
-                            .session_id;
+                let session_id = cx
+                    .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
 
-                        cx.send_request(acp::v1::schema::DeleteSessionRequest::new(
-                            session_id.clone(),
-                        ))
-                        .block_task()
-                        .await?;
+                cx.send_request(acp::v1::schema::DeleteSessionRequest::new(
+                    session_id.clone(),
+                ))
+                .block_task()
+                .await?;
 
-                        let resp = cx
-                            .send_request(acp::v1::schema::ListSessionsRequest::new())
-                            .block_task()
-                            .await?;
-                        let ids: Vec<&acp::v1::schema::SessionId> =
-                            resp.sessions.iter().map(|s| &s.session_id).collect();
-                        assert!(
-                            !ids.contains(&&session_id),
-                            "deleted session must not appear in session/list: {ids:?}"
-                        );
-                        Ok(session_id)
-                    });
-            let session_id = tokio::select! {
-                res = server_fut => panic!("server exited before client: {res:?}"),
-                result = client_fut => {
-                    result.expect("delete_session test failed")
-                }
-            };
+                let resp = cx
+                    .send_request(acp::v1::schema::ListSessionsRequest::new())
+                    .block_task()
+                    .await?;
+                let ids: Vec<&acp::v1::schema::SessionId> =
+                    resp.sessions.iter().map(|s| &s.session_id).collect();
+                assert!(
+                    !ids.contains(&&session_id),
+                    "deleted session must not appear in session/list: {ids:?}"
+                );
+                Ok(session_id)
+            });
+        let session_id = tokio::select! {
+            res = server_fut => panic!("server exited before client: {res:?}"),
+            result = client_fut => {
+                result.expect("delete_session test failed")
+            }
+        };
 
-            // Verify the row is actually gone from the persistence store, not just absent
-            // from the in-memory session/list — the regression this test guards against
-            // (#6271) is a deleted session resurrecting via load/resume because the store
-            // row survived.
-            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+        // Verify the row is actually gone from the persistence store, not just absent
+        // from the in-memory session/list — the regression this test guards against
+        // (#6271) is a deleted session resurrecting via load/resume because the store
+        // row survived.
+        let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+            .await
+            .expect("SqliteStore::new");
+        assert!(
+            !store
+                .acp_session_exists(&session_id.to_string())
                 .await
-                .expect("SqliteStore::new");
-            assert!(
-                !store
-                    .acp_session_exists(&session_id.to_string())
-                    .await
-                    .expect("acp_session_exists query failed"),
-                "deleted session must not survive in the persistence store"
-            );
-        })
-        .await;
+                .expect("acp_session_exists query failed"),
+            "deleted session must not survive in the persistence store"
+        );
+    }))
+    .await;
 }
 
 /// `session/close` must abort and await the session's agent-loop task before returning, so a
 /// task left running past the close can never keep emitting events/notifications under a
 /// `SessionId` that may be reused by a later `session/load`/`session/resume` (#6674).
 #[tokio::test(flavor = "current_thread")]
-#[cfg_attr(
-    feature = "acp-http",
-    expect(
-        clippy::large_futures,
-        reason = "The test drives the session close flow as one local ACP future."
-    )
-)]
 async fn close_session_aborts_agent_loop_task() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let workdir = temp_workdir();
-            let started = Arc::new(tokio::sync::Notify::new());
-            let alive = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(
-                hanging_spawner(Arc::clone(&started), Arc::clone(&alive)),
-                test_config("test-agent"),
-                sw,
-                sr,
-                "acp-local".to_owned(),
-            );
-            let started_for_client = Arc::clone(&started);
-            let client_fut =
-                acp::Client
-                    .v1()
-                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::v1::schema::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
+    Box::pin(local.run_until(async {
+        let workdir = temp_workdir();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (sw, sr, cw, cr) = duplex_pair();
+        let server_fut = serve_connection(
+            hanging_spawner(Arc::clone(&started), Arc::clone(&alive)),
+            test_config("test-agent"),
+            sw,
+            sr,
+            "acp-local".to_owned(),
+        );
+        let started_for_client = Arc::clone(&started);
+        let client_fut = acp::Client
+            .v1()
+            .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
 
-                        let session_id = cx
-                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
-                            .block_task()
-                            .await?
-                            .session_id;
+                let session_id = cx
+                    .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
 
-                        // Wait for the agent-loop task to actually start running before racing close
-                        // against it — otherwise a close that lands before the task is even polled
-                        // once would pass vacuously.
-                        started_for_client.notified().await;
+                // Wait for the agent-loop task to actually start running before racing close
+                // against it — otherwise a close that lands before the task is even polled
+                // once would pass vacuously.
+                started_for_client.notified().await;
 
-                        cx.send_request(acp::v1::schema::CloseSessionRequest::new(session_id))
-                            .block_task()
-                            .await?;
-                        Ok(())
-                    });
-            tokio::select! {
-                res = server_fut => panic!("server exited before client: {res:?}"),
-                result = client_fut => {
-                    assert!(result.is_ok(), "close_session test failed: {result:?}");
-                }
+                cx.send_request(acp::v1::schema::CloseSessionRequest::new(session_id))
+                    .block_task()
+                    .await?;
+                Ok(())
+            });
+        tokio::select! {
+            res = server_fut => panic!("server exited before client: {res:?}"),
+            result = client_fut => {
+                assert!(result.is_ok(), "close_session test failed: {result:?}");
             }
-            assert!(
-                !alive.load(std::sync::atomic::Ordering::SeqCst),
-                "agent-loop task must be aborted and joined before session/close returns"
-            );
-        })
-        .await;
+        }
+        assert!(
+            !alive.load(std::sync::atomic::Ordering::SeqCst),
+            "agent-loop task must be aborted and joined before session/close returns"
+        );
+    }))
+    .await;
 }
 
 /// Same guarantee as `close_session_aborts_agent_loop_task`, for `session/delete` (#6674).
 #[tokio::test(flavor = "current_thread")]
-#[cfg_attr(
-    feature = "acp-http",
-    expect(
-        clippy::large_futures,
-        reason = "The test drives the session deletion flow as one local ACP future."
-    )
-)]
 async fn delete_session_aborts_agent_loop_task() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let workdir = temp_workdir();
-            let started = Arc::new(tokio::sync::Notify::new());
-            let alive = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(
-                hanging_spawner(Arc::clone(&started), Arc::clone(&alive)),
-                test_config("test-agent"),
-                sw,
-                sr,
-                "acp-local".to_owned(),
-            );
-            let started_for_client = Arc::clone(&started);
-            let client_fut =
-                acp::Client
-                    .v1()
-                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::v1::schema::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
+    Box::pin(local.run_until(async {
+        let workdir = temp_workdir();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (sw, sr, cw, cr) = duplex_pair();
+        let server_fut = serve_connection(
+            hanging_spawner(Arc::clone(&started), Arc::clone(&alive)),
+            test_config("test-agent"),
+            sw,
+            sr,
+            "acp-local".to_owned(),
+        );
+        let started_for_client = Arc::clone(&started);
+        let client_fut = acp::Client
+            .v1()
+            .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
 
-                        let session_id = cx
-                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
-                            .block_task()
-                            .await?
-                            .session_id;
+                let session_id = cx
+                    .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
 
-                        started_for_client.notified().await;
+                started_for_client.notified().await;
 
-                        cx.send_request(acp::v1::schema::DeleteSessionRequest::new(session_id))
-                            .block_task()
-                            .await?;
-                        Ok(())
-                    });
-            tokio::select! {
-                res = server_fut => panic!("server exited before client: {res:?}"),
-                result = client_fut => {
-                    assert!(result.is_ok(), "delete_session test failed: {result:?}");
-                }
+                cx.send_request(acp::v1::schema::DeleteSessionRequest::new(session_id))
+                    .block_task()
+                    .await?;
+                Ok(())
+            });
+        tokio::select! {
+            res = server_fut => panic!("server exited before client: {res:?}"),
+            result = client_fut => {
+                assert!(result.is_ok(), "delete_session test failed: {result:?}");
             }
-            assert!(
-                !alive.load(std::sync::atomic::Ordering::SeqCst),
-                "agent-loop task must be aborted and joined before session/delete returns"
-            );
-        })
-        .await;
+        }
+        assert!(
+            !alive.load(std::sync::atomic::Ordering::SeqCst),
+            "agent-loop task must be aborted and joined before session/delete returns"
+        );
+    }))
+    .await;
 }
 
 /// `session/fork` creates a new session with a distinct id from the source (#5367).
@@ -1345,123 +1309,113 @@ async fn fork_session_creates_distinct_session_id() {
 /// `ForkEngine::fork` wiring under test without needing the full agent-loop integration.
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
-#[cfg_attr(
-    feature = "acp-http",
-    expect(
-        clippy::large_futures,
-        reason = "The test drives session forking and persistence as one local ACP future."
-    )
-)]
 async fn fork_session_copies_event_log_when_persistence_enabled() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let workdir = temp_workdir();
-            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
-            let sqlite_path = db_dir
-                .path()
-                .join("acp-fork-test.db")
-                .to_string_lossy()
-                .into_owned();
-            let session_data_dir = db_dir.path().join("sessions");
+    Box::pin(local.run_until(async {
+        let workdir = temp_workdir();
+        let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+        let sqlite_path = db_dir
+            .path()
+            .join("acp-fork-test.db")
+            .to_string_lossy()
+            .into_owned();
+        let session_data_dir = db_dir.path().join("sessions");
 
-            let (sw, sr, cw, cr) = duplex_pair();
-            let config = AcpServerConfig {
-                sqlite_path: Some(sqlite_path),
-                session_data_dir: Some(session_data_dir.clone()),
-                ..test_config("test-agent")
-            };
-            let server_fut =
-                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-            let client = acp::Client.v1();
-            let client_fut = client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::v1::schema::InitializeRequest::new(
-                    acp::schema::ProtocolVersion::LATEST,
+        let (sw, sr, cw, cr) = duplex_pair();
+        let config = AcpServerConfig {
+            sqlite_path: Some(sqlite_path),
+            session_data_dir: Some(session_data_dir.clone()),
+            ..test_config("test-agent")
+        };
+        let server_fut = serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
+        let client = acp::Client.v1();
+        let client_fut = client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+            cx.send_request(acp::v1::schema::InitializeRequest::new(
+                acp::schema::ProtocolVersion::LATEST,
+            ))
+            .block_task()
+            .await?;
+
+            let source_id = cx
+                .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
+                .block_task()
+                .await?
+                .session_id;
+
+            // Seed the source session's event log directly (simulating turns that a real
+            // agent loop would have appended via SessionSink).
+            let source_dir = zeph_session::session_dir(&session_data_dir, &source_id.to_string());
+            let log = zeph_session::SessionEventLog::open(&source_dir)
+                .await
+                .expect("open source event log");
+            log.append(
+                None,
+                None,
+                zeph_session::SessionEvent::SessionStarted {
+                    session_id: source_id.to_string(),
+                    cwd: workdir.path().to_string_lossy().into_owned(),
+                    provider_name: "claude".to_owned(),
+                    model: "opus".to_owned(),
+                    forked_from: None,
+                },
+            )
+            .await
+            .expect("append SessionStarted");
+            log.append(
+                None,
+                None,
+                zeph_session::SessionEvent::UserMessage {
+                    text: "hello".to_owned(),
+                    image_refs: vec![],
+                },
+            )
+            .await
+            .expect("append UserMessage");
+
+            let forked = cx
+                .send_request(acp::v1::schema::ForkSessionRequest::new(
+                    source_id.clone(),
+                    workdir.path(),
                 ))
                 .block_task()
                 .await?;
 
-                let source_id = cx
-                    .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
-                    .block_task()
-                    .await?
-                    .session_id;
-
-                // Seed the source session's event log directly (simulating turns that a real
-                // agent loop would have appended via SessionSink).
-                let source_dir =
-                    zeph_session::session_dir(&session_data_dir, &source_id.to_string());
-                let log = zeph_session::SessionEventLog::open(&source_dir)
-                    .await
-                    .expect("open source event log");
-                log.append(
-                    None,
-                    None,
-                    zeph_session::SessionEvent::SessionStarted {
-                        session_id: source_id.to_string(),
-                        cwd: workdir.path().to_string_lossy().into_owned(),
-                        provider_name: "claude".to_owned(),
-                        model: "opus".to_owned(),
-                        forked_from: None,
-                    },
-                )
+            let child_dir =
+                zeph_session::session_dir(&session_data_dir, &forked.session_id.to_string());
+            let child_log = zeph_session::SessionEventLog::open(&child_dir)
                 .await
-                .expect("append SessionStarted");
-                log.append(
-                    None,
-                    None,
-                    zeph_session::SessionEvent::UserMessage {
-                        text: "hello".to_owned(),
-                        image_refs: vec![],
-                    },
-                )
-                .await
-                .expect("append UserMessage");
-
-                let forked = cx
-                    .send_request(acp::v1::schema::ForkSessionRequest::new(
-                        source_id.clone(),
-                        workdir.path(),
-                    ))
-                    .block_task()
-                    .await?;
-
-                let child_dir =
-                    zeph_session::session_dir(&session_data_dir, &forked.session_id.to_string());
-                let child_log = zeph_session::SessionEventLog::open(&child_dir)
-                    .await
-                    .expect("open child event log");
-                let events = child_log.read_all().await.expect("read child event log");
-                // 1 synthesized SessionStarted header (forked_from) + the 2 seeded events.
-                assert_eq!(events.len(), 3, "child log must contain the copied events");
-                assert_matches!(
-                    events[0].kind,
-                    zeph_session::SessionEvent::SessionStarted {
-                        forked_from: Some(_),
-                        ..
-                    }
-                );
-
-                let parent_log = zeph_session::SessionEventLog::open(&source_dir)
-                    .await
-                    .expect("reopen source event log");
-                let parent_events = parent_log.read_all().await.expect("read source event log");
-                assert_matches!(
-                    parent_events.last().expect("parent has events").kind,
-                    zeph_session::SessionEvent::ForkPoint { .. },
-                    "parent log must record a ForkPoint provenance event"
-                );
-
-                Ok(())
-            });
-            tokio::select! {
-                res = server_fut => panic!("server exited before client: {res:?}"),
-                result = client_fut => {
-                    assert!(result.is_ok(), "fork_session persistence test failed: {result:?}");
+                .expect("open child event log");
+            let events = child_log.read_all().await.expect("read child event log");
+            // 1 synthesized SessionStarted header (forked_from) + the 2 seeded events.
+            assert_eq!(events.len(), 3, "child log must contain the copied events");
+            assert_matches!(
+                events[0].kind,
+                zeph_session::SessionEvent::SessionStarted {
+                    forked_from: Some(_),
+                    ..
                 }
+            );
+
+            let parent_log = zeph_session::SessionEventLog::open(&source_dir)
+                .await
+                .expect("reopen source event log");
+            let parent_events = parent_log.read_all().await.expect("read source event log");
+            assert_matches!(
+                parent_events.last().expect("parent has events").kind,
+                zeph_session::SessionEvent::ForkPoint { .. },
+                "parent log must record a ForkPoint provenance event"
+            );
+
+            Ok(())
+        });
+        tokio::select! {
+            res = server_fut => panic!("server exited before client: {res:?}"),
+            result = client_fut => {
+                assert!(result.is_ok(), "fork_session persistence test failed: {result:?}");
             }
-        })
-        .await;
+        }
+    }))
+    .await;
 }
 
 /// `session/resume` reconnects to an in-memory session by id (#5367).
@@ -1525,69 +1479,27 @@ async fn resume_session_reconnects_to_existing_session() {
 /// `resume_session_reconnects_to_existing_session`. A follow-up `session/prompt` on the
 /// resumed session proves the reconstructed entry is actually wired up and functional.
 #[tokio::test(flavor = "current_thread")]
-#[cfg_attr(
-    feature = "acp-http",
-    expect(
-        clippy::large_futures,
-        reason = "The test drives session reconstruction from persistence as one local ACP future."
-    )
-)]
 async fn resume_session_reconstructs_from_store_after_restart() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let workdir = temp_workdir();
-            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
-            let sqlite_path = db_dir
-                .path()
-                .join("acp-resume-test.db")
-                .to_string_lossy()
-                .into_owned();
+    Box::pin(local.run_until(async {
+        let workdir = temp_workdir();
+        let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+        let sqlite_path = db_dir
+            .path()
+            .join("acp-resume-test.db")
+            .to_string_lossy()
+            .into_owned();
 
-            // First connection: create the session, then drop the connection (and its
-            // in-memory ZephAcpAgentState) without ever calling session/resume on it.
-            let session_id = {
-                let (sw, sr, cw, cr) = duplex_pair();
-                let config = AcpServerConfig {
-                    sqlite_path: Some(sqlite_path.clone()),
-                    ..test_config("test-agent")
-                };
-                let server_fut =
-                    serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
-                let client_fut =
-                    acp::Client
-                        .v1()
-                        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                            cx.send_request(acp::v1::schema::InitializeRequest::new(
-                                acp::schema::ProtocolVersion::LATEST,
-                            ))
-                            .block_task()
-                            .await?;
-
-                            let session_id = cx
-                                .send_request(acp::v1::schema::NewSessionRequest::new(
-                                    workdir.path(),
-                                ))
-                                .block_task()
-                                .await?
-                                .session_id;
-                            Ok(session_id)
-                        });
-                tokio::select! {
-                    res = server_fut => panic!("server exited before client: {res:?}"),
-                    result = client_fut => result.expect("session/new failed"),
-                }
-            };
-
-            // Second connection: fresh ZephAcpAgentState (empty `sessions` map), same
-            // sqlite_path. `session/resume` here can only succeed via the store-backed path.
+        // First connection: create the session, then drop the connection (and its
+        // in-memory ZephAcpAgentState) without ever calling session/resume on it.
+        let session_id = {
             let (sw, sr, cw, cr) = duplex_pair();
             let config = AcpServerConfig {
                 sqlite_path: Some(sqlite_path.clone()),
                 ..test_config("test-agent")
             };
             let server_fut =
-                serve_connection(echo_spawner(), config, sw, sr, "acp-local".to_owned());
+                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
             let client_fut =
                 acp::Client
                     .v1()
@@ -1598,41 +1510,71 @@ async fn resume_session_reconstructs_from_store_after_restart() {
                         .block_task()
                         .await?;
 
-                        cx.send_request(acp::v1::schema::ResumeSessionRequest::new(
-                            session_id.clone(),
-                            workdir.path(),
-                        ))
-                        .block_task()
-                        .await?;
-
-                        // Prove the rebuilt session is actually functional: a real agent-loop task
-                        // must have been spawned and wired to the reconstructed channel entry.
-                        let content = vec![acp::v1::schema::ContentBlock::Text(
-                            acp::v1::schema::TextContent::new("hello again"),
-                        )];
-                        let resp = cx
-                            .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
                             .block_task()
-                            .await?;
-                        assert_eq!(
-                            resp.stop_reason,
-                            acp::v1::schema::StopReason::EndTurn,
-                            "expected EndTurn from the store-reconstructed session, got {:?}",
-                            resp.stop_reason,
-                        );
-                        Ok(())
+                            .await?
+                            .session_id;
+                        Ok(session_id)
                     });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
-                result = client_fut => {
-                    assert!(
-                        result.is_ok(),
-                        "store-backed resume_session test failed: {result:?}"
-                    );
-                }
+                result = client_fut => result.expect("session/new failed"),
             }
-        })
-        .await;
+        };
+
+        // Second connection: fresh ZephAcpAgentState (empty `sessions` map), same
+        // sqlite_path. `session/resume` here can only succeed via the store-backed path.
+        let (sw, sr, cw, cr) = duplex_pair();
+        let config = AcpServerConfig {
+            sqlite_path: Some(sqlite_path.clone()),
+            ..test_config("test-agent")
+        };
+        let server_fut = serve_connection(echo_spawner(), config, sw, sr, "acp-local".to_owned());
+        let client_fut = acp::Client
+            .v1()
+            .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                cx.send_request(acp::v1::schema::ResumeSessionRequest::new(
+                    session_id.clone(),
+                    workdir.path(),
+                ))
+                .block_task()
+                .await?;
+
+                // Prove the rebuilt session is actually functional: a real agent-loop task
+                // must have been spawned and wired to the reconstructed channel entry.
+                let content = vec![acp::v1::schema::ContentBlock::Text(
+                    acp::v1::schema::TextContent::new("hello again"),
+                )];
+                let resp = cx
+                    .send_request(acp::v1::schema::PromptRequest::new(session_id, content))
+                    .block_task()
+                    .await?;
+                assert_eq!(
+                    resp.stop_reason,
+                    acp::v1::schema::StopReason::EndTurn,
+                    "expected EndTurn from the store-reconstructed session, got {:?}",
+                    resp.stop_reason,
+                );
+                Ok(())
+            });
+        tokio::select! {
+            res = server_fut => panic!("server exited before client: {res:?}"),
+            result = client_fut => {
+                assert!(
+                    result.is_ok(),
+                    "store-backed resume_session test failed: {result:?}"
+                );
+            }
+        }
+    }))
+    .await;
 }
 
 /// `session/load` replays from the durable JSONL event log (spec-068 §12.3 / D-2), not the
@@ -2615,63 +2557,24 @@ async fn load_session_cross_owner_fails() {
 /// `delete_session_cross_owner_returns_404_and_does_not_delete` — this is the missing
 /// coverage for the `do_delete_session` ACP handler itself) (#6271).
 #[tokio::test(flavor = "current_thread")]
-#[cfg_attr(
-    feature = "acp-http",
-    expect(
-        clippy::large_futures,
-        reason = "The test drives the cross-owner deletion flow as one local ACP future."
-    )
-)]
 async fn delete_session_cross_owner_fails() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let workdir = temp_workdir();
-            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
-            let sqlite_path = db_dir
-                .path()
-                .join("acp-owner-delete-test.db")
-                .to_string_lossy()
-                .into_owned();
+    Box::pin(local.run_until(async {
+        let workdir = temp_workdir();
+        let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+        let sqlite_path = db_dir
+            .path()
+            .join("acp-owner-delete-test.db")
+            .to_string_lossy()
+            .into_owned();
 
-            let session_id = {
-                let (sw, sr, cw, cr) = duplex_pair();
-                let config = AcpServerConfig {
-                    sqlite_path: Some(sqlite_path.clone()),
-                    ..test_config("test-agent")
-                };
-                let server_fut =
-                    serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
-                let client_fut =
-                    acp::Client
-                        .v1()
-                        .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                            cx.send_request(acp::v1::schema::InitializeRequest::new(
-                                acp::schema::ProtocolVersion::LATEST,
-                            ))
-                            .block_task()
-                            .await?;
-                            let session_id = cx
-                                .send_request(acp::v1::schema::NewSessionRequest::new(
-                                    workdir.path(),
-                                ))
-                                .block_task()
-                                .await?
-                                .session_id;
-                            Ok(session_id)
-                        });
-                tokio::select! {
-                    res = server_fut => panic!("server exited before client: {res:?}"),
-                    result = client_fut => result.expect("session/new failed"),
-                }
-            };
-
+        let session_id = {
             let (sw, sr, cw, cr) = duplex_pair();
             let config = AcpServerConfig {
                 sqlite_path: Some(sqlite_path.clone()),
                 ..test_config("test-agent")
             };
-            let server_fut = serve_connection(noop_spawner(), config, sw, sr, "bob".to_owned());
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
             let client_fut =
                 acp::Client
                     .v1()
@@ -2681,37 +2584,64 @@ async fn delete_session_cross_owner_fails() {
                         ))
                         .block_task()
                         .await?;
-                        // Bob's request may return Ok (delete is a no-op for a foreign/nonexistent id,
-                        // same uniform non-distinguishing shape as `claim_acp_session_for_owner`) or
-                        // Err — either is acceptable here; what matters is verified below: alice's row
-                        // must survive.
-                        let _ = cx
-                            .send_request(acp::v1::schema::DeleteSessionRequest::new(
-                                session_id.clone(),
-                            ))
+                        let session_id = cx
+                            .send_request(acp::v1::schema::NewSessionRequest::new(workdir.path()))
                             .block_task()
-                            .await;
-                        Ok(())
+                            .await?
+                            .session_id;
+                        Ok(session_id)
                     });
             tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
-                result = client_fut => {
-                    result.expect("bob's delete_session request errored unexpectedly");
-                }
+                result = client_fut => result.expect("session/new failed"),
             }
+        };
 
-            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+        let (sw, sr, cw, cr) = duplex_pair();
+        let config = AcpServerConfig {
+            sqlite_path: Some(sqlite_path.clone()),
+            ..test_config("test-agent")
+        };
+        let server_fut = serve_connection(noop_spawner(), config, sw, sr, "bob".to_owned());
+        let client_fut = acp::Client
+            .v1()
+            .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+                // Bob's request may return Ok (delete is a no-op for a foreign/nonexistent id,
+                // same uniform non-distinguishing shape as `claim_acp_session_for_owner`) or
+                // Err — either is acceptable here; what matters is verified below: alice's row
+                // must survive.
+                let _ = cx
+                    .send_request(acp::v1::schema::DeleteSessionRequest::new(
+                        session_id.clone(),
+                    ))
+                    .block_task()
+                    .await;
+                Ok(())
+            });
+        tokio::select! {
+            res = server_fut => panic!("server exited before client: {res:?}"),
+            result = client_fut => {
+                result.expect("bob's delete_session request errored unexpectedly");
+            }
+        }
+
+        let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+            .await
+            .expect("SqliteStore::new");
+        assert!(
+            store
+                .acp_session_exists(&session_id.to_string())
                 .await
-                .expect("SqliteStore::new");
-            assert!(
-                store
-                    .acp_session_exists(&session_id.to_string())
-                    .await
-                    .expect("acp_session_exists query failed"),
-                "bob must not be able to delete alice's session from the store"
-            );
-        })
-        .await;
+                .expect("acp_session_exists query failed"),
+            "bob must not be able to delete alice's session from the store"
+        );
+    }))
+    .await;
 }
 
 /// `session/fork` sourced from a session owned by a different connection must fail.

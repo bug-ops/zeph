@@ -591,6 +591,18 @@ impl MockProvider {
     }
 }
 
+impl MockProvider {
+    /// Record the configured published usage (if any) after a call finished.
+    fn publish_usage(&self, ok: bool) {
+        if let Some(published) = &self.published_usage {
+            published
+                .sink
+                .tracker()
+                .record(ok.then_some(published.usage));
+        }
+    }
+}
+
 impl LlmProvider for MockProvider {
     fn name(&self) -> &str {
         self.name_override.as_deref().unwrap_or("mock")
@@ -637,12 +649,7 @@ impl LlmProvider for MockProvider {
             }
         };
 
-        if let Some(published) = &self.published_usage {
-            published
-                .sink
-                .tracker()
-                .record(result.is_ok().then_some(published.usage));
-        }
+        self.publish_usage(result.is_ok());
 
         self.in_flight.fetch_sub(1, AOrdering::SeqCst);
         result
@@ -801,6 +808,7 @@ impl LlmProvider for MockProvider {
             {
                 guard.push(messages.to_vec());
             }
+            self.publish_usage(true);
             return Ok(response);
         }
         // Fallback: delegate to chat() and wrap in Text.

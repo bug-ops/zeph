@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_llm::provider::{LlmProvider, MessagePart};
+use zeph_llm::router::QualityTarget;
 use zeph_skills::evolution::FailureKind;
 
 use super::sanitize::ToolOutputOrigin;
@@ -273,7 +274,7 @@ impl<C: Channel> Agent<C> {
             });
             if is_quality_failure {
                 self.provider
-                    .record_quality_outcome(self.provider.name(), false);
+                    .record_quality_outcome(QualityTarget::LastActive, false);
             }
             if pending_reflection.is_none()
                 && !self.services.learning_engine.was_reflection_used()
@@ -315,7 +316,7 @@ impl<C: Channel> Agent<C> {
                 outcome_detail: None,
             });
             self.provider
-                .record_quality_outcome(self.provider.name(), true);
+                .record_quality_outcome(QualityTarget::LastActive, true);
         }
     }
 

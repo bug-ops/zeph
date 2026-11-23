@@ -3343,7 +3343,7 @@ pub(crate) async fn mcp_tool_count_after_turn(
     .await
     .expect("agent turn must finish");
     run.expect("agent loop ends cleanly when input closes");
-    metrics_rx.borrow().mcp_tool_count
+    metrics_rx.borrow().mcp_tool_count()
 }
 
 #[cfg(test)]

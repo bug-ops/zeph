@@ -23,7 +23,7 @@ use zeph_tools::registry::ToolDef;
 
 use serial_test::serial;
 
-use crate::agent_loop::{AgentLoopArgs, ToolGates, make_message, run_agent_loop};
+use crate::agent_loop::{AgentLoopArgs, TaskLayout, ToolGates, make_message, run_agent_loop};
 use crate::def::{MemoryScope, ModelSpec, ToolPolicy};
 use crate::filter::FilteredToolExecutor;
 use crate::manager::CredentialScrub;
@@ -462,6 +462,7 @@ fn insert_handle_with_pending_secret_channel(
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
             inherited_trust: None,
             resumed_from: None,
+            provider: None,
         },
     );
     req_tx
@@ -1611,6 +1612,7 @@ fn write_completed_meta(dir: &std::path::Path, agent_id: &str, def_name: &str) {
         turns_used: 1,
         trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
         inherited_trust: None,
+        provider: None,
     };
     TranscriptWriter::write_meta(dir, agent_id, &meta).unwrap();
     // Create the empty JSONL so TranscriptReader::load succeeds.
@@ -1714,6 +1716,7 @@ fn resume_still_running_via_active_agents_returns_error() {
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
             inherited_trust: None,
             resumed_from: None,
+            provider: None,
         },
     );
     drop(status_tx);
@@ -3122,6 +3125,7 @@ fn make_agent_loop_args(
         task_id: "test-task".into(),
         agent_name: "test-bot".into(),
         initial_messages: vec![],
+        task_layout: TaskLayout::Fresh,
         transcript_writer: None,
         spawn_depth: 0,
         mcp_tool_ids: None,
@@ -3284,6 +3288,7 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         task_id: "test-task".into(),
         agent_name: "test-bot".into(),
         initial_messages: vec![],
+        task_layout: TaskLayout::Fresh,
         transcript_writer: None,
         spawn_depth: 0,
         mcp_tool_ids: None,
@@ -3450,6 +3455,7 @@ async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
         task_id: "test-task".into(),
         agent_name: "test-bot".into(),
         initial_messages: vec![],
+        task_layout: TaskLayout::Fresh,
         transcript_writer: Some(writer),
         spawn_depth: 0,
         mcp_tool_ids: None,

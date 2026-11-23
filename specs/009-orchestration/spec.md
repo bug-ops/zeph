@@ -1034,6 +1034,10 @@ For each call the loop emits a `ToolResult.is_error` (wire) and a `ToolCallSumma
 
 `ok` follows `!(Err || ToolStatus::aborts_dependants() || HookBlocked)`; the wire `is_error` follows `Err || is_failure() || HookBlocked`. This differs from the tier loop, whose wire `is_error` is `Err`-only, so for a non-zero exit the two loops disagree on `is_error` but agree on `ok` and on dependants (`[[006-tools/spec]]`, R9). Consequence: an inline task whose only mutating call exits non-zero (for example `cargo test` exit 101) still ends `Completed` and its downstream tasks are not skipped, the same as the spawn path.
 
+### Router Tool Identity (#7158)
+
+`RuleBasedRouter` keyword scoring names runtime tool ids (`write`, `edit`, `read`, `bash`, `grep`) and checks an agent with `zeph_subagent::filter::policy_allows`, so `except: [bash]` excludes an agent from shell tasks and `shell` in an allow list counts as `bash`.
+
 ### Key Invariants
 
 - NEVER create the inline `RepeatWindow` per call or share it with the session window

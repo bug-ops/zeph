@@ -61,6 +61,15 @@ pub use aware::RouterAware;
 pub use config::{AsiRouterConfig, BanditRouterConfig, CascadeRouterConfig, RouterStrategy};
 pub use state::RouterState;
 
+/// Which sub-provider a quality outcome (RAPS signal) is attributed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualityTarget<'a> {
+    /// The named sub-provider of the router.
+    Provider(&'a str),
+    /// The sub-provider that served the most recent call.
+    LastActive,
+}
+
 pub(crate) use embed_cache::BanditEmbedCache;
 
 use std::sync::Arc;

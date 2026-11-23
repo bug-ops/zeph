@@ -28,6 +28,24 @@ pub enum PermissionMode {
     Plan,
 }
 
+// ── SubagentInstructions ───────────────────────────────────────────────────
+
+/// Whether a sub-agent receives the parent's rendered instruction-file blocks in its system
+/// prompt.
+///
+/// Used both as the global `[agents] instructions` default and as the per-definition
+/// `permissions.instructions` override.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SubagentInstructions {
+    /// Append the parent's instruction blocks after the definition body.
+    #[default]
+    Inherit,
+    /// Give the sub-agent only its own definition body.
+    None,
+}
+
 // ── MemoryScope ────────────────────────────────────────────────────────────
 
 /// Persistence scope for sub-agent memory files.
@@ -155,9 +173,10 @@ fn default_hook_timeout() -> u64 {
 /// timeout_secs = 10
 /// fail_closed = false
 ///
-/// # Conditional hook — only fires when the triggering tool name contains "shell":
+/// # Conditional hook: the `if` condition holds when the tool name contains "bash" or
+/// # names the same tool (case-insensitive; `shell`/`sh` are aliases of `bash`):
 /// [[hooks.post_tool_use]]
-/// matcher = "Shell"
+/// matcher = "bash"
 /// [[hooks.post_tool_use.hooks]]
 /// type = "command"
 /// command = "echo shell ran"
@@ -178,8 +197,9 @@ pub struct HookDef {
     /// In the main agent a failing `fail_closed` `pre_tool_use` hook also blocks the tool call:
     /// the tool is not executed and the model receives a `[blocked]` result. Each block counts
     /// against `hooks.hook_block_cap` (default 8, `0` = unlimited, reset every turn); reaching
-    /// the cap ends the turn. A `post_tool_use` failure never blocks anything. In subagents hook
-    /// failures are only logged and the tool always runs.
+    /// the cap ends the turn. A `post_tool_use` failure never blocks anything. In sub-agents a failing
+    /// `fail_closed` `pre_tool_use` hook blocks the call too: the model receives the generic
+    /// `[blocked]` result.
     #[serde(default)]
     pub fail_closed: bool,
     /// Optional condition that must match for this hook to fire.

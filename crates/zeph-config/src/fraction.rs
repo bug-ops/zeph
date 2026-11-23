@@ -369,12 +369,11 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "from_str_parses_and_validates compares a deterministic value produced by the same arithmetic path"
-    )] // parsed literal must round-trip exactly
     fn from_str_parses_and_validates() {
-        assert_eq!("0.25".parse::<UnitOpen>().unwrap().get(), 0.25);
+        assert_eq!(
+            "0.25".parse::<UnitOpen>().unwrap().get().to_bits(),
+            0.25_f32.to_bits()
+        );
         assert_matches!(
             "1.0".parse::<UnitOpen>(),
             Err(ParseFractionError::OutOfRange(_))
@@ -387,12 +386,8 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "literal_in_const_context compares a deterministic value produced by the same arithmetic path"
-    )] // const literal must be stored exactly
     fn literal_in_const_context() {
         const V: UnitUpperClosed = UnitUpperClosed::literal(1.0);
-        assert_eq!(V.get(), 1.0);
+        assert_eq!(V.get().to_bits(), 1.0_f32.to_bits());
     }
 }

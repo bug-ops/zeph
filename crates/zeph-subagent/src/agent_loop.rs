@@ -202,6 +202,8 @@ pub(super) struct AgentLoopArgs {
     pub(super) task_id: String,
     pub(super) agent_name: String,
     pub(super) initial_messages: Vec<Message>,
+    /// How `initial_messages` and the task prompt are laid out (fresh spawn or resume).
+    pub(super) task_layout: TaskLayout,
     pub(super) transcript_writer: Option<TranscriptWriter>,
     pub(super) spawn_depth: u32,
     pub(super) mcp_tool_ids: Option<McpToolIdsHandle>,
@@ -1264,63 +1266,217 @@ async fn handle_tool_step(
     }
 }
 
-/// Drop the oldest non-system messages when `messages` exceeds `limit`.
+/// Indexes of the messages [`trim_message_history_pinned`] must never evict.
 ///
-/// The system message at index 0 (if `role == System`) is always preserved.
-/// When `limit == 0` the function is a no-op.
+/// Updated in place after every trim so the indexes keep pointing at the same messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryPins {
+    /// Whether message 0 is a system message.
+    pub system: bool,
+    /// Index of the original task prompt on a resumed run (`None` on a fresh spawn).
+    pub original_task: Option<usize>,
+    /// Index of the current task prompt (fresh task or resume prompt).
+    pub current_task: usize,
+}
+
+/// How the initial message list of a run is laid out around the task prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskLayout {
+    /// `[system, parent history.., task]`.
+    Fresh,
+    /// `[system, transcript (starts with the original task).., resume prompt]`.
+    Resumed,
+}
+
+impl TaskLayout {
+    fn pins(self, messages: &[Message]) -> HistoryPins {
+        let system = messages.first().is_some_and(|m| m.role == Role::System);
+        let original_task = match self {
+            Self::Fresh => None,
+            Self::Resumed => {
+                let first = usize::from(system);
+                let is_task = messages.get(first).is_some_and(|m| m.role == Role::User);
+                if !is_task {
+                    tracing::debug!("resumed transcript does not start with a task message");
+                }
+                is_task.then_some(first)
+            }
+        };
+        HistoryPins {
+            system,
+            original_task,
+            current_task: messages.len().saturating_sub(1),
+        }
+    }
+}
+
+/// Retained sub-range of an unpinned region after evicting about `want` messages from its front.
 ///
-/// A FIFO cutoff can land in the middle of a `ToolUse`/`ToolResult` pair, leaving an orphaned
-/// half in the retained window — a provider 400/422 on the next request (see
-/// `specs/002-agent-loop/spec.md`). [`zeph_llm::tool_pairing::repair_window`] repairs the
-/// orphaned half after the drain so the retained window is always well-formed. The drain
-/// boundary is also nudged forward to the next `Role::User` message when possible (at most one
-/// extra message beyond `excess`, in the normal Assistant/User-alternating shape) — this is what
-/// lets a canonical subagent tool loop (pure `Assistant(ToolUse)`/`User(ToolResult)` alternation
-/// with no other plain-text anchor) land on a valid `user`-first window without relying on
-/// `repair_window`'s leading-role cascade at all.
+/// The retained part starts on a role that cannot adjoin the preceding pinned message (a `User`
+/// task is followed by an `Assistant`, a system message by a `User`). A region between two
+/// pinned `User` messages additionally drops trailing `User` messages and keeps its newest
+/// `Assistant` message instead of draining completely, so the two pins never become adjacent.
+fn retained_range(
+    messages: &[Message],
+    region: std::ops::Range<usize>,
+    want: usize,
+    before: Option<Role>,
+    after: Option<Role>,
+) -> std::ops::Range<usize> {
+    let starts_ok = |role: Role| match before {
+        Some(Role::User) => role != Role::User,
+        Some(Role::System) | None => role == Role::User,
+        Some(_) => true,
+    };
+    let mut start = (region.start + want).min(region.end);
+    while start < region.end && !starts_ok(messages[start].role) {
+        start += 1;
+    }
+    let mut end = region.end;
+    let between_users = before == Some(Role::User) && after == Some(Role::User);
+    if between_users {
+        while end > start && messages[end - 1].role == Role::User {
+            end -= 1;
+        }
+    }
+    if start >= end
+        && between_users
+        && let Some(i) = region
+            .clone()
+            .rev()
+            .find(|&i| messages[i].role == Role::Assistant)
+    {
+        return i..i + 1;
+    }
+    start..end.max(start)
+}
+
+/// Mark which messages survive a trim to `limit`: oldest-first eviction from the unpinned
+/// regions between pins. Returns the keep mask and the index of the first evicted message, or
+/// `None` when nothing can be evicted.
+fn plan_cuts(messages: &[Message], limit: usize, pins: &HistoryPins) -> Option<(Vec<bool>, usize)> {
+    let len = messages.len();
+    let mut pinned: Vec<usize> = Vec::new();
+    if pins.system {
+        pinned.push(0);
+    }
+    pinned.extend(pins.original_task);
+    pinned.push(pins.current_task);
+    pinned.sort_unstable();
+    pinned.dedup();
+    pinned.retain(|&i| i < len);
+
+    let mut keep = vec![true; len];
+    let mut remaining = len - limit;
+    let mut first_cut: Option<usize> = None;
+    let mut region_start = 0;
+    for (n, bound) in pinned
+        .iter()
+        .copied()
+        .chain(std::iter::once(len))
+        .enumerate()
+    {
+        let region = region_start..bound;
+        if remaining > 0 && !region.is_empty() {
+            let before = region.start.checked_sub(1).map(|i| messages[i].role);
+            let after = pinned.get(n).map(|&i| messages[i].role);
+            let kept = retained_range(messages, region.clone(), remaining, before, after);
+            let removed = (kept.start - region.start) + (region.end - kept.end);
+            if removed > 0 {
+                first_cut.get_or_insert(region.start);
+                keep[region.start..kept.start].fill(false);
+                keep[kept.end..region.end].fill(false);
+                remaining = remaining.saturating_sub(removed);
+            }
+        }
+        region_start = bound + 1;
+    }
+    first_cut.map(|first| (keep, first))
+}
+
+/// Trim `messages` to `limit` without evicting the system message or the task prompts.
 ///
-/// `max_history_messages` is a plain user-authored per-subagent field with no lower bound —
-/// at a pathologically small `limit` (e.g. 1), the drain alone can leave zero non-system
-/// messages with nothing left to repair. A window with no conversational message is rejected by
-/// every provider just as surely as an orphaned pair is, so this function computes the
-/// trim+repair on a scratch copy first and skips applying it entirely when the result would be
-/// non-conversational — leaving `messages` over `limit` for this call rather than emitting a
-/// guaranteed-invalid request. The loop retries the trim every turn, so this self-heals once the
-/// message shape changes. This is a backstop, not the common path: for the shapes this crate
-/// actually produces, the boundary nudge plus `repair_window`'s downgrade-not-delete handling of
-/// orphaned `ToolResult`s means the trim almost always succeeds instead of being skipped (issue
-/// #6762 review discussion, R1).
+/// Messages are evicted oldest-first from the unpinned regions between pins, so a fresh spawn
+/// loses its parent history before any of the agent's own turns. Each cut region is nudged so no
+/// two pinned `User` messages become adjacent, then orphaned tool halves are repaired. The
+/// result may exceed `limit` by the pinned messages plus the nudges. `pins` is re-indexed in
+/// place. A no-op when `limit == 0` or the history already fits.
 ///
 /// A trim rewrites the prefix every later request is signed over, so thinking is stripped from
-/// the retained window via [`strip_thinking_after_edit`] when `binding` is prefix-bound.
-fn trim_message_history(messages: &mut Vec<Message>, limit: usize, binding: ThinkingBinding) {
+/// the retained window via [`strip_thinking_after_edit`] when `binding` is prefix-bound. A trim
+/// that would leave no conversational message, or whose repair would drop a message (which would
+/// invalidate `pins`), is skipped for this call and retried next turn.
+pub fn trim_message_history_pinned(
+    messages: &mut Vec<Message>,
+    limit: usize,
+    pins: &mut HistoryPins,
+    binding: ThinkingBinding,
+) {
     if limit == 0 || messages.len() <= limit {
         return;
     }
-    let has_system = messages.first().is_some_and(|m| m.role == Role::System);
-    let excess = messages.len() - limit;
-    // Remove from the front, but skip index 0 when a system message is present.
-    let start = usize::from(has_system);
-    let mut drain_end = (start + excess).min(messages.len());
-    // Prefer a boundary that starts the retained window on a `User` message so it never needs
-    // `repair_window`'s leading-role cascade in the first place — in the canonical alternating
-    // shape this costs at most one extra dropped message.
-    while drain_end < messages.len() && messages[drain_end].role != Role::User {
-        drain_end += 1;
-    }
+    let len = messages.len();
+    let Some((keep, first_cut)) = plan_cuts(messages, limit, pins) else {
+        return;
+    };
 
-    let mut candidate = messages.clone();
-    candidate.drain(start..drain_end);
+    let reindex = |i: usize| keep[..i].iter().filter(|k| **k).count();
+    let mut candidate: Vec<Message> = messages
+        .iter()
+        .zip(&keep)
+        .filter(|(_, k)| **k)
+        .map(|(m, _)| m.clone())
+        .collect();
+    let before_repair = candidate.len();
+    let snapshot_pin = |i: usize| {
+        (i < len).then(|| {
+            let at = reindex(i);
+            (at, candidate[at].clone())
+        })
+    };
+    let original_pin = pins.original_task.and_then(snapshot_pin);
+    let current_pin = snapshot_pin(pins.current_task);
     let report = zeph_llm::tool_pairing::repair_window(
         &mut candidate,
         zeph_llm::tool_pairing::OrphanAction::DowngradeToText,
     );
+    let removed_by_repair = before_repair - candidate.len();
 
     if candidate.iter().all(|m| m.role == Role::System) {
         tracing::warn!(
             limit,
-            len = messages.len(),
+            len,
             "skipping subagent history trim: result would leave no conversational message"
+        );
+        return;
+    }
+    // Repair may delete emptied non-pinned messages ahead of a pin; pinned messages are plain
+    // text and survive unchanged, so find each one in the window it can have shifted into.
+    let relocate = |(old, msg): &(usize, Message)| {
+        (old.saturating_sub(removed_by_repair)..=*old).find(|&j| {
+            candidate
+                .get(j)
+                .is_some_and(|c| c.role == msg.role && c.content == msg.content)
+        })
+    };
+    let locate = |pin: Option<(usize, Message)>, fallback: usize| match pin {
+        Some(p) => relocate(&p),
+        None => Some(fallback),
+    };
+    let new_original = pins.original_task.map(|o| locate(original_pin, o));
+    let Some(new_current) = locate(current_pin, pins.current_task) else {
+        tracing::warn!(
+            limit,
+            len,
+            "skipping subagent history trim: pinned message not found after repair"
+        );
+        return;
+    };
+    if new_original == Some(None) {
+        tracing::warn!(
+            limit,
+            len,
+            "skipping subagent history trim: pinned message not found after repair"
         );
         return;
     }
@@ -1332,12 +1488,14 @@ fn trim_message_history(messages: &mut Vec<Message>, limit: usize, binding: Thin
         );
     }
     tracing::debug!(
-        dropped = messages.len() - candidate.len(),
+        dropped = len - candidate.len(),
         remaining = candidate.len(),
         "trimming subagent message history"
     );
+    pins.original_task = new_original.flatten();
+    pins.current_task = new_current;
     *messages = candidate;
-    strip_thinking_after_edit(messages, start, binding);
+    strip_thinking_after_edit(messages, reindex(first_cut), binding);
 }
 
 #[tracing::instrument(name = "subagent.agent_loop.run", skip_all, fields(task_id = %args.task_id, agent_name = %args.agent_name))]
@@ -1366,6 +1524,7 @@ pub(super) async fn run_agent_loop(
         task_id: loop_task_id,
         agent_name,
         initial_messages,
+        task_layout,
         transcript_writer,
         spawn_depth: _spawn_depth,
         mcp_tool_ids,
@@ -1399,6 +1558,7 @@ pub(super) async fn run_agent_loop(
     )
     .await;
 
+    let mut history_pins = task_layout.pins(&messages);
     let mut turns: u32 = 0;
     let mut last_result = String::new();
     let mut any_tool_called = false;
@@ -1488,9 +1648,10 @@ pub(super) async fn run_agent_loop(
 
         record_progress(progress_at.as_ref());
 
-        trim_message_history(
+        trim_message_history_pinned(
             &mut messages,
             max_history_messages,
+            &mut history_pins,
             provider.thinking_binding(),
         );
     }
@@ -1531,6 +1692,13 @@ pub(super) async fn run_agent_loop(
 #[cfg(test)]
 mod trim_message_history_tests {
     use super::*;
+
+    /// Trim with no task prompt pinned (the system message is still protected).
+    fn trim_message_history(messages: &mut Vec<Message>, limit: usize, binding: ThinkingBinding) {
+        let mut pins = TaskLayout::Fresh.pins(messages);
+        pins.current_task = usize::MAX;
+        trim_message_history_pinned(messages, limit, &mut pins, binding);
+    }
 
     fn sys(text: &str) -> Message {
         make_message(Role::System, text.to_owned())

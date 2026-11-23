@@ -316,26 +316,237 @@ pub fn scrub_content(text: &str) -> Cow<'_, str> {
 const SPLITTER: char = '\u{1}';
 const SPLITTER_STR: &str = "\u{1}";
 
-static ANSI_CSI_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").expect("ansi csi regex is valid"));
+/// Stand-in for a whitespace control while scrubbing: matches `\s` so it bounds tokens, yet is
+/// absent from every token class, and can be deleted to glue the words around a line break.
+const LINE_BREAK: char = '\u{2028}';
+
+/// Longest word fragment on each side of a line break considered when probing for a split shape.
+const GLUE_PROBE_CHARS: usize = 512;
+
+/// Most line breaks probed per text; later ones render as plain spaces so cost stays bounded.
+const MAX_GLUE_PROBES: usize = 256;
+
+/// Most escape sequences probed per text, separate from the line-break budget; later ones keep
+/// the characters after their introducer instead of eating them.
+const MAX_ESCAPE_PROBES: usize = 256;
+
+/// Following line segments joined to the current word when probing a wrapped secret.
+const MAX_GLUE_SEGMENTS: usize = 4;
+
+/// Shortest combined word length worth probing: no secret shape is shorter.
+const MIN_GLUE_CHARS: usize = 16;
+
+/// ECMA-48 escape sequences: OSC/DCS/SOS/PM/APC strings (to BEL, ST or end of text), CSI
+/// (`ESC [` or `U+009B`) with parameter and intermediate bytes, nF sequences such as `ESC ( B`,
+/// and two-byte Fe/Fp sequences (Fs, the lowercase range, is left to the control stripper so it
+/// never swallows a key character). A CSI without parameters consumes only the common finals
+/// `H J K m s u` (`ESC[K`, `ESC[m`), so it never swallows the first character of a key behind it.
+static ESCAPE_SEQUENCE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?s)\x1b[\]PX^_].*?(?:\x07|\x1b\\|\z)|(?:\x1b\[|\x{9b})(?:[0-?]*[ -/]+[@-~]|[0-?]+[@-~]|[HJKmsu])?|\x1b[ -/]+[0-~]|\x1b[0-?@-_]",
+    )
+    .expect("escape sequence regex is valid")
+});
 
 static REDACTED_TAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(\[REDACTED[A-Z_]*\])\x01\S*").expect("redacted tail regex is valid")
 });
 
 fn is_strippable(c: char) -> bool {
-    c.is_control() || crate::patterns::is_bypass_codepoint(c)
+    c.is_control()
+        || crate::patterns::is_bypass_codepoint(c)
+        || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+/// Scrub, drop the tail a shape left behind a separator, delete separators, scrub again.
+fn scrub_marked(marked: &str) -> String {
+    let scrubbed = scrub_secret_shapes(marked);
+    let absorbed = REDACTED_TAIL_REGEX.replace_all(&scrubbed, "${1}");
+    let joined: String = absorbed.chars().filter(|&c| c != SPLITTER).collect();
+    scrub_secret_shapes(&joined).into_owned()
+}
+
+fn redaction_count(text: &str) -> usize {
+    text.matches("[REDACTED").count()
+}
+
+/// Whether a word could be part of a secret token: only token characters, ignoring separators
+/// left by escape sequences.
+fn is_token_like(word: &str) -> bool {
+    let mut token_chars = word.chars().filter(|&c| c != SPLITTER).peekable();
+    token_chars.peek().is_some()
+        && token_chars.all(|c| c.is_ascii_alphanumeric() || "_-+/=.:~".contains(c))
+}
+
+/// Last whitespace-delimited word of `text`.
+fn last_word(text: &str) -> &str {
+    text.rsplit(char::is_whitespace).next().unwrap_or("")
+}
+
+/// First whitespace-delimited word of `text`.
+fn first_word(text: &str) -> &str {
+    text.split(char::is_whitespace).next().unwrap_or("")
+}
+
+fn tail_chars(text: &str, n: usize) -> String {
+    let tail: Vec<char> = text.chars().rev().take(n).collect();
+    tail.into_iter().rev().collect()
+}
+
+fn head_chars(text: &str, n: usize) -> String {
+    text.chars().take(n).collect()
+}
+
+/// Returns `true` when `before` and the `after` pieces form a shape only once glued together.
+///
+/// Glue is allowed only if it keeps every redaction the words get on their own and removes more
+/// text, so gluing can never un-redact a shape that ends exactly at the break.
+fn break_splits_shape(before: &str, after: &[&str]) -> bool {
+    let before = tail_chars(before, GLUE_PROBE_CHARS);
+    let pieces: Vec<String> = after
+        .iter()
+        .map(|p| head_chars(p, GLUE_PROBE_CHARS))
+        .collect();
+    let alone: Vec<String> = std::iter::once(&before)
+        .chain(&pieces)
+        .map(|w| scrub_marked(w))
+        .collect();
+    let glued = scrub_marked(&format!("{before}{}", pieces.concat()));
+    redaction_count(&glued) >= alone.iter().map(|r| redaction_count(r)).sum::<usize>()
+        && glued.len() < alone.iter().map(String::len).sum::<usize>()
+}
+
+/// Delete the line-break runs that sit inside a shape split across up to
+/// `MAX_GLUE_SEGMENTS + 1` lines, keep the others.
+fn glue_split_shapes(marked: &str) -> String {
+    let segments: Vec<&str> = marked.split(LINE_BREAK).collect();
+    let mut out = String::with_capacity(marked.len());
+    let mut probes = 0;
+    let mut i = 0;
+    out.push_str(segments.first().copied().unwrap_or(""));
+    while i + 1 < segments.len() {
+        // Consecutive breaks yield empty segments: one run of breaks, then the next word.
+        let start = (i + 1..segments.len())
+            .find(|&k| !segments[k].is_empty())
+            .unwrap_or(segments.len());
+        let Some(&next) = segments.get(start) else {
+            out.extend(std::iter::repeat_n(LINE_BREAK, start - i));
+            break;
+        };
+        let before = last_word(&out);
+        let glued_to = if is_token_like(before) && probes < MAX_GLUE_PROBES {
+            find_glue_end(&segments, start, before, &mut probes)
+        } else {
+            None
+        };
+        if let Some(end) = glued_to {
+            for seg in &segments[start..=end] {
+                out.push_str(seg);
+            }
+            i = end;
+        } else {
+            out.extend(std::iter::repeat_n(LINE_BREAK, start - i));
+            out.push_str(next);
+            i = start;
+        }
+    }
+    out
+}
+
+/// Index of the last segment to glue onto `before` so that the joined word forms a shape.
+fn find_glue_end(
+    segments: &[&str],
+    start: usize,
+    before: &str,
+    probes: &mut usize,
+) -> Option<usize> {
+    let mut pieces: Vec<&str> = Vec::new();
+    let window = segments
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(MAX_GLUE_SEGMENTS);
+    for (j, segment) in window {
+        let word = first_word(segment);
+        if !is_token_like(word) {
+            return None;
+        }
+        pieces.push(word);
+        *probes += 1;
+        let total = before.len() + pieces.iter().map(|p| p.len()).sum::<usize>();
+        if total >= MIN_GLUE_CHARS && break_splits_shape(before, &pieces) {
+            return Some(j);
+        }
+        if word.len() != segment.len() {
+            return None;
+        }
+    }
+    None
+}
+
+/// Replacement for one escape-sequence match.
+///
+/// String sequences (OSC/DCS/...) and sequences that cannot hide a key become a separator. For
+/// the others the characters after the introducer (intermediates, final byte) are kept when
+/// keeping them makes the word behind the sequence redact more than eating them does, so a
+/// sequence directly before a secret can never swallow its first character.
+fn escape_replacement(text: &str, matched: &regex::Match<'_>, probes: &mut usize) -> String {
+    let m = matched.as_str();
+    let mut chars = m.chars();
+    let introducer = chars.next();
+    let kept = chars.as_str();
+    let is_string =
+        introducer == Some('\u{1b}') && matches!(chars.next(), Some(']' | 'P' | 'X' | '^' | '_'));
+    let word = head_chars(text.get(matched.end()..).unwrap_or(""), GLUE_PROBE_CHARS);
+    let is_sgr = kept.len() > 2
+        && kept.starts_with('[')
+        && kept.ends_with('m')
+        && kept
+            .bytes()
+            .skip(1)
+            .take(kept.len() - 2)
+            .all(|b| b.is_ascii_digit() || b == b';');
+    let nothing_to_swallow = word
+        .chars()
+        .next()
+        .is_none_or(|c| c.is_whitespace() || c.is_control());
+    if is_string
+        || is_sgr
+        || kept.is_empty()
+        || nothing_to_swallow
+        || kept.len() + word.len() < MIN_GLUE_CHARS
+    {
+        return SPLITTER_STR.to_owned();
+    }
+    if *probes >= MAX_ESCAPE_PROBES {
+        // Fail safe once the budget is spent: never eat a character that may start a key.
+        return format!("{SPLITTER}{kept}");
+    }
+    *probes += 1;
+    let eaten = redaction_count(&scrub_marked(&word));
+    let keep = redaction_count(&scrub_marked(&format!("{kept}{word}")));
+    if keep > eaten {
+        format!("{SPLITTER}{kept}")
+    } else {
+        SPLITTER_STR.to_owned()
+    }
 }
 
 /// Make server-controlled text safe to store in an error or log line.
 ///
 /// Scrubs secret shapes, strips control and bypass codepoints, and caps the result at `max_chars`
-/// characters. Whitespace controls (`\t`, `\n`, ...) become a space so they keep acting as token
-/// boundaries. ANSI CSI sequences and every other control or bypass codepoint become a separator
-/// that is invisible to the boundary-anchored shapes yet lets prefix-tier shapes consume a token
-/// split by it. After the first scrub, the tail that a shape left behind a separator is dropped,
-/// the separators are deleted and the text is scrubbed again for fixed-length shapes that the
-/// separator had broken. The cap runs last so a secret is never cut before it is scrubbed.
+/// characters. ECMA-48 escape sequences (CSI, nF, Fe/Fp, and OSC/DCS/SOS/PM/APC strings with
+/// their payload) and every other control or bypass codepoint become a separator that is
+/// invisible to the boundary-anchored shapes yet lets prefix-tier shapes consume a token split by
+/// it. Whitespace controls and U+2028/U+2029 bound tokens as line breaks and render as a space.
+/// After the first scrub, the tail that a shape left behind a separator is dropped, the
+/// separators are deleted and the text is scrubbed again for fixed-length shapes that the
+/// separator had broken.
+///
+/// A line break is deleted instead of rendered as a space only where the words on both sides
+/// form a secret shape once glued and the glue keeps every redaction the words get alone, so a
+/// secret split across lines does not survive and a shape ending at the break stays redacted.
+/// The cap runs last so a secret is never cut before it is scrubbed.
 ///
 /// # Examples
 ///
@@ -346,25 +557,30 @@ fn is_strippable(c: char) -> bool {
 /// assert!(!out.contains("sk-test-abc123def456"));
 /// assert!(!out.contains('\u{1b}'));
 /// assert_eq!(sanitize_upstream_text("é".repeat(10).as_str(), 3).chars().count(), 3);
+/// assert_eq!(sanitize_upstream_text("a\nb", 10), "a b");
 /// ```
 #[must_use]
 pub fn sanitize_upstream_text(text: &str, max_chars: usize) -> String {
     if !text.chars().any(is_strippable) {
         return scrub_secret_shapes(text).chars().take(max_chars).collect();
     }
-    let spaced = ANSI_CSI_REGEX.replace_all(text, SPLITTER_STR);
+    let mut escape_probes = 0;
+    let spaced = ESCAPE_SEQUENCE_REGEX.replace_all(text, |caps: &regex::Captures<'_>| {
+        caps.get(0).map_or_else(String::new, |m| {
+            escape_replacement(text, &m, &mut escape_probes)
+        })
+    });
     let marked: String = spaced
         .chars()
         .map(|c| match c {
-            '\t' | '\n' | '\x0b' | '\x0c' | '\r' => ' ',
+            '\t' | '\n' | '\x0b' | '\x0c' | '\r' | '\u{2028}' | '\u{2029}' => LINE_BREAK,
             c if is_strippable(c) => SPLITTER,
             c => c,
         })
         .collect();
-    let scrubbed = scrub_secret_shapes(&marked);
-    let absorbed = REDACTED_TAIL_REGEX.replace_all(&scrubbed, "${1}");
-    let joined: String = absorbed.chars().filter(|&c| c != SPLITTER).collect();
-    scrub_secret_shapes(&joined)
+    let glued = glue_split_shapes(&marked);
+    scrub_marked(&glued)
+        .replace(LINE_BREAK, " ")
         .chars()
         .take(max_chars)
         .collect()

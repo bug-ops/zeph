@@ -739,6 +739,7 @@ async fn test_secret_drain_after_instant_completion() {
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
             inherited_trust: None,
             resumed_from: None,
+            provider: None,
         },
     );
     agent.services.orchestration.subagent_manager = Some(mgr);

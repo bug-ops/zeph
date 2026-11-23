@@ -806,6 +806,7 @@ mod tests {
             (ClaimSource::A2a, "\"a2a\""),
             (ClaimSource::PeerMessage, "\"peer_message\""),
             (ClaimSource::UserAnswer, "\"user_answer\""),
+            (ClaimSource::SkillResource, "\"skill_resource\""),
             (ClaimSource::CodeSearch, "\"code_search\""),
             (ClaimSource::Diagnostics, "\"diagnostics\""),
             (ClaimSource::Memory, "\"memory\""),

@@ -9,9 +9,9 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeph_common::trust_level::TranscriptTrustSchema;
-use zeph_config::{BgIsolation, ContentIsolationConfig, SubAgentConfig};
+use zeph_config::{BgIsolation, ContentIsolationConfig, SubAgentConfig, SubagentInstructions};
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, Role};
 use zeph_tools::FileExecutor;
 use zeph_tools::ToolCall;
 use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
@@ -20,11 +20,13 @@ use super::SubAgentHandle;
 use super::SubAgentManager;
 use super::SubAgentStatus;
 use super::worktree::WorktreeCleanupGuard;
-use crate::agent_loop::{AgentLoopArgs, ToolGates, run_agent_loop};
+use crate::agent_loop::{AgentLoopArgs, TaskLayout, ToolGates, run_agent_loop};
 use crate::cwd_guard::CwdRestoreGuard;
 use crate::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use crate::error::SubAgentError;
-use crate::filter::{self, FilteredToolExecutor, NetworkDenyToolExecutor, PlanModeExecutor};
+use crate::filter::{
+    self, FilteredToolExecutor, NetworkDenyToolExecutor, PlanModeExecutor, SkillScope,
+};
 use crate::fleet::{FleetSessionInfo, FleetSessionStatus};
 use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
 use crate::hooks::HookAgentCtx;
@@ -32,8 +34,9 @@ use crate::hooks::fire_hooks;
 use crate::memory::{ensure_memory_dir, escape_memory_content, load_memory_content};
 use crate::state::SubAgentState;
 use crate::transcript::max_message_trust;
+use zeph_tools::tool_id::ToolMatchKey;
 
-use super::{CredentialScrub, SpawnContext};
+use super::{CredentialScrub, InheritedInstructions, SpawnContext};
 use crate::durable::{DurableResolverSeat, resolve_durable_promise};
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -350,6 +353,7 @@ pub(crate) async fn build_system_prompt_with_memory(
     ctx: &SpawnContext,
 ) -> String {
     let orchestrator_header = build_orchestrator_header(ctx);
+    let body = prompt_body(def, ctx);
 
     let cwd = std::env::current_dir().map_or_default(|p| p.display().to_string());
     let cwd_line = if cwd.is_empty() {
@@ -359,7 +363,7 @@ pub(crate) async fn build_system_prompt_with_memory(
     };
 
     let Some(scope) = scope else {
-        return format!("{}{}{cwd_line}", orchestrator_header, def.system_prompt);
+        return format!("{orchestrator_header}{body}{cwd_line}");
     };
 
     let file_tools = ["read", "write", "edit"];
@@ -376,7 +380,7 @@ pub(crate) async fn build_system_prompt_with_memory(
             "memory is configured but Read/Write/Edit are all blocked — \
              disabling memory for this run"
         );
-        return format!("{}{}", orchestrator_header, def.system_prompt);
+        return format!("{orchestrator_header}{body}");
     }
 
     let memory_dir = match ensure_memory_dir(scope, &def.name).await {
@@ -387,7 +391,7 @@ pub(crate) async fn build_system_prompt_with_memory(
                 error = %e,
                 "failed to initialize memory directory — spawning without memory"
             );
-            return format!("{}{}", orchestrator_header, def.system_prompt);
+            return format!("{orchestrator_header}{body}");
         }
     };
 
@@ -433,13 +437,62 @@ pub(crate) async fn build_system_prompt_with_memory(
     });
 
     let mut prompt = orchestrator_header;
-    prompt.push_str(&def.system_prompt);
+    prompt.push_str(&body);
     prompt.push_str(&cwd_line);
     prompt.push_str(&memory_instruction);
     if let Some(block) = memory_block {
         prompt.push_str(&block);
     }
     prompt
+}
+
+/// The parent's instruction block when this definition receives it.
+fn inherited_block<'a>(
+    def: &SubAgentDef,
+    ctx: &'a SpawnContext,
+) -> Option<&'a InheritedInstructions> {
+    (def.permissions.instructions != Some(SubagentInstructions::None))
+        .then_some(ctx.inherited_instructions.as_ref())
+        .flatten()
+}
+
+/// Definition body followed by the parent's instruction blocks, unless the definition opts out.
+fn prompt_body(def: &SubAgentDef, ctx: &SpawnContext) -> String {
+    match inherited_block(def, ctx) {
+        Some(block) => format!("{}\n\n{}", def.system_prompt, block.as_str()),
+        None => def.system_prompt.clone(),
+    }
+}
+
+/// Record the size of the inherited block on the current span and in the debug log, so the
+/// per-turn token cost of instruction inheritance is visible.
+fn record_instructions_size(def: &SubAgentDef, ctx: &SpawnContext) {
+    let bytes = inherited_block(def, ctx).map_or(0, |b| b.as_str().len());
+    tracing::Span::current().record("instructions_bytes", bytes);
+    tracing::debug!(
+        agent = %def.name,
+        instructions_bytes = bytes,
+        approx_tokens = bytes / 4,
+        "sub-agent instruction inheritance"
+    );
+}
+
+/// The skill scope of the implicit `load_skill` grant, limited by the inherited tool allowlist.
+///
+/// The grant must never exceed the constraints propagated from the parent (channel allowed
+/// tools, parent policy denials, task allowlist): when the inherited allowlist exists and does
+/// not name `load_skill`, no grant is given.
+fn effective_skill_scope(ctx: &SpawnContext) -> SkillScope {
+    let key = ToolMatchKey::new("load_skill");
+    let permitted = ctx
+        .inherited_tool_allowlist
+        .as_ref()
+        .is_none_or(|set| set.iter().any(|t| ToolMatchKey::new(t) == key));
+    if permitted {
+        ctx.skill_scope.clone()
+    } else {
+        SkillScope::default()
+    }
 }
 
 fn build_orchestrator_header(ctx: &SpawnContext) -> String {
@@ -635,7 +688,7 @@ impl SubAgentManager {
         reason = "spawn This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type; keeps ordered steps together because they share state and control flow"
     )]
     // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
-    #[tracing::instrument(name = "subagent.manager.spawn", skip_all, fields(def_name = def_name))]
+    #[tracing::instrument(name = "subagent.manager.spawn", skip_all, fields(def_name = def_name, provider = %provider.name(), instructions_bytes = tracing::field::Empty))]
     pub async fn spawn(
         &mut self,
         def_name: &str,
@@ -755,6 +808,7 @@ impl SubAgentManager {
         // (auto-enables Read/Write/Edit for AllowList memory). FilteredToolExecutor MUST
         // be constructed AFTER this call to pick up the updated tool list.
         let system_prompt = build_system_prompt_with_memory(&mut def, effective_memory, &ctx).await;
+        record_instructions_size(&def, &ctx);
 
         let memory_dir = effective_memory
             .and_then(|scope| super::super::memory::resolve_memory_dir(scope, &def.name).ok());
@@ -771,6 +825,8 @@ impl SubAgentManager {
         let agent_name_clone = def.name.clone();
         let spawn_depth = ctx.spawn_depth;
         let mcp_tool_ids = ctx.mcp_tool_ids.clone();
+        let skill_scope = effective_skill_scope(&ctx);
+        let provider_name = provider.name().to_owned();
         let parent_messages = ctx.parent_messages;
         // Fold the tags of the messages actually handed over, so a context built without the
         // parent's own floor (an embedder) still records what it inherited.
@@ -853,7 +909,8 @@ impl SubAgentManager {
             memory_dir,
             network_denied,
             peer_install,
-        );
+        )
+        .with_skill_scope(skill_scope);
 
         if let Some(cap) = ctx.max_trust_level {
             // #6701 (RC-5): fold, never set — a plain set_effective_trust(cap) here would
@@ -883,6 +940,7 @@ impl SubAgentManager {
             None,
             TranscriptTrustSchema::PerResult,
             inherited_trust,
+            provider.name(),
         );
 
         // Captured before `ctx.content_isolation` is moved into `agent_loop_args` below
@@ -921,6 +979,7 @@ impl SubAgentManager {
             task_id: task_id_for_loop,
             agent_name: agent_name_clone,
             initial_messages: parent_messages,
+            task_layout: TaskLayout::Fresh,
             transcript_writer,
             spawn_depth: spawn_depth + 1,
             mcp_tool_ids,
@@ -1033,6 +1092,7 @@ impl SubAgentManager {
             trust_schema: TranscriptTrustSchema::PerResult,
             inherited_trust,
             resumed_from: None,
+            provider: Some(provider_name),
         };
 
         self.agents.insert(task_id.clone(), handle);
@@ -1215,7 +1275,7 @@ impl SubAgentManager {
         clippy::too_many_arguments,
         reason = "resume keeps ordered steps together because they share state and control flow; This boundary accepts distinct operation inputs together; callers do not repeat a grouping that would justify a shared context type"
     )]
-    #[tracing::instrument(name = "subagent.manager.resume", skip_all, fields(id_prefix = id_prefix))]
+    #[tracing::instrument(name = "subagent.manager.resume", skip_all, fields(id_prefix = id_prefix, provider = %provider.name(), instructions_bytes = tracing::field::Empty))]
     pub async fn resume(
         &mut self,
         id_prefix: &str,
@@ -1335,6 +1395,7 @@ impl SubAgentManager {
             });
         }
 
+        let provider_name = provider.name().to_owned();
         let new_task_id = Uuid::new_v4().to_string();
         let cancel = CancellationToken::new();
         let started_at = Instant::now();
@@ -1350,7 +1411,11 @@ impl SubAgentManager {
         let background = def.permissions.background;
         let max_turns = def.permissions.max_turns;
         let max_history_messages = def.permissions.max_history_messages;
-        let system_prompt = def.system_prompt.clone();
+        let system_prompt =
+            spawn_context.map_or_else(|| def.system_prompt.clone(), |ctx| prompt_body(&def, ctx));
+        if let Some(ctx) = spawn_context {
+            record_instructions_size(&def, ctx);
+        }
         let task_prompt_owned = task_prompt.to_owned();
         let cancel_clone = cancel.clone();
         let agent_hooks = def.hooks.clone();
@@ -1394,7 +1459,8 @@ impl SubAgentManager {
             None,
             network_denied,
             peer_install,
-        );
+        )
+        .with_skill_scope(spawn_context.map_or_default(effective_skill_scope));
 
         if let Some(ctx) = spawn_context
             && let Some(cap) = ctx.max_trust_level
@@ -1434,6 +1500,7 @@ impl SubAgentManager {
             Some(&original_id),
             trust_schema,
             inherited_trust,
+            provider.name(),
         );
 
         let resumed_mcp_tool_ids = spawn_context.and_then(|ctx| ctx.mcp_tool_ids.clone());
@@ -1487,6 +1554,7 @@ impl SubAgentManager {
                 task_id: new_task_id_for_loop,
                 agent_name: agent_name_clone,
                 initial_messages,
+                task_layout: TaskLayout::Resumed,
                 transcript_writer,
                 spawn_depth: 0,
                 mcp_tool_ids: resumed_mcp_tool_ids,
@@ -1527,6 +1595,7 @@ impl SubAgentManager {
             trust_schema,
             inherited_trust,
             resumed_from: Some(original_id.clone()),
+            provider: Some(provider_name),
         };
 
         self.agents.insert(new_task_id.clone(), handle);
@@ -1796,5 +1865,57 @@ mod build_filtered_executor_tests {
             res.is_ok(),
             "network_denied=true must not block non-network commands"
         );
+    }
+}
+
+#[cfg(test)]
+mod skill_scope_limit_tests {
+    //! The implicit scoped `load_skill` grant must never exceed the inherited tool allowlist.
+
+    use super::*;
+
+    fn ctx_with(scope: &[&str], inherited: Option<&[&str]>) -> SpawnContext {
+        SpawnContext {
+            skill_scope: scope.iter().map(|s| (*s).to_owned()).collect(),
+            inherited_tool_allowlist: inherited
+                .map(|l| l.iter().map(|s| (*s).to_owned()).collect()),
+            ..SpawnContext::default()
+        }
+    }
+
+    #[test]
+    fn no_inherited_allowlist_keeps_the_scope() {
+        let scope = effective_skill_scope(&ctx_with(&["github"], None));
+        assert!(scope.contains("github"));
+    }
+
+    #[test]
+    fn inherited_allowlist_without_load_skill_drops_the_grant() {
+        let scope = effective_skill_scope(&ctx_with(&["github"], Some(&["read", "bash"])));
+        assert!(scope.is_empty());
+    }
+
+    #[test]
+    fn inherited_allowlist_with_load_skill_keeps_the_scope() {
+        let scope = effective_skill_scope(&ctx_with(&["github"], Some(&["Load_Skill"])));
+        assert!(scope.contains("github"));
+    }
+
+    #[test]
+    fn empty_inherited_allowlist_drops_the_grant() {
+        let scope = effective_skill_scope(&ctx_with(&["github"], Some(&[])));
+        assert!(scope.is_empty());
+    }
+
+    #[test]
+    fn inherited_block_respects_definition_opt_out() {
+        let mut def = SubAgentDef::for_test("a");
+        let ctx = SpawnContext {
+            inherited_instructions: InheritedInstructions::new("rules".to_owned()),
+            ..SpawnContext::default()
+        };
+        assert!(inherited_block(&def, &ctx).is_some());
+        def.permissions.instructions = Some(SubagentInstructions::None);
+        assert!(inherited_block(&def, &ctx).is_none());
     }
 }

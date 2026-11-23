@@ -325,33 +325,11 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHashe
             name = xml_escape(skill.name()),
         );
 
-        let resources = &skill.resources;
-
-        let ref_names: Vec<&str> = resources
-            .references
-            .iter()
-            .filter_map(|p| p.file_name()?.to_str())
-            .collect();
-        if !ref_names.is_empty() {
-            let _ = write!(out, "\nAvailable references: {}", ref_names.join(", "));
-        }
-
-        let script_names: Vec<&str> = resources
-            .scripts
-            .iter()
-            .filter_map(|p| p.file_name()?.to_str())
-            .collect();
-        if !script_names.is_empty() {
-            let _ = write!(out, "\nAvailable scripts: {}", script_names.join(", "));
-        }
-
-        let asset_names: Vec<&str> = resources
-            .assets
-            .iter()
-            .filter_map(|p| p.file_name()?.to_str())
-            .collect();
-        if !asset_names.is_empty() {
-            let _ = write!(out, "\nAvailable assets: {}", asset_names.join(", "));
+        if let Some(listing) =
+            crate::resource::format_resource_paths(&skill.resources, &skill.meta.skill_dir)
+        {
+            out.push('\n');
+            out.push_str(&listing);
         }
 
         out.push_str("\n    </instructions>\n  </skill>\n");
@@ -486,30 +464,11 @@ fn format_active_skill_tag<S: std::hash::BuildHasher, S2: std::hash::BuildHasher
         name = xml_escape(skill.name()),
     );
 
-    let resources = &skill.resources;
-    let ref_names: Vec<&str> = resources
-        .references
-        .iter()
-        .filter_map(|p| p.file_name()?.to_str())
-        .collect();
-    if !ref_names.is_empty() {
-        let _ = write!(out, "\nAvailable references: {}", ref_names.join(", "));
-    }
-    let script_names: Vec<&str> = resources
-        .scripts
-        .iter()
-        .filter_map(|p| p.file_name()?.to_str())
-        .collect();
-    if !script_names.is_empty() {
-        let _ = write!(out, "\nAvailable scripts: {}", script_names.join(", "));
-    }
-    let asset_names: Vec<&str> = resources
-        .assets
-        .iter()
-        .filter_map(|p| p.file_name()?.to_str())
-        .collect();
-    if !asset_names.is_empty() {
-        let _ = write!(out, "\nAvailable assets: {}", asset_names.join(", "));
+    if let Some(listing) =
+        crate::resource::format_resource_paths(&skill.resources, &skill.meta.skill_dir)
+    {
+        out.push('\n');
+        out.push_str(&listing);
     }
     out.push_str("\n    </instructions>\n  </active_skill>\n");
 }
@@ -692,7 +651,7 @@ mod tests {
         )];
 
         let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
-        assert!(output.contains("Available scripts: extract.py"));
+        assert!(output.contains("Available scripts: scripts/extract.py"));
         assert!(!output.contains("print('hi')"));
     }
 
@@ -711,7 +670,7 @@ mod tests {
         )];
 
         let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
-        assert!(output.contains("Available assets: logo.png"));
+        assert!(output.contains("Available assets: assets/logo.png"));
     }
 
     #[test]

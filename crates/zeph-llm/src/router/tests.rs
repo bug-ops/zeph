@@ -6,6 +6,7 @@
 use std::sync::atomic::Ordering;
 
 use super::chat::collect_stream;
+use super::coe::CoeMetricsSnapshot;
 use super::embed_cache::TurnEmbedCache;
 use super::*;
 use crate::any::AnyProvider;
@@ -1930,6 +1931,33 @@ fn router_set_thinking_budget_delegates_to_last_active_provider() {
 }
 
 #[test]
+fn router_capability_target_stays_on_primary_after_coe_escalation_with_pool_secondary() {
+    use crate::claude::ClaudeProvider;
+    use crate::ollama::OllamaProvider;
+
+    let ollama = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:1",
+        "m".into(),
+        "e".into(),
+    ));
+    let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let mut r = RouterProvider::new(vec![ollama, claude]);
+    *r.state.last_active_provider.lock() = Some("ollama".to_owned());
+    *r.state.escalation.lock() = Some(super::state::CoeEscalation {
+        primary: "claude".to_owned(),
+        secondary: "ollama".to_owned(),
+    });
+
+    r.set_thinking_budget_delegated(Some(2048)).unwrap();
+
+    assert_eq!(r.state.providers[1].current_thinking_budget(), Some(2048));
+    assert_eq!(r.state.providers[0].current_thinking_budget(), None);
+
+    r.state.set_active_provider("ollama");
+    assert_eq!(r.capability_target_index(), Some(0));
+}
+
+#[test]
 fn router_capability_target_falls_back_to_first_when_no_dispatch_yet() {
     use crate::ollama::OllamaProvider;
 
@@ -2791,7 +2819,7 @@ async fn router_last_response_usage_after_chat_stream() {
 }
 
 #[tokio::test]
-async fn router_coe_shadow_usage_lands_in_auxiliary_not_primary_counters() {
+async fn router_coe_escalation_serves_secondary_usage_with_primary_as_auxiliary() {
     use crate::router::coe::CoeConfig;
 
     let primary = AnyProvider::Mock(
@@ -2819,12 +2847,12 @@ async fn router_coe_shadow_usage_lands_in_auxiliary_not_primary_counters() {
     assert_eq!(r.chat(&msgs).await.unwrap(), "secondary answer");
 
     let usage = r.last_response_usage().expect("served usage");
-    assert_eq!((usage.input, usage.output), (10, 5));
+    assert_eq!((usage.input, usage.output), (3, 2));
     assert_eq!(
         usage.auxiliary,
         Some(crate::provider::TokenUsage {
-            input: 3,
-            output: 2,
+            input: 10,
+            output: 5,
             ..Default::default()
         })
     );
@@ -2908,6 +2936,8 @@ fn inter_divergence_router(
     router.coe = Some(Arc::new(CoeRouter {
         config: coe.config.clone(),
         secondary: Arc::clone(&coe.secondary),
+        secondary_kind: coe.secondary_kind,
+        secondary_model: coe.secondary_model.clone(),
         embed: Arc::new(PrefixEmbed {
             opposite: opposite_embeddings,
         }),
@@ -2948,7 +2978,13 @@ async fn router_coe_chat_inter_divergence_escalates_to_secondary() {
     let msgs = vec![Message::from_legacy(Role::User, "q")];
 
     assert_eq!(router.chat(&msgs).await.unwrap(), INTER_SECONDARY_TEXT);
-    assert_eq!(router.coe_metrics().unwrap(), (0, 0, 1, 0));
+    assert_eq!(
+        router.coe_metrics().unwrap(),
+        CoeMetricsSnapshot {
+            inter_escalations: 1,
+            ..Default::default()
+        }
+    );
 }
 
 #[tokio::test]
@@ -2957,7 +2993,13 @@ async fn router_coe_chat_identical_embeddings_keep_primary() {
     let msgs = vec![Message::from_legacy(Role::User, "q")];
 
     assert_eq!(router.chat(&msgs).await.unwrap(), INTER_PRIMARY_TEXT);
-    assert_eq!(router.coe_metrics().unwrap(), (1, 0, 0, 0));
+    assert_eq!(
+        router.coe_metrics().unwrap(),
+        CoeMetricsSnapshot {
+            kept_primary: 1,
+            ..Default::default()
+        }
+    );
 }
 
 #[tokio::test]
@@ -2968,7 +3010,13 @@ async fn router_coe_chat_with_tools_inter_divergence_escalates_to_secondary() {
     let resp = router.chat_with_tools(&msgs, &[]).await.unwrap();
 
     assert_matches!(resp, crate::provider::ChatResponse::Text { ref text, .. } if text == INTER_SECONDARY_TEXT);
-    assert_eq!(router.coe_metrics().unwrap(), (0, 0, 1, 0));
+    assert_eq!(
+        router.coe_metrics().unwrap(),
+        CoeMetricsSnapshot {
+            inter_escalations: 1,
+            ..Default::default()
+        }
+    );
 }
 
 #[tokio::test]
@@ -2979,5 +3027,11 @@ async fn router_coe_chat_with_tools_identical_embeddings_keep_primary() {
     let resp = router.chat_with_tools(&msgs, &[]).await.unwrap();
 
     assert_matches!(resp, crate::provider::ChatResponse::Text { ref text, .. } if text == INTER_PRIMARY_TEXT);
-    assert_eq!(router.coe_metrics().unwrap(), (1, 0, 0, 0));
+    assert_eq!(
+        router.coe_metrics().unwrap(),
+        CoeMetricsSnapshot {
+            kept_primary: 1,
+            ..Default::default()
+        }
+    );
 }

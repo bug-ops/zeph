@@ -123,6 +123,14 @@ pub enum SubAgentError {
         def_name: String,
     },
 
+    /// The definition's `model` names a provider that is not declared in `[[llm.providers]]`
+    /// (issue #7153). The spawn is refused with no side effects.
+    #[error(
+        "unknown provider '{provider}' for sub-agent '{def_name}' \
+         (declare it in [[llm.providers]] or use model: inherit)"
+    )]
+    UnknownProvider { def_name: String, provider: String },
+
     /// The session-wide cumulative spawn budget has been exhausted (issue #6545).
     ///
     /// Distinct from [`SubAgentError::ConcurrencyLimit`] (bounds in-flight agents) and

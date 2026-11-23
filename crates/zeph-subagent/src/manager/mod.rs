@@ -26,6 +26,7 @@ use zeph_llm::provider::Message;
 use crate::def::{PermissionMode, SubAgentDef};
 use crate::durable::DurableResolverSeat;
 use crate::error::SubAgentError;
+use crate::filter::SkillScope;
 use crate::fleet::SharedFleetRegistry;
 use crate::forward::ForwardSurfaces;
 use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
@@ -353,6 +354,46 @@ pub struct SpawnContext {
     /// automatically — a sub-agent that spawns its own children must fold its own inherited
     /// floor into the child's context.
     pub inherited_trust: Option<TurnContextTrust>,
+
+    /// The parent's rendered instruction-file blocks, appended after the definition body unless
+    /// `permissions.instructions` (or `[agents] instructions`) is `none` (issue #7157).
+    ///
+    /// The block is the parent's already-resolved text; spawning does no disk I/O. `None` when
+    /// the parent has no instruction blocks (including `--bare` / `--safe-mode` runs).
+    pub inherited_instructions: Option<InheritedInstructions>,
+
+    /// Skills the sub-agent may read through the implicit, scoped `load_skill` grant (#7159).
+    ///
+    /// Empty (the default) means no implicit grant.
+    pub skill_scope: SkillScope,
+}
+
+/// Non-empty rendered instruction text inherited from the parent agent.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_subagent::InheritedInstructions;
+///
+/// assert!(InheritedInstructions::new(String::new()).is_none());
+/// let block = InheritedInstructions::new("be brief".to_owned()).unwrap();
+/// assert_eq!(block.as_str(), "be brief");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InheritedInstructions(String);
+
+impl InheritedInstructions {
+    /// Wraps `text`; returns `None` when it is empty.
+    #[must_use]
+    pub fn new(text: String) -> Option<Self> {
+        (!text.is_empty()).then_some(Self(text))
+    }
+
+    /// The rendered instruction text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// Shared, immutable list of pre-execution verifiers (`FirewallVerifier`,
@@ -481,6 +522,8 @@ pub struct SubAgentHandle {
     pub inherited_trust: Option<TurnContextTrust>,
     /// Full ID of the session this one was resumed from, persisted on collect.
     pub resumed_from: Option<String>,
+    /// Name of the provider serving this session, persisted on collect.
+    pub provider: Option<String>,
 }
 
 impl SubAgentHandle {
@@ -520,6 +563,7 @@ impl SubAgentHandle {
             trust_schema: TranscriptTrustSchema::PerResult,
             inherited_trust: None,
             resumed_from: None,
+            provider: None,
         }
     }
 
@@ -1220,5 +1264,7 @@ impl SubAgentManager {
     }
 }
 
+#[cfg(test)]
+mod instructions_tests;
 #[cfg(test)]
 mod tests;

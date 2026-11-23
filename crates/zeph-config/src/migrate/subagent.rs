@@ -188,6 +188,56 @@ pub fn migrate_agents_peer_messaging_config(
     })
 }
 
+/// Append an advisory `# instructions = "inherit"` line under an active `[agents]` table when
+/// the key is absent (issue #7157).
+///
+/// `SubAgentConfig::instructions` defaults to `inherit`, so absence is harmless; the comment
+/// only makes the opt-out (`"none"`) discoverable.
+///
+/// No-op when `[agents]` is absent or only commented-out, or when `instructions` is already
+/// present (active or as a prior advisory comment).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_agents_instructions(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let noop = || MigrationResult {
+        output: toml_src.to_owned(),
+        changed_count: 0,
+        sections_changed: Vec::new(),
+    };
+    if toml_src.contains("instructions =") || !section_header_present(toml_src, "agents") {
+        return Ok(noop());
+    }
+
+    toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    let comment = "# Inherit the parent's instruction files into sub-agent prompts: \"inherit\" | \"none\".\n\
+         # Per-definition override: permissions.instructions.\n\
+         # instructions = \"inherit\"\n";
+    let mut output = String::with_capacity(toml_src.len() + comment.len());
+    let mut inserted = false;
+    for line in toml_src.split_inclusive('\n') {
+        output.push_str(line);
+        if !inserted && line.trim_end() == "[agents]" {
+            if !line.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(comment);
+            inserted = true;
+        }
+    }
+    if !inserted {
+        return Ok(noop());
+    }
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["agents.instructions".to_owned()],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

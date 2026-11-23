@@ -46,7 +46,9 @@ use ollama_rs::generation::chat::request::ChatMessageRequest;
 use ollama_rs::generation::embeddings::GenerateEmbeddingsResponse;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
 use ollama_rs::generation::images::Image as OllamaImage;
-use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
+use ollama_rs::generation::tools::{
+    ToolCall, ToolCallFunction, ToolFunctionInfo, ToolInfo, ToolType,
+};
 use ollama_rs::models::ModelOptions;
 use std::future::Future;
 use std::sync::Arc;
@@ -959,46 +961,81 @@ impl LlmProvider for OllamaProvider {
     }
 }
 
-/// Convert a message for tool-aware requests. Handles `ToolUse` and `ToolResult` parts.
+/// Convert a message for tool-aware requests.
+///
+/// A user message with k `ToolResult` parts becomes k `tool` messages in part order (images
+/// attach to the first, runtime notes follow). An assistant message with `ToolUse` parts becomes
+/// one message whose `tool_calls` carry the calls in order, so the model sees structured calls
+/// instead of a flattened `[tool_use: ..]` marker.
 fn convert_message_structured(msg: &Message) -> Vec<ChatMessage> {
-    // If the message contains ToolResult parts, emit them as role:tool messages.
-    // ollama-rs represents tool results as a single ChatMessage with role Tool.
-    // We concatenate all tool result contents (Ollama expects one message per turn).
-    let tool_results: Vec<&MessagePart> = msg
-        .parts
-        .iter()
-        .filter(|p| matches!(p, MessagePart::ToolResult { .. }))
-        .collect();
-    if !tool_results.is_empty() {
-        let content = tool_results
-            .iter()
-            .filter_map(|p| {
-                if let MessagePart::ToolResult { content, .. } = p {
-                    Some(content.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let tool_message = ChatMessage::tool(content);
-        // Sibling Image parts (e.g. from MCP media passthrough) must not be dropped:
-        // ollama-rs does not role-restrict ChatMessage.images, so attach them here too.
+    let mut results = msg.parts.iter().filter_map(|p| match p {
+        MessagePart::ToolResult { content, .. } => Some(content.as_str()),
+        _ => None,
+    });
+    if let Some(first) = results.next() {
+        let mut first_message = ChatMessage::tool(first.to_owned());
+        // Sibling Image parts (e.g. from MCP media passthrough) must not be dropped.
         let images = extract_images(msg);
-        let tool_message = if images.is_empty() {
-            tool_message
-        } else {
-            tool_message.with_images(images)
-        };
-        let mut out = vec![tool_message];
-        // A runtime note follows the tool message as a separate `user` message.
+        if !images.is_empty() {
+            first_message = first_message.with_images(images);
+        }
+        let mut out = vec![first_message];
+        out.extend(results.map(|c| ChatMessage::tool(c.to_owned())));
         out.extend(msg.parts.iter().filter_map(|p| match p {
             MessagePart::RuntimeNote { text } => Some(ChatMessage::user(text.clone())),
             _ => None,
         }));
         return out;
     }
+    if msg.role == Role::Assistant
+        && msg
+            .parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+    {
+        return vec![convert_assistant_tool_use(msg)];
+    }
     vec![convert_message(msg)]
+}
+
+fn convert_assistant_tool_use(msg: &Message) -> ChatMessage {
+    let join = |pieces: Vec<&str>| pieces.join("\n");
+    let text = join(
+        msg.parts
+            .iter()
+            .filter_map(|p| match p {
+                MessagePart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect(),
+    );
+    let thinking = join(
+        msg.parts
+            .iter()
+            .filter_map(|p| match p {
+                MessagePart::ThinkingBlock { thinking, .. } => Some(thinking.as_str()),
+                _ => None,
+            })
+            .collect(),
+    );
+    let mut chat = ChatMessage::assistant(text);
+    chat.tool_calls = msg
+        .parts
+        .iter()
+        .filter_map(|p| match p {
+            MessagePart::ToolUse { name, input, .. } => Some(ToolCall {
+                function: ToolCallFunction {
+                    name: name.clone(),
+                    arguments: input.clone(),
+                },
+            }),
+            _ => None,
+        })
+        .collect();
+    if !thinking.is_empty() {
+        chat.thinking = Some(thinking);
+    }
+    chat
 }
 
 /// Collect all `MessagePart::Image` siblings from a message, base64-encoded for `ollama-rs`.
@@ -2266,7 +2303,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_message_structured_multiple_tool_results_joined() {
+    fn convert_message_structured_multiple_tool_results_become_separate_messages() {
         let msg = Message::from_parts(
             Role::User,
             vec![
@@ -2283,13 +2320,11 @@ mod tests {
             ],
         );
         let chat_msgs = convert_message_structured(&msg);
-        let chat_msg = chat_msgs.into_iter().next().expect("one tool message");
-        assert_eq!(
-            chat_msg.role,
-            ollama_rs::generation::chat::MessageRole::Tool
-        );
-        assert!(chat_msg.content.contains("result_a"));
-        assert!(chat_msg.content.contains("result_b"));
+        assert_eq!(chat_msgs.len(), 2);
+        for (m, expected) in chat_msgs.iter().zip(["result_a", "result_b"]) {
+            assert_eq!(m.role, ollama_rs::generation::chat::MessageRole::Tool);
+            assert_eq!(m.content, expected);
+        }
     }
 
     #[test]

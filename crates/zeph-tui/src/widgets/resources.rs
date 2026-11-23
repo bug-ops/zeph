@@ -129,7 +129,9 @@ fn append_mcp_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, theme: 
         Span::styled(
             format!(
                 "{}/{} connected, {} tools",
-                metrics.mcp_connected_count, metrics.mcp_server_count, metrics.mcp_tool_count
+                metrics.mcp_connected_count,
+                metrics.mcp_server_count,
+                metrics.mcp_tool_count()
             ),
             theme.status_bar,
         ),
@@ -299,7 +301,7 @@ mod tests {
         let metrics = MetricsSnapshot {
             mcp_server_count: 2,
             mcp_connected_count: 2,
-            mcp_tool_count: 14,
+            mcp_tools: (0..14).map(|i| format!("srv:t{i}")).collect(),
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(40, 8, |frame, area| {
@@ -464,7 +466,7 @@ mod tests {
             cache_read_tokens: 500,
             mcp_server_count: 2,
             mcp_connected_count: 2,
-            mcp_tool_count: 14,
+            mcp_tools: (0..14).map(|i| format!("srv:t{i}")).collect(),
             timing_sample_count: 3,
             last_turn_timings: TurnTimings {
                 prepare_context_ms: 12,
@@ -506,7 +508,7 @@ mod tests {
             api_calls: 5,
             mcp_server_count: 2,
             mcp_connected_count: 2,
-            mcp_tool_count: 14,
+            mcp_tools: (0..14).map(|i| format!("srv:t{i}")).collect(),
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(50, 2, |frame, area| {
