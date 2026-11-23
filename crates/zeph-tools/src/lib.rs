@@ -93,6 +93,7 @@ pub mod shadow_probe;
 pub mod shell;
 pub mod time;
 pub mod tool_filter;
+pub mod tool_id;
 mod tool_source;
 pub mod trust_gate;
 pub mod trust_level;

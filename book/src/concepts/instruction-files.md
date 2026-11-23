@@ -83,6 +83,17 @@ echo "- Always use snake_case for variable names" >> zeph.md
 > [!NOTE]
 > The watcher only starts when at least one instruction path is resolved. If no instruction files exist at startup, hot reload is disabled and a log message is emitted.
 
+## Sub-agents
+
+A sub-agent inherits the parent's already-resolved instruction block, appended to its system prompt right after the definition's own prompt. The block is passed as is: it is not re-discovered per provider, so a sub-agent that runs on a different provider than the parent still receives the parent's files. The block is sent on every sub-agent turn, so it costs prompt tokens (the spawn debug log shows the byte count).
+
+```toml
+[agents]
+instructions = "inherit"   # or "none" (global kill switch)
+```
+
+A single definition can opt out with `permissions.instructions: none` in its frontmatter. A definition can only opt out: with `[agents] instructions = "none"` no sub-agent receives the block, whatever its definition says. A parent without instruction files passes nothing.
+
 ## Example: `zeph.md`
 
 ```markdown

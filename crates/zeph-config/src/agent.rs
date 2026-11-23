@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::providers::ProviderName;
-use crate::subagent::{HookDef, MemoryScope, PermissionMode};
+use crate::subagent::{HookDef, MemoryScope, PermissionMode, SubagentInstructions};
 
 /// Specifies which LLM provider a sub-agent should use.
 ///
@@ -745,6 +745,11 @@ pub struct SubAgentConfig {
     /// Live inter-sub-agent messaging settings (spec `087-subagent-peer-messaging`).
     #[serde(default)]
     pub peer_messaging: PeerMessagingConfig,
+    /// Whether sub-agents receive the parent's instruction-file blocks (CLAUDE.md, AGENTS.md,
+    /// ...) in their system prompt: `inherit` (default) or `none`. Overridable per definition
+    /// via `permissions.instructions` (issue #7157).
+    #[serde(default)]
+    pub instructions: SubagentInstructions,
 }
 
 impl Default for SubAgentConfig {
@@ -774,6 +779,7 @@ impl Default for SubAgentConfig {
             llm_timeout_secs: default_llm_timeout_secs(),
             worktree: crate::worktree::WorktreeConfig::default(),
             peer_messaging: PeerMessagingConfig::default(),
+            instructions: SubagentInstructions::default(),
         }
     }
 }

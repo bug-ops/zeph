@@ -58,14 +58,14 @@ pub(crate) fn sections(
     let mut skills_content = vec![skills_header];
     skills_content.extend(skill_lines);
 
-    let has_mcp = !metrics.active_mcp_tools.is_empty() || metrics.mcp_tool_count > 0;
+    let has_mcp = !metrics.active_mcp_tools.is_empty() || metrics.mcp_tool_count() > 0;
     let mut mcp_lines: Vec<Line<'static>> = Vec::new();
     if has_mcp {
         mcp_lines.push(Line::from(Span::styled(
             format!(
                 "mcp tools  {}/{}",
                 metrics.active_mcp_tools.len(),
-                metrics.mcp_tool_count
+                metrics.mcp_tool_count()
             ),
             theme.system_message.add_modifier(Modifier::BOLD),
         )));
@@ -337,7 +337,7 @@ mod tests {
         use zeph_core::metrics::McpServerStatus;
 
         let metrics = MetricsSnapshot {
-            mcp_tool_count: 2,
+            mcp_tools: vec!["tool-a".into(), "tool-b".into()],
             mcp_servers: vec![McpServerStatus {
                 id: "srv1".into(),
                 status: McpServerConnectionStatus::Connected,
@@ -370,7 +370,7 @@ mod tests {
                 "five".into(),
             ],
             total_skills: 5,
-            mcp_tool_count: 3,
+            mcp_tools: vec!["tool-a".into(), "tool-b".into(), "tool-c".into()],
             active_mcp_tools: vec!["tool-a".into(), "tool-b".into(), "tool-c".into()],
             ..MetricsSnapshot::default()
         };
@@ -403,7 +403,7 @@ mod tests {
                 posterior: 0.8,
                 total_uses: 12,
             }],
-            mcp_tool_count: 2,
+            mcp_tools: vec!["tool-a".into(), "tool-b".into()],
             active_mcp_tools: vec!["tool-a".into()],
             mcp_servers: vec![McpServerStatus {
                 id: "srv1".into(),

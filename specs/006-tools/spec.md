@@ -905,6 +905,11 @@ The ids of the native web-egress tools (`web_scrape`, `fetch`, `web_search`) com
 - NEVER let quota exhaustion silently drop a tool call — always return `quota_blocked`
 - OAP rules are merged at startup — runtime changes require restart
 
+## Canonical Tool Identity (#7154)
+
+`zeph_tools::tool_id` exports `ToolMatchKey` (trim, strip `(...)`, lowercase, `shell`/`sh` -> `bash`), `SHELL_TOOL_ALIASES` and `argument_pattern`. Sub-agent filtering, hook matching and the orchestration router compare keys; `policy.rs` reads `SHELL_TOOL_ALIASES` but keeps mapping to `shell` for glob rules (a `tool = "shell*"` rule still denies `bash`).
+- NEVER duplicate the alias table; extend `SHELL_TOOL_ALIASES`.
+
 ## `ask_user` Built-in Tool (#6912, spec 090)
 
 - `ask_user` is an agent built-in like `compress_context`: answered in the agent loop, never reaching hooks, gates or executors, and listed only while `[tools.ask_user] enabled = true` (default off) and the turn can reach a person (spec 090 FR-011).

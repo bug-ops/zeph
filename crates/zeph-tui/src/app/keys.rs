@@ -500,19 +500,19 @@ impl App {
     }
 
     pub(crate) fn format_mcp_list(&self) -> String {
-        if self.metrics.active_mcp_tools.is_empty() {
+        if self.metrics.mcp_tools.is_empty() {
             return "No MCP tools available.".to_owned();
         }
         let lines: Vec<String> = self
             .metrics
-            .active_mcp_tools
+            .mcp_tools
             .iter()
             .map(|t| format!("  - {t}"))
             .collect();
         format!(
             "MCP servers: {}  Tools ({}):\n{}",
             self.metrics.mcp_server_count,
-            self.metrics.active_mcp_tools.len(),
+            self.metrics.mcp_tool_count(),
             lines.join("\n")
         )
     }

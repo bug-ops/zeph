@@ -2255,10 +2255,9 @@ async fn spawn_acp_agent(
         mcp_registry,
         mcp_tool_rx,
         mcp_tool_scope,
-        task_supervisor: Arc::new(d.shell_task_supervisor.scoped(
-            &zeph_common::task_supervisor::unique_session_scope(
-                &session_ctx.session_id.to_string(),
-            ),
+        task_supervisor: Arc::new(acp_session_task_supervisor(
+            &d.shell_task_supervisor,
+            &session_ctx.session_id.to_string(),
         )),
         mcp_manager: Arc::clone(&mcp_manager),
         mcp_config,
@@ -3160,6 +3159,23 @@ pub(crate) fn print_acp_manifest() {
         serde_json::to_string_pretty(&manifest).unwrap_or_default()
     );
 }
+
+/// Derives the per-agent-instance supervisor scope of an ACP session.
+///
+/// The scope is unique per call, so two agents of one session id (an ACP `session/load` of a
+/// live id) never replace each other's named tasks on the shared shell supervisor.
+#[cfg(feature = "acp")]
+fn acp_session_task_supervisor(
+    shell: &zeph_common::TaskSupervisor,
+    session_id: &str,
+) -> zeph_common::TaskSupervisor {
+    shell.scoped(&zeph_common::task_supervisor::unique_session_scope(
+        session_id,
+    ))
+}
+
+#[cfg(all(test, feature = "acp"))]
+mod session_scope_tests;
 
 #[cfg(all(test, feature = "acp"))]
 mod tests {

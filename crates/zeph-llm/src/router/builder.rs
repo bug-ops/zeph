@@ -22,7 +22,7 @@ use super::embed_cache::BanditEmbedCache;
 use super::reputation::{self, ReputationTracker};
 use super::state::RouterState;
 use super::thompson::{self, ThompsonState};
-use super::{RouterProvider, RouterStrategy, blocking_load};
+use super::{QualityTarget, RouterProvider, RouterStrategy, blocking_load};
 use crate::any::AnyProvider;
 use crate::ema::EmaTracker;
 use crate::error::LlmError;
@@ -163,6 +163,8 @@ impl RouterProvider {
         }
         self.coe = Some(Arc::new(CoeRouter {
             config,
+            secondary_kind: secondary.provider_kind_str(),
+            secondary_model: secondary.model_identifier().to_owned(),
             secondary: Arc::new(secondary) as Arc<dyn crate::provider_dyn::LlmProviderDyn>,
             embed: Arc::new(embed) as Arc<dyn crate::provider_dyn::LlmProviderDyn>,
             metrics: Arc::new(coe::CoeMetrics::default()),
@@ -172,14 +174,13 @@ impl RouterProvider {
 
     /// Return session-level `CoE` metrics snapshot, or `None` if `CoE` is disabled.
     #[must_use]
-    pub fn coe_metrics(&self) -> Option<(u64, u64, u64, u64)> {
-        self.coe.as_ref().map(|c| {
-            (
-                c.metrics.kept_primary.load(Ordering::Relaxed),
-                c.metrics.intra_escalations.load(Ordering::Relaxed),
-                c.metrics.inter_escalations.load(Ordering::Relaxed),
-                c.metrics.embed_failures.load(Ordering::Relaxed),
-            )
+    pub fn coe_metrics(&self) -> Option<coe::CoeMetricsSnapshot> {
+        self.coe.as_ref().map(|c| coe::CoeMetricsSnapshot {
+            kept_primary: c.metrics.kept_primary.load(Ordering::Relaxed),
+            intra_escalations: c.metrics.intra_escalations.load(Ordering::Relaxed),
+            inter_escalations: c.metrics.inter_escalations.load(Ordering::Relaxed),
+            secondary_failures: c.metrics.secondary_failures.load(Ordering::Relaxed),
+            shadow_timeouts: c.metrics.shadow_timeouts.load(Ordering::Relaxed),
         })
     }
 
@@ -396,9 +397,10 @@ impl RouterProvider {
     /// No-op when reputation scoring is disabled, strategy is Cascade, or no tool call
     /// has been made yet in this session.
     ///
-    /// The `_provider_name` parameter is ignored — quality is attributed to the sub-provider
-    /// that served the most recent `chat_with_tools` call, tracked via `last_active_provider`.
-    pub fn record_quality_outcome(&self, _provider_name: &str, success: bool) {
+    /// [`QualityTarget::LastActive`] attributes to the sub-provider that served the most recent
+    /// call (tracked via `last_active_provider`); [`QualityTarget::Provider`] attributes to the
+    /// named one.
+    pub fn record_quality_outcome(&self, target: QualityTarget<'_>, success: bool) {
         if matches!(
             self.strategy,
             RouterStrategy::Cascade | RouterStrategy::Bandit
@@ -410,9 +412,14 @@ impl RouterProvider {
         let Some(ref reputation) = self.reputation else {
             return;
         };
-        let active = self.state.last_active_provider.lock().clone();
-        let Some(provider_name) = active else {
-            return;
+        let provider_name = match target {
+            QualityTarget::Provider(name) => name.to_owned(),
+            QualityTarget::LastActive => {
+                let Some(active) = self.state.last_active_provider.lock().clone() else {
+                    return;
+                };
+                active
+            }
         };
         let mut tracker = reputation.lock();
         tracker.record_quality(&provider_name, success);
@@ -433,7 +440,14 @@ impl RouterProvider {
             .providers
             .iter()
             .find(|p| p.name() == name)
-            .map_or("local", |p| p.provider_kind_str())
+            .map(AnyProvider::provider_kind_str)
+            .or_else(|| {
+                self.coe
+                    .as_ref()
+                    .filter(|c| c.secondary.name() == name)
+                    .map(|c| c.secondary_kind)
+            })
+            .unwrap_or("local")
     }
 
     /// Persist current reputation state to disk. No-op if reputation is disabled.
@@ -593,7 +607,12 @@ impl RouterProvider {
         if self.state.providers.is_empty() {
             return None;
         }
-        let name = self.state.last_active_provider.lock().clone();
+        let mut name = self.state.last_active_provider.lock().clone();
+        if let (Some(active), Some(esc)) = (&name, self.state.escalation.lock().as_ref())
+            && *active == esc.secondary
+        {
+            name = Some(esc.primary.clone());
+        }
         match name {
             Some(name) => Some(
                 self.state

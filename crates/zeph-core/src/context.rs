@@ -74,6 +74,25 @@ pub fn build_system_prompt(skills_prompt: &str, env: Option<&EnvironmentContext>
     build_system_prompt_with_instructions(skills_prompt, env, &[])
 }
 
+/// Render instruction blocks as the `<!-- instructions: NAME -->` sections appended to a system prompt.
+#[must_use]
+pub fn render_instruction_blocks(instructions: &[InstructionBlock]) -> String {
+    let mut out = String::new();
+    for block in instructions {
+        out.push_str("\n\n<!-- instructions: ");
+        out.push_str(
+            &block
+                .source
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+        );
+        out.push_str(" -->\n");
+        out.push_str(&block.content);
+    }
+    out
+}
+
 /// Build the system prompt, injecting instruction blocks into the volatile section
 /// (Block 2 — after env context, before skills and tool catalog).
 ///
@@ -120,18 +139,7 @@ pub fn build_system_prompt_with_instructions(
     // Instruction blocks are placed after env context (volatile, user-editable content).
     // Safety: instruction content is user-trusted (controlled via local files and config).
     // No sanitization is applied — see instructions.rs doc comment for trust model.
-    for block in instructions {
-        prompt.push_str("\n\n<!-- instructions: ");
-        prompt.push_str(
-            &block
-                .source
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
-        );
-        prompt.push_str(" -->\n");
-        prompt.push_str(&block.content);
-    }
+    prompt.push_str(&render_instruction_blocks(instructions));
 
     if !skills_prompt.is_empty() {
         prompt.push_str("\n\n");

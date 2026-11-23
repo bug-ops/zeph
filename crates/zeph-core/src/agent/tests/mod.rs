@@ -52,6 +52,8 @@ mod shutdown_summary_tests;
 #[cfg(test)]
 mod small_misc_tests;
 #[cfg(test)]
+mod subagent_provider_instructions_tests;
+#[cfg(test)]
 mod trim_parent_messages_tests;
 #[cfg(test)]
 mod turn_summary_counters_tests;

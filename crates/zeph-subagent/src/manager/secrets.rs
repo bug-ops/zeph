@@ -214,6 +214,7 @@ mod tests {
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
             inherited_trust: None,
             resumed_from: None,
+            provider: None,
         };
         (handle, secret_rx)
     }

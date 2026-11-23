@@ -317,7 +317,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(zeph_mcp::McpTool::qualified_name)
             .collect();
-        let mcp_total = self.services.mcp.tools().len();
+        let mcp_tools = self.services.mcp.tool_names();
         let (mcp_server_count, mcp_connected_count) =
             if self.services.mcp.server_outcomes.is_empty() {
                 let connected = self
@@ -342,7 +342,7 @@ impl<C: Channel> Agent<C> {
             };
         self.update_metrics(|m| {
             m.active_mcp_tools = active_mcp;
-            m.mcp_tool_count = mcp_total;
+            m.mcp_tools = mcp_tools;
             m.mcp_server_count = mcp_server_count;
             m.mcp_connected_count = mcp_connected_count;
         });
@@ -437,7 +437,7 @@ impl<C: Channel> Agent<C> {
             self.refresh_native_tool_shadows();
             self.rebuild_semantic_index().await;
             self.sync_mcp_registry().await;
-            let mcp_total = self.services.mcp.tools().len();
+            let mcp_tools = self.services.mcp.tool_names();
             let mcp_servers = self
                 .services
                 .mcp
@@ -447,7 +447,7 @@ impl<C: Channel> Agent<C> {
                 .collect::<std::collections::HashSet<_>>()
                 .len();
             self.update_metrics(|m| {
-                m.mcp_tool_count = mcp_total;
+                m.mcp_tools = mcp_tools;
                 m.mcp_server_count = mcp_servers;
             });
         }
@@ -479,7 +479,7 @@ impl<C: Channel> Agent<C> {
         self.refresh_native_tool_shadows();
         self.rebuild_semantic_index().await;
         self.sync_mcp_registry().await;
-        let mcp_total = self.services.mcp.tools().len();
+        let mcp_tools = self.services.mcp.tool_names();
         let mcp_servers = self
             .services
             .mcp
@@ -489,7 +489,7 @@ impl<C: Channel> Agent<C> {
             .collect::<std::collections::HashSet<_>>()
             .len();
         self.update_metrics(|m| {
-            m.mcp_tool_count = mcp_total;
+            m.mcp_tools = mcp_tools;
             m.mcp_server_count = mcp_servers;
         });
     }
@@ -661,7 +661,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn update_mcp_metrics(&mut self) {
-        let mcp_total = self.services.mcp.tools().len();
+        let mcp_tools = self.services.mcp.tool_names();
         let mcp_server_count = self.services.mcp.server_outcomes.len();
         let mcp_connected_count = self
             .services
@@ -672,7 +672,7 @@ impl<C: Channel> Agent<C> {
             .count();
         let mcp_servers = self.services.mcp.server_statuses();
         self.update_metrics(|m| {
-            m.mcp_tool_count = mcp_total;
+            m.mcp_tools = mcp_tools;
             m.mcp_server_count = mcp_server_count;
             m.mcp_connected_count = mcp_connected_count;
             m.mcp_servers = mcp_servers;

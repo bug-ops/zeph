@@ -12,7 +12,7 @@
 //! [`filter_skills`] applies glob-based include/exclude patterns and trust-level gating
 //! against a skill registry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -21,8 +21,9 @@ use zeph_skills::registry::SkillRegistry;
 use zeph_tools::ToolCall;
 use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput, extract_fenced_blocks};
 use zeph_tools::registry::{InvocationHint, ToolDef};
+use zeph_tools::tool_id::ToolMatchKey;
 
-use super::def::{SkillFilter, ToolPolicy};
+use super::def::{SkillFilter, SubAgentDef, ToolListKind, ToolPolicy};
 use super::error::SubAgentError;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -41,13 +42,138 @@ fn collect_fenced_tags(executor: &dyn ErasedToolExecutor) -> Vec<&'static str> {
 
 // ── Tool ID normalization ─────────────────────────────────────────────────────
 
-/// Normalize a tool ID for policy matching: lowercase, strip everything from the first `(` onward.
+/// Normalize a tool ID for policy matching: lowercase, strip everything from the first `(`
+/// onward, and resolve shell aliases (`shell`, `sh`) to the runtime id `bash`.
 ///
-/// Examples: `"Read"` → `"read"`, `"Bash(cargo *)"` → `"bash"`, `"bash"` → `"bash"`.
+/// Examples: `"Read"` → `"read"`, `"Bash(cargo *)"` → `"bash"`, `"shell"` → `"bash"`.
 #[must_use]
 pub fn normalize_tool_id(s: &str) -> String {
-    let base = s.split('(').next().unwrap_or(s);
-    base.trim().to_lowercase()
+    ToolMatchKey::new(s).into_string()
+}
+
+fn lists_tool(list: &[String], key: &ToolMatchKey) -> bool {
+    list.iter().any(|t| ToolMatchKey::new(t) == *key)
+}
+
+/// Decide whether `tool_id` may run under `policy` and the extra `disallowed` list.
+///
+/// `disallowed` entries win over the policy. Matching goes through [`ToolMatchKey`], so
+/// case, argument patterns and shell aliases do not matter. `InheritAll` allows everything
+/// that is not disallowed.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_subagent::ToolPolicy;
+/// use zeph_subagent::filter::policy_allows;
+///
+/// let allow = ToolPolicy::AllowList(vec!["shell".into()]);
+/// assert!(policy_allows(&allow, &[], "bash"));
+/// assert!(!policy_allows(&allow, &["Bash".to_owned()], "bash"));
+/// ```
+#[must_use]
+pub fn policy_allows(policy: &ToolPolicy, disallowed: &[String], tool_id: &str) -> bool {
+    let key = ToolMatchKey::new(tool_id);
+    if lists_tool(disallowed, &key) {
+        return false;
+    }
+    match policy {
+        ToolPolicy::AllowList(list) => lists_tool(list, &key),
+        ToolPolicy::DenyList(list) => !lists_tool(list, &key),
+        _ => true,
+    }
+}
+
+/// Every tool-list entry of a definition: the policy's allow or deny list first, then the
+/// `extra` denylist labelled `extra_kind`.
+pub(crate) fn listed_entries<'a>(
+    policy: &'a ToolPolicy,
+    extra: &'a [String],
+    extra_kind: ToolListKind,
+) -> impl Iterator<Item = (ToolListKind, &'a String)> {
+    let (kind, entries) = match policy {
+        ToolPolicy::AllowList(l) => (ToolListKind::Allow, l.as_slice()),
+        ToolPolicy::DenyList(l) => (ToolListKind::Deny, l.as_slice()),
+        _ => (ToolListKind::Allow, [].as_slice()),
+    };
+    entries
+        .iter()
+        .map(move |e| (kind, e))
+        .chain(extra.iter().map(move |e| (extra_kind, e)))
+}
+
+/// Entries of `policy` and `disallowed` that match none of the `registered` tool ids.
+///
+/// Used to warn about typos and unavailable tools when an executor is built; the policy lists
+/// come first, then the global denylist.
+#[must_use]
+pub fn unknown_tool_entries(
+    policy: &ToolPolicy,
+    disallowed: &[String],
+    registered: &[&str],
+) -> Vec<(ToolListKind, String)> {
+    let known: HashSet<ToolMatchKey> = registered.iter().map(|id| ToolMatchKey::new(id)).collect();
+    listed_entries(policy, disallowed, ToolListKind::GlobalDisallowed)
+        .filter(|(_, entry)| !known.contains(&ToolMatchKey::new(entry)))
+        .map(|(kind, entry)| (kind, entry.clone()))
+        .collect()
+}
+
+/// Names of skills a sub-agent may read through the implicit `load_skill` grant.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_subagent::SkillScope;
+///
+/// let scope: SkillScope = ["github".to_owned()].into_iter().collect();
+/// assert!(scope.contains("github"));
+/// assert!(!scope.contains("git"));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillScope(HashSet<String>);
+
+impl SkillScope {
+    /// Whether `skill` is in scope.
+    #[must_use]
+    pub fn contains(&self, skill: &str) -> bool {
+        self.0.contains(skill)
+    }
+
+    /// Whether no skill is in scope.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl FromIterator<String> for SkillScope {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+const LOAD_SKILL: &str = "load_skill";
+
+/// Scope of the implicit `load_skill` grant for `def`, or `None` when no implicit grant applies.
+///
+/// The grant applies only when the definition lists skills in `skills.include`, its tools are
+/// an `AllowList` that does not already name `load_skill`, and no deny or except entry names
+/// it. `matched` is the set of skill names that `filter_skills` selected from `include`.
+#[must_use]
+pub fn implicit_load_skill_scope(def: &SubAgentDef, matched: &[String]) -> Option<SkillScope> {
+    let key = ToolMatchKey::new(LOAD_SKILL);
+    let ToolPolicy::AllowList(allow) = &def.tools else {
+        return None;
+    };
+    if def.skills.include.is_empty()
+        || matched.is_empty()
+        || lists_tool(allow, &key)
+        || lists_tool(&def.disallowed_tools, &key)
+    {
+        return None;
+    }
+    Some(matched.iter().cloned().collect())
 }
 
 // ── Tool filtering ────────────────────────────────────────────────────────────
@@ -66,6 +192,8 @@ pub struct FilteredToolExecutor {
     /// Fenced-block language tags collected from `inner` at construction time.
     /// Used to detect actual fenced-block tool invocations in LLM responses.
     fenced_tags: Vec<&'static str>,
+    /// Skills reachable through the implicit `load_skill` grant (empty = no grant).
+    skill_scope: SkillScope,
 }
 
 impl FilteredToolExecutor {
@@ -75,13 +203,7 @@ impl FilteredToolExecutor {
     /// specifies `tools.except` entries.
     #[must_use]
     pub fn new(inner: Arc<dyn ErasedToolExecutor>, policy: ToolPolicy) -> Self {
-        let fenced_tags = collect_fenced_tags(&*inner);
-        Self {
-            inner,
-            policy,
-            disallowed: Vec::new(),
-            fenced_tags,
-        }
+        Self::with_disallowed(inner, policy, Vec::new())
     }
 
     /// Create a new filtered executor with an additional denylist.
@@ -95,12 +217,25 @@ impl FilteredToolExecutor {
         disallowed: Vec<String>,
     ) -> Self {
         let fenced_tags = collect_fenced_tags(&*inner);
+        warn_unknown_entries(&*inner, &policy, &disallowed);
         Self {
             inner,
             policy,
             disallowed,
             fenced_tags,
+            skill_scope: SkillScope::default(),
         }
+    }
+
+    /// Grant the sub-agent a `load_skill` tool limited to the skills in `scope`.
+    ///
+    /// No effect when `scope` is empty or when the policy denies `load_skill` explicitly; an
+    /// explicit unscoped grant (`load_skill` in the allow list, or an open policy) keeps today's
+    /// unscoped behavior.
+    #[must_use]
+    pub fn with_skill_scope(mut self, scope: SkillScope) -> Self {
+        self.skill_scope = scope;
+        self
     }
 
     /// Return `true` if `response` contains at least one fenced block matching a registered tool.
@@ -116,19 +251,36 @@ impl FilteredToolExecutor {
     /// runtime ID `"bash"`). MCP compound tool IDs (`mcp__server__tool`) must still be listed in
     /// full in `tools.except` — partial names or prefixes are not matched.
     fn is_allowed(&self, tool_id: &str) -> bool {
-        let normalized = normalize_tool_id(tool_id);
-        if self
-            .disallowed
-            .iter()
-            .any(|t| normalize_tool_id(t) == normalized)
-        {
-            return false;
-        }
-        match &self.policy {
-            ToolPolicy::AllowList(list) => list.iter().any(|t| normalize_tool_id(t) == normalized),
-            ToolPolicy::DenyList(list) => !list.iter().any(|t| normalize_tool_id(t) == normalized),
-            _ => true,
-        }
+        policy_allows(&self.policy, &self.disallowed, tool_id) || self.is_scoped_grant(tool_id)
+    }
+
+    /// `true` when `tool_id` is `load_skill`, a skill scope is set, and nothing denies the tool.
+    fn is_scoped_grant(&self, tool_id: &str) -> bool {
+        let key = ToolMatchKey::new(tool_id);
+        key.as_str() == LOAD_SKILL
+            && !self.skill_scope.is_empty()
+            && !lists_tool(&self.disallowed, &key)
+            && !matches!(&self.policy, ToolPolicy::DenyList(l) if lists_tool(l, &key))
+    }
+
+    /// Whether a `load_skill` call reaches only skills inside the scope.
+    fn scoped_call_in_scope(&self, call: &ToolCall) -> bool {
+        call.params
+            .get("skill_name")
+            .and_then(|v| v.as_str())
+            .is_some_and(|name| self.skill_scope.contains(name))
+    }
+}
+
+fn warn_unknown_entries(
+    inner: &dyn ErasedToolExecutor,
+    policy: &ToolPolicy,
+    disallowed: &[String],
+) {
+    let defs = inner.tool_definitions_erased();
+    let registered: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
+    for (list, entry) in unknown_tool_entries(policy, disallowed, &registered) {
+        tracing::warn!(?list, entry, "tool list entry matches no registered tool");
     }
 }
 
@@ -192,7 +344,10 @@ impl ErasedToolExecutor for FilteredToolExecutor {
         call: &'a ToolCall,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
     {
-        if !self.is_allowed(call.tool_id.as_str()) {
+        let open = policy_allows(&self.policy, &self.disallowed, call.tool_id.as_str());
+        let scoped_ok =
+            !open && self.is_scoped_grant(call.tool_id.as_str()) && self.scoped_call_in_scope(call);
+        if !open && !scoped_ok {
             tracing::warn!(
                 tool_id = %call.tool_id,
                 "sub-agent tool call rejected by policy"

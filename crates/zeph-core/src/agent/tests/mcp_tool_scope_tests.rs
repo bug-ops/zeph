@@ -77,7 +77,7 @@ async fn check_tool_refresh_scoped_agent_ignores_updates_that_only_change_foreig
 
     assert_eq!(names(&agent), ["a:x"], "tools unchanged");
     assert_eq!(
-        metrics.borrow().mcp_tool_count,
+        metrics.borrow().mcp_tool_count(),
         0,
         "a no-op refresh must not rebuild the index or touch metrics"
     );
@@ -111,7 +111,7 @@ async fn check_tool_refresh_all_servers_scope_applies_every_update_as_before() {
     agent.check_tool_refresh().await;
 
     assert_eq!(names(&agent), ["a:x", "b:y"]);
-    assert_eq!(metrics.borrow().mcp_tool_count, 2);
+    assert_eq!(metrics.borrow().mcp_tool_count(), 2);
 }
 
 #[tokio::test]
@@ -145,5 +145,9 @@ async fn check_tool_refresh_unseen_initial_value_does_no_work() {
     agent.check_tool_refresh().await;
 
     assert_eq!(names(&agent), ["a:x"]);
-    assert_eq!(metrics.borrow().mcp_tool_count, 0, "no refresh, no metrics");
+    assert_eq!(
+        metrics.borrow().mcp_tool_count(),
+        0,
+        "no refresh, no metrics"
+    );
 }

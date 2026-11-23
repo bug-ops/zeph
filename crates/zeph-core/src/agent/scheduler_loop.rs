@@ -727,7 +727,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         let task_title = task.map_or("unknown", |t| t.title.as_str());
         let network_denied = network_denied_for_task(task);
 
-        let provider = self.provider.clone();
+        let provider = self.provider_for_spawn(&agent_def_name);
         let tool_executor = Arc::clone(&self.tool_executor);
         let skills = self.filtered_skills_for(&agent_def_name).await;
         let cfg = self.services.orchestration.subagent_config.clone();
@@ -748,6 +748,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .then(|| scheduler.graph().clone());
 
         let mut spawn_ctx = self.build_spawn_context(&cfg);
+        spawn_ctx.skill_scope = skills.scope;
         spawn_ctx.network_denied = network_denied;
         spawn_ctx.inherited_tool_allowlist =
             self.intersect_task_tool_allowlist(task, spawn_ctx.inherited_tool_allowlist.take());
@@ -825,19 +826,25 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         };
 
-        match mgr
-            .spawn_for_task(
-                &agent_def_name,
-                &prompt,
-                provider,
-                tool_executor,
-                skills,
-                &cfg,
-                spawn_ctx,
-                on_done,
-            )
-            .await
-        {
+        // An unresolvable provider takes the same failure arm as a spawn error: the task is marked
+        // Failed and its pending admission permit is released by `record_spawn_failure`.
+        let spawned = match provider {
+            Ok(provider) => {
+                mgr.spawn_for_task(
+                    &agent_def_name,
+                    &prompt,
+                    provider,
+                    tool_executor,
+                    skills.bodies,
+                    &cfg,
+                    spawn_ctx,
+                    on_done,
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        };
+        match spawned {
             Ok(handle_id) => {
                 *spawn_counter += 1;
                 self.channel
@@ -3639,6 +3646,96 @@ mod tests {
         }
     }
 
+    /// #7153: a plan task whose definition names a provider that is not in `[[llm.providers]]`
+    /// fails through the spawn-failure arm (`record_spawn_failure`, which also drops the pending
+    /// admission permit): the task is Failed, nothing is spawned and the LLM is never called.
+    #[tokio::test]
+    async fn handle_scheduler_spawn_action_unknown_provider_fails_task_without_spawning() {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_orchestration::{
+            DagScheduler, GraphStatus, RuleBasedRouter, TaskGraph, TaskNode, TaskStatus,
+        };
+        use zeph_subagent::{SubAgentDef, SubAgentManager};
+
+        let mut graph = TaskGraph::new("goal");
+        graph.tasks.push(TaskNode::new(0, "t", "do a task"));
+        let def = SubAgentDef::parse(
+            "---\nname: worker\ndescription: A worker\nmodel: ghost\n---\n\nDo things.\n",
+        )
+        .unwrap();
+        let config = zeph_config::OrchestrationConfig::default();
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(RuleBasedRouter),
+            vec![def.clone()],
+            None,
+        )
+        .unwrap();
+
+        let (mock, recorded_tools) =
+            MockProvider::with_responses(vec!["done".into()]).with_tool_recording();
+        let known = zeph_config::ProviderEntry {
+            name: Some("quality".to_owned()),
+            provider_type: zeph_config::ProviderKind::Ollama,
+            model: Some("qwen3:8b".to_owned()),
+            ..zeph_config::ProviderEntry::default()
+        };
+        let snapshot = crate::agent::state::ProviderConfigSnapshot {
+            claude_api_key: None,
+            openai_api_key: None,
+            gemini_api_key: None,
+            compatible_api_keys: std::collections::HashMap::new(),
+            llm_request_timeout_secs: 30,
+            embedding_model: "nomic-embed-text".to_owned(),
+            gonka_private_key: None,
+            gonka_address: None,
+            cocoon_access_hash: None,
+        };
+        let mut agent = crate::agent::Agent::new(
+            AnyProvider::Mock(mock),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_provider_pool(vec![known], snapshot);
+        agent.services.orchestration.orchestration_config = config;
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang")
+        .unwrap();
+
+        assert_eq!(status, GraphStatus::Failed);
+        assert_eq!(scheduler.graph().tasks[0].status, TaskStatus::Failed);
+        assert!(
+            agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .is_empty(),
+            "no sub-agent may be spawned for an unknown provider"
+        );
+        assert!(
+            recorded_tools.lock().unwrap().is_empty(),
+            "the LLM must not be called"
+        );
+    }
+
     /// Regression test for issue #6288: `collect_finished_subagents()` must be a no-op (not
     /// panic) when orchestration is not spawning any sub-agents this session, i.e.
     /// `subagent_manager` is `None`. `run_scheduler_loop` calls it unconditionally every tick
@@ -3776,6 +3873,7 @@ mod tests {
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
             inherited_trust: None,
             resumed_from: None,
+            provider: None,
         };
         (handle, status_tx)
     }

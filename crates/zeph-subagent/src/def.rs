@@ -19,7 +19,9 @@ use tempfile::NamedTempFile;
 use super::error::SubAgentError;
 use super::hooks::SubagentHooks;
 
-pub use zeph_config::{MemoryScope, ModelSpec, PermissionMode, SkillFilter, ToolPolicy};
+pub use zeph_config::{
+    MemoryScope, ModelSpec, PermissionMode, SkillFilter, SubagentInstructions, ToolPolicy,
+};
 
 /// Validated agent name pattern: ASCII alphanumeric, hyphen, underscore.
 /// Must start with alphanumeric, max 64 chars. Rejects unicode homoglyphs.
@@ -74,11 +76,11 @@ const MAX_ENTRIES_PER_DIR: usize = 100;
 /// ---
 /// name: code-reviewer
 /// description: Reviews pull requests for correctness and style
-/// model: claude-sonnet-4
+/// model: inherit   # or a provider name from [[llm.providers]]
 /// tools:
 ///   allow:
-///     - shell
-///     - Read
+///     - bash
+///     - read
 /// permissions:
 ///   max_turns: 15
 ///   timeout_secs: 300
@@ -100,7 +102,7 @@ pub struct SubAgentDef {
     pub name: String,
     /// Human-readable description shown in `/agent list` output.
     pub description: String,
-    /// Override the default LLM model for this agent. `None` inherits the parent's provider.
+    /// Provider for this agent: a `[[llm.providers]]` name, or `inherit`/`None` for the parent's.
     pub model: Option<ModelSpec>,
     /// Base tool access policy derived from `tools.allow` or `tools.deny` in frontmatter.
     pub tools: ToolPolicy,
@@ -146,7 +148,125 @@ pub struct SubAgentDef {
     pub file_path: Option<PathBuf>,
 }
 
+/// Which tool list of a definition (or the global denylist) an entry came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ToolListKind {
+    /// `tools.allow`.
+    Allow,
+    /// `tools.deny`.
+    Deny,
+    /// `tools.except`.
+    Except,
+    /// The global `[agents] default_disallowed_tools` list.
+    GlobalDisallowed,
+}
+
+/// Hook event a matcher belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HookEvent {
+    /// `PreToolUse`.
+    PreToolUse,
+    /// `PostToolUse`.
+    PostToolUse,
+}
+
+/// A non-fatal problem found in a sub-agent definition at load time.
+///
+/// Produced by [`SubAgentDef::warnings`]; logged once per definition by the loader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DefinitionWarning {
+    /// A tool-list entry carries an argument pattern (`Bash(cargo *)`); the pattern is ignored
+    /// and the entry applies to the whole tool.
+    ArgumentPatternIgnored {
+        /// List the entry came from.
+        list: ToolListKind,
+        /// The entry as written.
+        entry: String,
+    },
+    /// A hook matcher token carries an argument pattern; matching ignores it.
+    HookMatcherArgumentIgnored {
+        /// Event the matcher is registered for.
+        event: HookEvent,
+        /// The token as written.
+        token: String,
+    },
+    /// `max_history_messages` cannot hold the task plus `max_turns` of history, so older
+    /// turns are evicted before the agent finishes.
+    HistoryBudgetTooSmall {
+        /// Configured turn limit.
+        max_turns: u32,
+        /// Configured history limit.
+        max_history_messages: usize,
+    },
+}
+
 impl SubAgentDef {
+    /// Report non-fatal problems in this definition without logging them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_subagent::{DefinitionWarning, SubAgentDef, ToolListKind, ToolPolicy};
+    ///
+    /// let mut def = SubAgentDef::for_test("w");
+    /// def.tools = ToolPolicy::AllowList(vec!["Bash(cargo *)".into()]);
+    /// assert_eq!(
+    ///     def.warnings(),
+    ///     vec![DefinitionWarning::ArgumentPatternIgnored {
+    ///         list: ToolListKind::Allow,
+    ///         entry: "Bash(cargo *)".into(),
+    ///     }]
+    /// );
+    /// ```
+    #[must_use]
+    pub fn warnings(&self) -> Vec<DefinitionWarning> {
+        let mut out = Vec::new();
+        let listed = crate::filter::listed_entries(
+            &self.tools,
+            &self.disallowed_tools,
+            ToolListKind::Except,
+        );
+        for (list, entry) in listed {
+            if zeph_tools::tool_id::argument_pattern(entry).is_some() {
+                out.push(DefinitionWarning::ArgumentPatternIgnored {
+                    list,
+                    entry: entry.clone(),
+                });
+            }
+        }
+        let hook_sets = [
+            (HookEvent::PreToolUse, &self.hooks.pre_tool_use),
+            (HookEvent::PostToolUse, &self.hooks.post_tool_use),
+        ];
+        for (event, matchers) in hook_sets {
+            for token in matchers.iter().flat_map(|m| m.matcher.split('|')) {
+                if token.contains('(') {
+                    out.push(DefinitionWarning::HookMatcherArgumentIgnored {
+                        event,
+                        token: token.to_owned(),
+                    });
+                }
+            }
+        }
+        let p = &self.permissions;
+        if p.max_history_messages != 0 && 2 * (p.max_turns as usize) + 2 > p.max_history_messages {
+            out.push(DefinitionWarning::HistoryBudgetTooSmall {
+                max_turns: p.max_turns,
+                max_history_messages: p.max_history_messages,
+            });
+        }
+        out
+    }
+
+    fn log_warnings(&self) {
+        for warning in self.warnings() {
+            tracing::warn!(agent = %self.name, ?warning, "sub-agent definition warning");
+        }
+    }
+
     /// Construct a minimal `SubAgentDef` for use in unit tests across crates.
     ///
     /// Produces an agent with `InheritAll` tools, default permissions, and empty
@@ -201,6 +321,9 @@ pub struct SubAgentPermissions {
     /// `bg_isolation` setting.  When the worktree subsystem is disabled, this field
     /// is silently ignored.
     pub worktree: bool,
+    /// Per-definition override of `[agents] instructions`: whether the parent's instruction
+    /// blocks are appended to this agent's system prompt. `None` follows the global setting.
+    pub instructions: Option<SubagentInstructions>,
 }
 
 impl Default for SubAgentPermissions {
@@ -214,6 +337,7 @@ impl Default for SubAgentPermissions {
             permission_mode: PermissionMode::Default,
             max_history_messages: 200,
             worktree: false,
+            instructions: None,
         }
     }
 }
@@ -275,6 +399,8 @@ struct RawPermissions {
     max_history_messages: usize,
     #[serde(default)]
     worktree: bool,
+    #[serde(default)]
+    instructions: Option<SubagentInstructions>,
 }
 
 impl Default for RawPermissions {
@@ -288,6 +414,7 @@ impl Default for RawPermissions {
             permission_mode: PermissionMode::Default,
             max_history_messages: default_max_history_messages(),
             worktree: false,
+            instructions: None,
         }
     }
 }
@@ -396,10 +523,10 @@ impl SubAgentDef {
     /// ---
     /// name: my-agent
     /// description: Does something useful
-    /// model: claude-sonnet-4-20250514
+    /// model: inherit
     /// tools:
     ///   allow:
-    ///     - shell
+    ///     - bash
     /// permissions:
     ///   max_turns: 10
     /// skills:
@@ -526,6 +653,7 @@ impl SubAgentDef {
                 permission_mode: p.permission_mode,
                 max_history_messages: p.max_history_messages,
                 worktree: p.worktree,
+                instructions: p.instructions,
             },
             skills: SkillFilter {
                 include: raw.skills.include,
@@ -672,6 +800,7 @@ impl SubAgentDef {
                                 "skipping duplicate sub-agent definition"
                             );
                         } else {
+                            def.log_warnings();
                             seen.insert(def.name.clone());
                             result.push(def);
                         }
@@ -747,6 +876,7 @@ impl SubAgentDef {
                     );
                     continue;
                 }
+                def.log_warnings();
                 seen.insert(def.name.clone());
                 result.push(def);
             }
@@ -825,6 +955,8 @@ struct WritablePermissions<'a> {
     permission_mode: PermissionMode,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     worktree: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<SubagentInstructions>,
 }
 
 impl<'a> WritablePermissions<'a> {
@@ -837,6 +969,7 @@ impl<'a> WritablePermissions<'a> {
             ttl_secs: p.ttl_secs,
             permission_mode: p.permission_mode,
             worktree: p.worktree,
+            instructions: p.instructions,
         }
     }
 
@@ -847,6 +980,7 @@ impl<'a> WritablePermissions<'a> {
             && self.timeout_secs == default_timeout()
             && self.ttl_secs == default_ttl()
             && self.permission_mode == PermissionMode::Default
+            && self.instructions.is_none()
     }
 }
 

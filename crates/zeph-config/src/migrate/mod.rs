@@ -85,8 +85,8 @@ pub use session::{
     migrate_session_resume_config,
 };
 pub use subagent::{
-    migrate_agents_delegation_mode, migrate_agents_max_spawns_per_session,
-    migrate_agents_peer_messaging_config,
+    migrate_agents_delegation_mode, migrate_agents_instructions,
+    migrate_agents_max_spawns_per_session, migrate_agents_peer_messaging_config,
 };
 pub use tools::{
     migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry, migrate_agent_time_reminder,
@@ -788,15 +788,15 @@ use steps::{
     MigrateA2aCardTrustConfig, MigrateA2aServerRemoveInertFields, MigrateAcpAuthClientsConfig,
     MigrateAcpIdeMcpConfig, MigrateAcpSubagentsConfig, MigrateAgentBudgetHint,
     MigrateAgentRetryToToolsRetry, MigrateAgentTimeReminder, MigrateAgentsDelegationMode,
-    MigrateAgentsMaxSpawnsPerSession, MigrateAgentsPeerMessagingConfig, MigrateAutodreamConfig,
-    MigrateCavemanConfig, MigrateClaudeCompactionTrigger, MigrateClaudeSpeed,
-    MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
-    MigrateCorrectionConfidenceCalibration, MigrateDatabaseUrl, MigrateDeepLinkConfig,
-    MigrateDurableConfig, MigrateDurableHwmAdvisory, MigrateDurableKeyRotation,
-    MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
-    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
-    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateGoalsAutoCheck, MigrateGoalsConfig, MigrateGonkagateToGonka,
+    MigrateAgentsInstructions, MigrateAgentsMaxSpawnsPerSession, MigrateAgentsPeerMessagingConfig,
+    MigrateAutodreamConfig, MigrateCavemanConfig, MigrateClaudeCompactionTrigger,
+    MigrateClaudeSpeed, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
+    MigrateCompressionPredictorConfig, MigrateCorrectionConfidenceCalibration, MigrateDatabaseUrl,
+    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
+    MigrateDurableKeyRotation, MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs,
+    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
+    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
+    MigrateForgettingConfig, MigrateGoalsAutoCheck, MigrateGoalsConfig, MigrateGonkagateToGonka,
     MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateIntegrityConfig,
     MigrateInteractionConfig, MigrateKnowledgeConfig, MigrateLlmStreamLimits,
     MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
@@ -1083,6 +1083,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateInteractionConfig),
             // Step 119 — rewrite the retired claude-sonnet-4-5-20250929 model id (#7094)
             Box::new(MigrateRetiredClaudeSonnetModel),
+            // Step 120 — add an advisory [agents] instructions line (#7157)
+            Box::new(MigrateAgentsInstructions),
         ]
     });
 

@@ -1052,10 +1052,6 @@ mod tests {
     /// `serde(default)` can never silently pick another field's default (cascade abort must stay
     /// disabled at 0.0).
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "omitted_unit_interval_keys_keep_their_defaults compares a deterministic value produced by the same arithmetic path"
-    )] // defaults must be exactly the documented constants
     fn omitted_unit_interval_keys_keep_their_defaults() {
         let cases = [
             float_default_cases_0(),
@@ -1065,7 +1061,12 @@ mod tests {
         .concat();
         for (path, key, read, expected) in &cases {
             let cfg = config_without(path, key);
-            assert_eq!(read(&cfg), *expected, "{}.{key}", path.join("."));
+            assert_eq!(
+                read(&cfg).to_bits(),
+                expected.to_bits(),
+                "{}.{key}",
+                path.join(".")
+            );
         }
     }
 

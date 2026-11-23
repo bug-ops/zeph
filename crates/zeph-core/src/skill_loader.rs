@@ -37,6 +37,10 @@ use crate::skill_trust_gate::{SkillBodyResolution, SkillTrustGate};
 pub struct LoadSkillParams {
     /// Name of the skill to load (from `<other_skills>` catalog).
     pub skill_name: String,
+    /// Optional skill-relative resource path (for example `references/guide.md`) from the
+    /// skill's resource listing. When set, the file is returned instead of the skill body.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// Tool executor that loads a full skill body by name from the shared registry.
@@ -105,7 +109,7 @@ impl ToolExecutor for SkillLoaderExecutor {
     fn tool_definitions(&self) -> Vec<ToolDef> {
         vec![ToolDef {
             id: "load_skill".into(),
-            description: "Load the full body of a skill by name when you see a relevant entry in the <other_skills> catalog.\n\nParameters: name (string, required) - exact skill name from the <other_skills> catalog\nReturns: complete skill instructions (SKILL.md body), or error if skill not found\nErrors: InvalidParams if name is empty; Execution if skill not found in registry\nExample: {\"name\": \"code-review\"}".into(),
+            description: "Load the full body of a skill by name when you see a relevant entry in the <other_skills> catalog.\n\nParameters: skill_name (string, required) - exact skill name from the <other_skills> catalog; path (string, optional) - skill-relative resource file from the skill's \"Available references/scripts/assets\" list\nReturns: complete skill instructions (SKILL.md body), or the content of the resource file when path is given (UTF-8 text files up to 256 KiB only; binary files are refused); error if the skill or resource is not found\nErrors: InvalidParams if skill_name is empty; Execution if skill not found in registry\nExample: {\"skill_name\": \"code-review\"} or {\"skill_name\": \"code-review\", \"path\": \"references/checklist.md\"}".into(),
             schema: schemars::schema_for!(LoadSkillParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
@@ -123,7 +127,11 @@ impl ToolExecutor for SkillLoaderExecutor {
 
         tracing::Span::current().record("skill", skill_name.as_str());
 
-        let summary = match self.gate.resolve_body(&skill_name).await? {
+        let resolution = match params.path.as_deref() {
+            Some(path) => self.gate.resolve_resource(&skill_name, path).await?,
+            None => self.gate.resolve_body(&skill_name).await?,
+        };
+        let summary = match resolution {
             SkillBodyResolution::Refused(message) | SkillBodyResolution::NotFound(message) => {
                 message
             }
@@ -140,7 +148,12 @@ impl ToolExecutor for SkillLoaderExecutor {
             terminal_id: None,
             locations: None,
             raw_response: None,
-            claim_source: None,
+            // Resource files are outside the SKILL.md integrity hash: this claim makes the agent
+            // drop the first-party `load_skill` scan exemptions for them only (#7159, F2).
+            claim_source: params
+                .path
+                .is_some()
+                .then_some(zeph_tools::ClaimSource::SkillResource),
             ..Default::default()
         }))
     }

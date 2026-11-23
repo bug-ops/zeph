@@ -351,6 +351,10 @@ pub enum ClaimSource {
     /// already took the channel-message path. That is safe only while no [`ToolExecutor`] sets
     /// it: `ToolOutput` is not `Deserialize`, and only the agent's `ask_user` handler builds it.
     UserAnswer,
+    /// A skill-local resource file read by `load_skill` with a `path`. The file is outside the
+    /// SKILL.md integrity hash, so the agent must not apply the first-party scan exemptions
+    /// (ML classifier, VIGIL) that the `load_skill` name would otherwise earn.
+    SkillResource,
 }
 
 impl From<ClaimSource> for zeph_common::trust_level::ToolProvenance {
@@ -368,7 +372,8 @@ impl From<ClaimSource> for zeph_common::trust_level::ToolProvenance {
             | ClaimSource::Moderation
             | ClaimSource::ContextManagement
             | ClaimSource::PeerMessage
-            | ClaimSource::UserAnswer => Self::Native,
+            | ClaimSource::UserAnswer
+            | ClaimSource::SkillResource => Self::Native,
         }
     }
 }
@@ -399,7 +404,8 @@ impl ClaimSource {
             | Self::Diagnostics
             | Self::Moderation
             | Self::ContextManagement
-            | Self::UserAnswer => TurnContextTrust::LocalUntrusted,
+            | Self::UserAnswer
+            | Self::SkillResource => TurnContextTrust::LocalUntrusted,
             Self::WebScrape
             | Self::WebSearch
             | Self::Mcp
@@ -1502,6 +1508,7 @@ mod tests {
             ClaimSource::WebSearch,
             ClaimSource::PeerMessage,
             ClaimSource::UserAnswer,
+            ClaimSource::SkillResource,
         ] {
             assert_eq!(ToolProvenance::from(claim), ToolProvenance::Native);
         }

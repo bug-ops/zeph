@@ -188,6 +188,30 @@ jobs:
       - name: Clippy
         run: cargo clippy --profile ci ${{ matrix.args }} -- -D warnings
 
+  lint-clippy-full:
+    name: Lint (clippy, full)
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run-full-ci == 'true'
+    runs-on: ubuntu-latest
+    # Unmeasured initial budget (#7170); tighten after the first CI run.
+    timeout-minutes: 45
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: "1.98"
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          cache-targets: "false"
+          shared-key: "ci-clippy-full"
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Clippy
+        run: cargo clippy --profile ci --workspace --all-targets --features full -- -D warnings
+
   msrv:
     name: MSRV check (1.98, ${{ matrix.label }})
     needs: detect-changes
@@ -512,12 +536,11 @@ jobs:
     timeout-minutes: 20
     # coverage uses -C instrument-coverage which produces different artifacts than
     # normal builds; sccache still helps for unchanged crates between main pushes.
-    # This job also builds with `--features full`, which includes crates (classifiers,
-    # profiling, sandbox, gonka, cocoon) outside the lint-clippy matrix, so a warning
-    # could appear here that lint-clippy never sees. CARGO_BUILD_WARNINGS overrides the
+    # This job also builds with `--features full` (classifiers, profiling, sandbox, gonka),
+    # which lint-clippy-full lints. CARGO_BUILD_WARNINGS overrides the
     # repo-wide `.cargo/config.toml` deny-by-default to prevent that from promoting
     # workspace lint warnings to errors during instrumented compilation — linting is
-    # enforced by the dedicated lint-clippy job.
+    # enforced by the dedicated lint-clippy and lint-clippy-full jobs.
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
@@ -932,7 +955,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [detect-changes, cla, lint-shellcheck, lint-fmt, lint-clippy, msrv, build-tests, build-tests-postgres, test, integration, coverage, docker-build-and-scan, bundle-check, default-build-check, feature-matrix, validate-specs, build-postgres, rustdoc, release-build, release-build-full]
+    needs: [detect-changes, cla, lint-shellcheck, lint-fmt, lint-clippy, lint-clippy-full, msrv, build-tests, build-tests-postgres, test, integration, coverage, docker-build-and-scan, bundle-check, default-build-check, feature-matrix, validate-specs, build-postgres, rustdoc, release-build, release-build-full]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -944,6 +967,7 @@ jobs:
             "${{ needs.lint-shellcheck.result }}"
             "${{ needs.lint-fmt.result }}"
             "${{ needs.lint-clippy.result }}"
+            "${{ needs.lint-clippy-full.result }}"
             "${{ needs.msrv.result }}"
             "${{ needs.build-tests.result }}"
             "${{ needs.build-tests-postgres.result }}"

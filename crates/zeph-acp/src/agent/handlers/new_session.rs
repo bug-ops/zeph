@@ -18,6 +18,6 @@ pub(crate) async fn handle_new_session(
     cx: acp::v1::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
-    let resp = state.do_new_session(req, &cx).await?;
+    let resp = Box::pin(state.do_new_session(req, &cx)).await?;
     responder.respond(resp)
 }

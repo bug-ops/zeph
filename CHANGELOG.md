@@ -13,6 +13,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-skills`, `zeph-common`: skill miner scrubs and control-strips the GitHub error body via the new `sanitize_upstream_text`, which `zeph-llm` also adopts (#7173).
 - `zeph-llm`: provider error text now turns tabs and newlines into spaces and strips zero-width and bidi bypass codepoints around secret scrubbing (#7173).
 - `zeph-llm`: **Breaking** `AnyProvider::Gonka` now holds `Box<GonkaProvider>`, clearing `clippy::large_enum_variant` with the `gonka` feature (#7173).
+- `zeph-subagent`, `zeph-tools`: **Breaking** sub-agent tool lists and hook matchers match runtime tool IDs alias-aware and case-insensitively, and hook matching is now additive (#7154, #7188).
+- `zeph-subagent`, `zeph-orchestration`: sub-agent definition `model` selects a provider from the pool, **Breaking** an unknown name (neither a provider name nor `inherit`) fails the spawn, and `TranscriptMeta` gains `provider` (#7153, #7188).
+- `book`, `zeph-subagent`: sub-agent chapter examples match the parser and a test parses them (#7155, #7188).
+- `zeph-subagent`: history trimming keeps the task prompt (#7156, #7188).
+- `zeph-subagent`, `zeph-config`: sub-agents receive project instruction files, opt out with `instructions = none`; new `[agents] instructions` key with config migration step 120 (#7157, #7188).
+- `zeph-orchestration`: agent router normalizes tool names so keyword routing honors lowercase and pattern entries (#7158, #7188).
+- `zeph-skills`, `zeph-core`: `load_skill` takes an optional `path` argument that loads skill reference, script and asset files with traversal checks and a size cap, and its output carries the new audit claim value `skill_resource` (`ClaimSource::SkillResource`) (#7159, #7188).
+- `zeph-llm`: **Breaking** `record_quality_outcome` takes a `QualityTarget`, `coe_metrics()` returns `Option<CoeMetricsSnapshot>`, and `embed_failures` is replaced by `secondary_failures`/`shadow_timeouts` (#7163, #7166, #7188).
+- `zeph-llm`: chain-of-entropy escalation attributes provider, pricing and quality to the escalated provider on both the chat and tool paths (#7164, #7188).
+- `zeph-llm`: tool-path chain-of-entropy skips the shadow call when logprobs are unavailable (#7165, #7188).
+- `zeph-common`: `sanitize_upstream_text` strips ECMA-48 escapes and redacts secrets split by newlines (#7167, #7188).
+- `zeph-core`: scheduler-less lib tests build again (#7168, #7188).
+- `zeph-config`, `zeph-acp`: clippy passes on Rust 1.100 with and without `full` (#7169, #7188).
+- `zeph-llm`: Ollama requests send prior tool calls as structured `tool_calls` (#7171, #7188).
+- `zeph-core`, `zeph-tui`: `/mcp list` reports the connected MCP tools; **Breaking** `MetricsSnapshot.mcp_tool_count` field becomes a method derived from the new `mcp_tools` field (#7172, #7188).
+- `ci`: new `lint-clippy-full` job lints `--features full` and is required by `ci-status` (#7170, #7188).
 
 ### Added
 

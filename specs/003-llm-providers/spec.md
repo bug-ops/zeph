@@ -252,13 +252,21 @@ Bandit returns earlier, and a Cascade router has no CoE.
   replacement inherits the primary's thinking-replay report (merged) and compaction summary.
 - The shadow stage (secondary call and inter-divergence) runs under `CoeConfig::shadow_budget =
   min(30 s, timeouts.llm_seconds / 4)`, a runtime value derived in bootstrap (no TOML key). On
-  expiry or secondary error the primary is kept and `embed_failures` is incremented. A primary that
+  expiry the primary is kept and `shadow_timeouts` is incremented; on a secondary error it is kept and `secondary_failures` is incremented (#7166). A divergence-embedding failure leaves the divergence absent and is not counted. `RouterProvider::coe_metrics()` returns `Option<CoeMetricsSnapshot>` (named fields `kept_primary`, `intra_escalations`, `inter_escalations`, `secondary_failures`, `shadow_timeouts`). A primary that
   finishes within `llm_seconds - shadow_budget` is never lost to CoE; a zero budget keeps the
   primary without polling the secondary.
-- Limitation: after a tool-path escalation `last_active_provider` and the served usage stay with
-  the primary, and no quality outcomes are recorded on the tool path (the router writes them to
-  `last_active_provider`, which would attribute both to the primary). Matches the documented
-  auxiliary-pricing limitation of `chat()`.
+- Escalation attribution (#7164, both `chat()` and the tool path, one `apply_coe_outcome`): after an
+  escalation `last_active_provider` is the secondary, the served usage is the secondary's with the
+  discarded primary's tokens as `auxiliary`, the primary gets a failed and the secondary a
+  successful quality outcome. `CoeRouter` captures the secondary's kind and model id at `with_coe`
+  so `last_selected_provider_kind` and `effective_model_identifier` resolve a secondary outside the
+  router pool.
+- Tool path shadow sampling (#7165): `should_shadow(entropy, cfg, CoePath)`; on `CoePath::Tools` an
+  absent entropy never shadows (CoE is inert for providers without logprobs there); `CoePath::Chat`
+  is unchanged (borderline sampling also when entropy is absent).
+- Quality target (#7163): `RouterProvider::record_quality_outcome(QualityTarget, bool)` (also on
+  `RouterAware` and `AnyProvider`); `QualityTarget::Provider(name)` writes to the named sub-provider,
+  `QualityTarget::LastActive` to the one that served the last call (agent tool-result callers).
 
 ### Key Invariants
 

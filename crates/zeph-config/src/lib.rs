@@ -216,7 +216,7 @@ pub use serve::ServeConfig;
 pub use session::{RecapConfig, ResumeConfig, SessionConfig};
 pub use subagent::{
     HookAction, HookDef, HookMatcher, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,
-    ToolPolicy,
+    SubagentInstructions, ToolPolicy,
 };
 pub use telemetry::{TelemetryBackend, TelemetryConfig};
 pub use tools::{AuditDestination, SandboxBackend, ToolCompressionConfig};

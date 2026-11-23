@@ -17,11 +17,11 @@
 //! Call sites that need quality signals must import this trait explicitly:
 //!
 //! ```rust,no_run
-//! use zeph_llm::router::RouterAware;
+//! use zeph_llm::router::{QualityTarget, RouterAware};
 //! use zeph_llm::any::AnyProvider;
 //!
-//! fn report_quality(provider: &AnyProvider, name: &str, success: bool) {
-//!     provider.record_quality_outcome(name, success);
+//! fn report_quality(provider: &AnyProvider, success: bool) {
+//!     provider.record_quality_outcome(QualityTarget::LastActive, success);
 //! }
 //! ```
 //!
@@ -30,7 +30,7 @@
 
 use crate::any::AnyProvider;
 use crate::provider::LlmProvider;
-use crate::router::RouterProvider;
+use crate::router::{QualityTarget, RouterProvider};
 
 mod sealed {
     pub trait Sealed {}
@@ -60,7 +60,7 @@ pub trait RouterAware: sealed::Sealed {
     ///
     /// No-op (with a `tracing::trace!` event) when the underlying provider is not a router
     /// or when reputation scoring is not enabled.
-    fn record_quality_outcome(&self, provider_name: &str, success: bool);
+    fn record_quality_outcome(&self, target: QualityTarget<'_>, success: bool);
 }
 
 impl sealed::Sealed for RouterProvider {}
@@ -70,8 +70,8 @@ impl RouterAware for RouterProvider {
         RouterProvider::set_memory_confidence(self, confidence);
     }
 
-    fn record_quality_outcome(&self, provider_name: &str, success: bool) {
-        RouterProvider::record_quality_outcome(self, provider_name, success);
+    fn record_quality_outcome(&self, target: QualityTarget<'_>, success: bool) {
+        RouterProvider::record_quality_outcome(self, target, success);
     }
 }
 
@@ -90,12 +90,12 @@ impl RouterAware for AnyProvider {
         }
     }
 
-    fn record_quality_outcome(&self, provider_name: &str, success: bool) {
+    fn record_quality_outcome(&self, target: QualityTarget<'_>, success: bool) {
         if let AnyProvider::Router(p) = self {
-            p.record_quality_outcome(provider_name, success);
+            p.record_quality_outcome(target, success);
         } else {
             tracing::trace!(
-                provider_name,
+                ?target,
                 success,
                 provider_variant = self.name(),
                 "record_quality_outcome: no-op (non-router provider; quality signals require RouterProvider)"
@@ -126,7 +126,7 @@ mod tests {
     fn router_aware_noop_on_claude_record_quality_outcome() {
         let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
         // Must not panic; emits a tracing::trace! but is otherwise a no-op.
-        provider.record_quality_outcome("claude", true);
+        provider.record_quality_outcome(QualityTarget::LastActive, true);
     }
 
     #[test]
@@ -138,6 +138,6 @@ mod tests {
     #[test]
     fn router_aware_noop_on_mock_record_quality_outcome() {
         let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["ok".into()]));
-        provider.record_quality_outcome("mock", false);
+        provider.record_quality_outcome(QualityTarget::LastActive, false);
     }
 }

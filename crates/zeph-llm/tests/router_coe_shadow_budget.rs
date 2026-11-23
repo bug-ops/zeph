@@ -73,9 +73,9 @@ async fn chat_with_tools_stalled_secondary_keeps_primary_within_budget() {
 
     assert!(matches!(resp, ChatResponse::Text { ref text, .. } if text == "primary"));
     assert_eq!(
-        router.coe_metrics().unwrap().3,
+        router.coe_metrics().unwrap().shadow_timeouts,
         1,
-        "embed_failures counts the timeout"
+        "shadow_timeouts counts the timeout"
     );
 }
 
@@ -90,7 +90,7 @@ async fn chat_stalled_secondary_keeps_primary_within_budget() {
     );
 
     assert_eq!(router.chat(&user()).await.unwrap(), "primary");
-    assert_eq!(router.coe_metrics().unwrap().3, 1);
+    assert_eq!(router.coe_metrics().unwrap().shadow_timeouts, 1);
 }
 
 #[tokio::test]

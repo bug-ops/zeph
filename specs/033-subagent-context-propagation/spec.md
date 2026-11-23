@@ -107,27 +107,35 @@ Do not approve code until all issues are addressed.
 
 ### 2.2 Model Field: Inherit Semantics
 
-The `model` field supports three modes:
+The `model` field is a provider reference, not a model id (#7153):
 
-1. **Absent or `None`**: Use the subagent config's default provider (usually the main provider)
-2. **Named model** (e.g., `"gpt-4o-mini"`): Use that specific model by name
-3. **`"inherit"`**: Copy the parent's current model name at spawn time
+1. **Absent or `inherit`**: a clone of the parent's active provider, including its runtime overrides
+2. **A provider name** from `[[llm.providers]]` (e.g. `fast`, matched case-insensitively): a provider built from that entry with its configured thinking and effort; the parent's status sender is attached so status lines still reach the channel
 
 Example:
 
 ```yaml
-# Use fast/cheap model for simple reviews
-model: gpt-4o-mini
+# Use the cheap provider declared as name = "fast" for simple reviews
+model: fast
 
-# Use same model as parent for consistency
+# Use the parent's provider
 model: inherit
-
-# Use strongest model for complex analysis
-model: claude-opus-4
 ```
 
-**Implementation**: At spawn time, if `def.model == Some("inherit")`, resolve to `parent_provider_name` from `SpawnContext`.
-If resolution fails (parent name not found), fall back to the main provider's default model.
+**Implementation**: `Agent::resolve_subagent_provider` (span `core.subagent.resolve_provider`) runs at every spawn and resume site, including `handle_scheduler_spawn_action`:
+- a name that matches no pool entry while the pool is wired fails the spawn with `SubAgentError::UnknownProvider` before any slot, transcript or worktree is created; in the scheduler the task is marked Failed through `record_spawn_failure`, which also releases the pending admission permit, and it is not retried;
+- a name when the pool is not wired (lightweight embedders) falls back to the parent provider with a warning.
+
+The resolved provider name is recorded in the `subagent.manager.spawn|resume` span and `TranscriptMeta.provider`. Sub-agent LLM usage is not priced by the parent's cost tracker on any path; that is unchanged.
+
+### 2.3 Inherited Instruction Files (#7157)
+
+`[agents] instructions = "inherit" | "none"` (default `inherit`) controls whether the parent's rendered instruction block (`render_instruction_blocks`) is carried in `SpawnContext.inherited_instructions` and appended to the sub-agent system prompt after the definition's own prompt.
+
+- `none` in config is a global kill switch: `build_spawn_context` passes no block and no definition can opt back in.
+- Under `inherit`, a definition opts out with `permissions.instructions: none`; it can only opt out.
+- The parent's already-resolved block is passed as is: no re-discovery per provider kind, no disk I/O at spawn. A parent without blocks passes `None`.
+- The cost is visible: a debug log (`instructions_bytes`, `approx_tokens`) at spawn.
 
 ---
 
@@ -422,6 +430,7 @@ See `TranscriptWriter` and `TranscriptReader` in `zeph-subagent`.
 - Background spawns are tracked and can be collected or cancelled independently
 - All spawns include `spawn_depth` and are gated by `max_spawn_depth`
 - Parent message history is pruned by `trim_parent_messages()` before passing to the subagent: any `ToolResult` without a paired `ToolUse` is removed first (pass 1), then any `ToolUse` without a paired `ToolResult` is removed (pass 2), except the trailing assistant message which is exempt from pass 2 to preserve pending tool calls at the conversation boundary (#3760)
+- The `model` field resolves per spawn/resume through the provider registry; an unknown name fails the spawn and NEVER falls back to the parent provider while the pool is wired (#7153)
 - Token budget for the sliced parent history is estimated by `estimate_parts_size()`, which uses a 50-byte JSON overhead for `ToolUse`/`ToolResult` blocks, base64 expansion ratio for images, and `content.len()` fallback; `flatten_parts()` byte counting is NOT used for budget estimation because it underestimates structured JSON size (#3761)
 
 ### Ask First
@@ -430,6 +439,7 @@ See `TranscriptWriter` and `TranscriptReader` in `zeph-subagent`.
 - Using `context_injection_mode = "none"` (loses parent context awareness)
 
 ### Never
+- Let a definition enable instruction inheritance when `[agents] instructions = "none"` (#7157)
 - Spawn subagents with `bypass_permissions = true` unless explicitly configured
 - Pass secrets or sensitive data in the `task_prompt` (use memory scope + MEMORY.md instead)
 - Spawn more than `max_concurrent` subagents (enforced at call site)

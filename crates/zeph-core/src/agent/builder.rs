@@ -2469,7 +2469,7 @@ impl<C: Channel> Agent<C> {
             .messages
             .first()
             .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
-        let mcp_tool_count = self.services.mcp.tools().len();
+        let mcp_tools = self.services.mcp.tool_names();
         let mcp_server_count = if self.services.mcp.server_outcomes.is_empty() {
             // Fallback: count unique server IDs from connected tools
             self.services
@@ -2504,7 +2504,7 @@ impl<C: Channel> Agent<C> {
             m.context_tokens = prompt_estimate;
             m.prompt_tokens = prompt_estimate;
             m.total_tokens = prompt_estimate;
-            m.mcp_tool_count = mcp_tool_count;
+            m.mcp_tools = mcp_tools;
             m.mcp_server_count = mcp_server_count;
             m.mcp_connected_count = mcp_connected_count;
             m.mcp_servers = mcp_servers;

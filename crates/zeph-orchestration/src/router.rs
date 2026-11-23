@@ -3,7 +3,7 @@
 
 //! Agent routing: selects the best agent definition for a given task.
 
-use zeph_subagent::{SubAgentDef, ToolPolicy};
+use zeph_subagent::SubAgentDef;
 
 use super::graph::TaskNode;
 
@@ -58,22 +58,22 @@ pub struct RuleBasedRouter;
 
 /// Keyword-to-tool mapping for step 2 routing.
 ///
-/// Maps a lowercase substring of the task description to a tool name.
+/// Maps a lowercase substring of the task description to a runtime tool id.
 /// Only matched when `agent_hint` is absent or not found (step 2 is last resort).
 const TOOL_KEYWORDS: &[(&str, &str)] = &[
-    ("write code", "Write"),
-    ("implement", "Write"),
-    ("create file", "Write"),
-    ("edit", "Edit"),
-    ("modify", "Edit"),
-    ("read", "Read"),
-    ("analyze", "Read"),
-    ("review", "Read"),
-    ("run test", "Bash"),
-    ("execute", "Bash"),
-    ("compile", "Bash"),
-    ("build", "Bash"),
-    ("search", "Grep"),
+    ("write code", "write"),
+    ("implement", "write"),
+    ("create file", "write"),
+    ("edit", "edit"),
+    ("modify", "edit"),
+    ("read", "read"),
+    ("analyze", "read"),
+    ("review", "read"),
+    ("run test", "bash"),
+    ("execute", "bash"),
+    ("compile", "bash"),
+    ("build", "bash"),
+    ("search", "grep"),
 ];
 
 impl AgentRouter for RuleBasedRouter {
@@ -122,16 +122,7 @@ impl AgentRouter for RuleBasedRouter {
 
 /// Check if an agent definition allows a specific tool.
 fn agent_has_tool(def: &SubAgentDef, tool_name: &str) -> bool {
-    // Explicit deny-list wins over everything.
-    if def.disallowed_tools.iter().any(|t| t == tool_name) {
-        return false;
-    }
-
-    match &def.tools {
-        ToolPolicy::AllowList(allowed) => allowed.iter().any(|t| t == tool_name),
-        ToolPolicy::DenyList(denied) => !denied.iter().any(|t| t == tool_name),
-        _ => true,
-    }
+    zeph_subagent::filter::policy_allows(&def.tools, &def.disallowed_tools, tool_name)
 }
 
 #[cfg(test)]

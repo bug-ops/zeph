@@ -211,6 +211,11 @@ pub struct TranscriptMeta {
     /// sidecars written before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_trust: Option<TurnContextTrust>,
+    /// Name of the `[[llm.providers]]` entry (or the parent provider) that served the session.
+    ///
+    /// `None` for sidecars written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// Highest trust tier tagged on any of `messages`; `None` when no message carries a tag.
@@ -1067,6 +1072,7 @@ mod tests {
             turns_used: 2,
             trust_schema: TranscriptTrustSchema::PerResult,
             inherited_trust: None,
+            provider: None,
         }
     }
 

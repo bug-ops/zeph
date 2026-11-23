@@ -1350,6 +1350,17 @@ impl McpState {
             .collect()
     }
 
+    /// Sorted qualified names (`server:tool`) of every connected MCP tool.
+    pub(crate) fn tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .tools
+            .iter()
+            .map(zeph_mcp::McpTool::qualified_name)
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
     /// The full connected MCP tool list.
     pub(crate) fn tools(&self) -> &[zeph_mcp::McpTool] {
         &self.tools

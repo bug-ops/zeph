@@ -183,7 +183,7 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | FR-005 | WHEN `SubAgentManager::spawn()` is called at the concurrency limit THEN the system SHALL return `Err(ConcurrencyLimitExceeded)` | must |
 | FR-006 | WHEN a subagent is spawned with `parent_cancel` THEN cancelling the parent token SHALL cancel the child's `CancellationToken` | must |
 | FR-007 | WHEN a `Grant` TTL expires THEN `PermissionGrants::check()` SHALL return an error for that grant | must |
-| FR-008 | WHEN `FilteredToolExecutor` receives a tool call THEN it SHALL check the `ToolPolicy` and denylist before forwarding to the real executor, matching tool IDs case-insensitively after stripping argument suffixes (`"Bash(cargo *)"` → `"bash"`) via `normalize_tool_id` (#3765) | must |
+| FR-008 | WHEN `FilteredToolExecutor` receives a tool call THEN it SHALL check the `ToolPolicy` and denylist before forwarding to the real executor, matching tool IDs case-insensitively after stripping argument suffixes (`"Bash(cargo *)"` → `"bash"`) via `normalize_tool_id` (#3765), which resolves the aliases `shell`/`sh` to the runtime id `bash` through `zeph_tools::tool_id::ToolMatchKey` (#7154) | must |
 | FR-009 | WHEN a subagent session ends (normally or via cancellation) THEN a JSONL transcript SHALL be written with complete turn history | must |
 | FR-009a | WHEN a transcript is written THEN `TranscriptMeta.trust_schema` SHALL record its trust-marker format (`per_result` for new sessions; a missing key reads as `legacy`). `SubAgentHandle` carries `trust_schema` and `resumed_from` so the final meta written on collect keeps both, and collect re-reads the spawn-time sidecar to keep `inherited_trust` (#7027, the trust floor of the context the session started from; resume folds the original meta floor, the current `SpawnContext` floor and the tags on the replayed history); resuming a `legacy` transcript yields a `legacy` session (#7022). Text of sub-agent notices (#7021) passes `SecretMaskRegistry::mask`, then `scrub_secret_shapes`, then `PiiFilter::scrub` when enabled, the same order as live forwarding. | must |
 | FR-010 | WHEN `sweep_old_transcripts()` is called THEN transcripts beyond the retention window SHALL be deleted | must |
@@ -857,7 +857,23 @@ The sub-agent loop (`handle_tool_step`, `crates/zeph-subagent/src/agent_loop.rs`
 
 ---
 
-## 23. See Also
+## 23. Tool Identity, Provider, Instructions and History Pins (#7153-#7158)
+
+- **Tool identity (#7154, #7158).** `zeph_tools::tool_id::ToolMatchKey` is the one canonical tool identity: trim, drop an argument pattern, lowercase, `shell`/`sh` -> `bash`. `normalize_tool_id`, `filter::policy_allows` (deny/except/global wins over allow), the hook matchers and `RuleBasedRouter` compare keys. The router names runtime ids (`write`, `edit`, `read`, `bash`, `grep`). Argument patterns (`Bash(cargo *)`) are never enforced: `SubAgentDef::warnings()` reports them (`DefinitionWarning`, logged once per definition by the loader), `filter::unknown_tool_entries` WARN-logs entries matching no registered tool. `permissions.rs` and the `policy.rs` glob semantics keep their own normalization (policy still maps the aliases to `shell`).
+- **Implicit scoped `load_skill` (#7159).** An `AllowList` definition with a non-empty `skills.include` and no `load_skill` in allow, deny or except gets `load_skill` limited to the included skills that matched (`implicit_load_skill_scope`, `FilteredToolExecutor::with_skill_scope`, `SpawnContext.skill_scope`); other skill names are `Blocked`. All other policies keep today's unscoped behavior.
+- **Provider (#7153).** `model` names a `[[llm.providers]]` entry or `inherit`; an unknown name fails the spawn with `SubAgentError::UnknownProvider` before any side effect. The serving provider name is recorded in `TranscriptMeta.provider` (absent in legacy sidecars) and the `provider` field of the `subagent.manager.spawn`/`resume` spans.
+- **Instructions (#7157).** The parent's rendered instruction blocks travel in `SpawnContext.inherited_instructions` and are appended after the definition body (spawn and resume). `[agents] instructions = "none"` is a global kill switch resolved by the spawning caller (no block is passed); `permissions.instructions: none` opts a single definition out. A definition can only opt out, never opt in over a global `none`. No disk I/O at spawn.
+- **History pins (#7156).** `trim_message_history_pinned` never evicts the system message, the original task (resume) or the current task prompt (`HistoryPins`, laid out by `TaskLayout`). Eviction is oldest-first per unpinned region; a cut region starts on a role that cannot adjoin its pinned predecessor, and a region between two pinned `User` messages keeps its newest `Assistant` message. Result size is at most `max(limit, pins + 3)`. Orphaned tool halves are repaired; a trim that would drop a pinned message is skipped for that turn.
+
+### Key Invariants
+
+- NEVER compare tool names with raw string equality in access-control or routing code; use `ToolMatchKey`
+- NEVER let a definition-level `permissions.instructions` override a global `[agents] instructions = "none"`
+- NEVER evict a pinned message in `trim_message_history_pinned`
+
+---
+
+## 24. See Also
 
 - [[constitution]] — project principles
 - [[002-agent-loop/spec]] — parent agent loop that uses `SubAgentManager`

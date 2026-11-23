@@ -29,6 +29,7 @@
 //! - `strict = true` (default): returns `SandboxError::Unavailable` → startup aborts.
 //! - `strict = false`: falls back to `NoopSandbox` and logs `WARN`.
 
+use std::fmt::Write as _;
 use std::io::{Seek as _, Write as _};
 use std::os::fd::OwnedFd;
 use std::os::unix::io::AsRawFd as _;
@@ -236,9 +237,9 @@ fn target_arch() -> TargetArch {
 /// Syscall numbers for privilege-escalation denylist, per architecture.
 ///
 /// Numbers sourced from seccompiler's syscall table (0.4.0).
-/// Denied: ptrace, kexec_load, init_module, finit_module, bpf, perf_event_open,
-///         mount, umount2, pivot_root, reboot, userfaultfd, keyctl, add_key,
-///         request_key, swapon, swapoff.
+/// Denied: `ptrace`, `kexec_load`, `init_module`, `finit_module`, `bpf`, `perf_event_open`,
+///         `mount`, `umount2`, `pivot_root`, `reboot`, `userfaultfd`, `keyctl`, `add_key`,
+///         `request_key`, `swapon`, `swapoff`.
 fn escalation_deny_syscalls() -> &'static [i64] {
     #[cfg(target_arch = "aarch64")]
     {
@@ -336,8 +337,10 @@ fn rewrite_with_bwrap(
     let std_cmd = cmd.as_std_mut();
 
     let original_program = std_cmd.get_program().to_os_string();
-    let original_args: Vec<std::ffi::OsString> =
-        std_cmd.get_args().map(|a| a.to_os_string()).collect();
+    let original_args: Vec<std::ffi::OsString> = std_cmd
+        .get_args()
+        .map(std::ffi::OsStr::to_os_string)
+        .collect();
 
     let mut bwrap_args: Vec<std::ffi::OsString> = Vec::new();
 
@@ -439,7 +442,7 @@ pub fn generate_hosts_override(denied: &[String]) -> String {
     for domain in denied {
         // Wildcards: emit the base domain (shallow expansion only).
         let hostname = domain.strip_prefix("*.").unwrap_or(domain.as_str());
-        out.push_str(&format!("0.0.0.0 {hostname}\n"));
+        let _ = writeln!(out, "0.0.0.0 {hostname}");
     }
     out
 }

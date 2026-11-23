@@ -137,9 +137,7 @@ fn get_thread_count(_proc_info: &sysinfo::Process) -> u64 {
 #[cfg(target_os = "linux")]
 fn get_fd_count(pid: sysinfo::Pid) -> u64 {
     let fd_path = format!("/proc/{}/fd", pid.as_u32());
-    std::fs::read_dir(fd_path)
-        .map(|entries| entries.count() as u64)
-        .unwrap_or(0)
+    std::fs::read_dir(fd_path).map_or(0, |entries| entries.count() as u64)
 }
 
 #[cfg(not(target_os = "linux"))]

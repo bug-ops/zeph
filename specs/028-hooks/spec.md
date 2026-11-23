@@ -321,6 +321,10 @@ inline. The `[hooks]` section is optional; absent section = empty hook lists = z
 - Log hook stdout/stderr at DEBUG, non-zero exit at WARN
 - Canonicalize paths before setting `ZEPH_*` env vars
 
+### Matcher Rule (#7154)
+
+A `matcher` token (and the value of an `if: "tool:<name>"` condition) matches a tool when the tool name contains the token (case-sensitive substring, unchanged) OR `ToolMatchKey` equality holds (case-insensitive, argument pattern ignored, `shell`/`sh`/`bash` one tool). The rule is additive: no previously matching token stops matching. It is shared by the main agent `[hooks]` and per-sub-agent `PreToolUse`/`PostToolUse`. Argument patterns in a sub-agent matcher raise `DefinitionWarning::HookMatcherArgumentIgnored`. `fail_closed` `PreToolUse` hooks block sub-agent calls with the generic `[blocked]` result.
+
 ### Ask First
 - Adding new hook event types (requires new `FileChanged` / `CwdChanged` variant)
 - Changing debounce interval (affects reactivity vs. noise trade-off)

@@ -149,6 +149,8 @@ pub(crate) struct WizardState {
     /// Enable live inter-sub-agent messaging (spec `087-subagent-peer-messaging`,
     /// issue #5871). Default `true`, matching `PeerMessagingConfig::default()`.
     pub(crate) agents_peer_messaging_enabled: bool,
+    /// Whether sub-agents inherit the parent's instruction block (`[agents] instructions`).
+    pub(crate) agents_instructions: zeph_config::SubagentInstructions,
     /// "regex", "judge", or "model" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
@@ -502,6 +504,7 @@ impl Default for WizardState {
             agents_default_memory_scope: None,
             agents_forward_transcript: false,
             agents_peer_messaging_enabled: true,
+            agents_instructions: zeph_config::SubagentInstructions::Inherit,
             detector_mode: None,
             judge_model: None,
             goals_auto_check: false,
@@ -1317,6 +1320,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.agents.default_memory_scope = state.agents_default_memory_scope;
     config.agents.forward_transcript = state.agents_forward_transcript;
     config.agents.peer_messaging.enabled = state.agents_peer_messaging_enabled;
+    config.agents.instructions = state.agents_instructions;
 
     config.tools.ask_user.enabled = state.ask_user_enabled;
     config.llm.cache_keepalive.enabled = state.cache_keepalive_enabled;

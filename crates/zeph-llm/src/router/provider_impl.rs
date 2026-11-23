@@ -11,9 +11,12 @@ use std::sync::atomic::Ordering;
 
 use parking_lot::Mutex;
 
-use super::coe::{CoeDecision, CoeOutcome, CoeRouter, run_coe};
+use super::coe::{CoeDecision, CoeOutcome, CoePath, CoeRouter, run_coe};
 use super::embed_cache::TurnEmbedCache;
-use super::{RouterProvider, RouterStrategy, messages_contain_image, strip_image_parts};
+use super::state::CoeEscalation;
+use super::{
+    QualityTarget, RouterProvider, RouterStrategy, messages_contain_image, strip_image_parts,
+};
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{
@@ -34,20 +37,28 @@ impl RouterProvider {
         }
     }
 
-    /// Apply a [`CoeOutcome`] of the plain `chat()` path: update quality outcomes after an
-    /// escalation, fold the shadow usage, and return the final text.
+    /// Apply a [`CoeOutcome`] of the chat or tool path and return the final response.
     ///
-    /// The tool path calls only [`Self::fold_shadow_usage`]: `record_quality_outcome` writes to
-    /// `last_active_provider`, which would attribute both outcomes to the primary there.
-    fn finish_coe(&self, coe: &CoeRouter, outcome: CoeOutcome<String>) -> String {
+    /// After an escalation the secondary becomes the active provider (kind, model and quality
+    /// attribution), its usage becomes the served usage with the primary's tokens as
+    /// `auxiliary`, the primary is demoted and the secondary credited. Otherwise the shadow
+    /// usage, if any, is folded into the primary's served usage.
+    fn apply_coe_outcome<R>(&self, coe: &CoeRouter, outcome: CoeOutcome<R>) -> R {
         if matches!(
             outcome.decision,
             CoeDecision::EscalateIntra | CoeDecision::EscalateInter
         ) {
-            self.record_quality_outcome(&outcome.primary_name, false);
-            self.record_quality_outcome(coe.secondary.name(), true);
+            *self.state.last_active_provider.lock() = Some(coe.secondary.name().to_owned());
+            *self.state.escalation.lock() = Some(CoeEscalation {
+                primary: outcome.primary_name.clone(),
+                secondary: coe.secondary.name().to_owned(),
+            });
+            self.state.record_escalated_usage(outcome.shadow_usage);
+            self.record_quality_outcome(QualityTarget::Provider(&outcome.primary_name), false);
+            self.record_quality_outcome(QualityTarget::Provider(coe.secondary.name()), true);
+        } else {
+            self.fold_shadow_usage(outcome.shadow_usage);
         }
-        self.fold_shadow_usage(outcome.shadow_usage);
         outcome.response
     }
 }
@@ -202,10 +213,11 @@ impl LlmProvider for RouterProvider {
                                     p.name().to_owned(),
                                     r,
                                     extras,
+                                    CoePath::Chat,
                                     coe_router.secondary.chat(&messages),
                                 )
                                 .await;
-                                return Ok(router.finish_coe(coe_router, outcome));
+                                return Ok(router.apply_coe_outcome(coe_router, outcome));
                             }
 
                             return Ok(r);
@@ -221,10 +233,11 @@ impl LlmProvider for RouterProvider {
                                 p.name().to_owned(),
                                 r,
                                 extras,
+                                CoePath::Chat,
                                 coe_router.secondary.chat(&messages),
                             )
                             .await;
-                            return Ok(router.finish_coe(coe_router, outcome));
+                            return Ok(router.apply_coe_outcome(coe_router, outcome));
                         }
 
                         return Ok(r);
@@ -651,7 +664,14 @@ impl LlmProvider for RouterProvider {
             .providers
             .iter()
             .find(|p| p.name() == name)
-            .map_or("router", |p| p.model_identifier())
+            .map(LlmProvider::model_identifier)
+            .or_else(|| {
+                self.coe
+                    .as_ref()
+                    .filter(|c| c.secondary.name() == name)
+                    .map(|c| c.secondary_model.as_str())
+            })
+            .unwrap_or("router")
     }
 
     fn supports_tool_use(&self) -> bool {
@@ -732,7 +752,7 @@ impl LlmProvider for RouterProvider {
                 let result = p.chat_with_tools(dispatch_messages_for(&p), &tools).await;
                 if result.is_ok() {
                     router.state.record_served(&p);
-                    *router.state.last_active_provider.lock() = Some(p.name().to_owned());
+                    router.state.set_active_provider(p.name());
                 }
                 return result;
             }
@@ -779,7 +799,7 @@ impl LlmProvider for RouterProvider {
                         );
                         // Track which sub-provider served this tool call for reputation attribution.
                         router.state.record_served(p);
-                        *router.state.last_active_provider.lock() = Some(p.name().to_owned());
+                        router.state.set_active_provider(p.name());
                         if let Some(coe) = coe {
                             // spec-072 C3: the secondary gets the same vision safety net.
                             let secondary_messages =
@@ -793,11 +813,11 @@ impl LlmProvider for RouterProvider {
                                 p.name().to_owned(),
                                 r,
                                 extras,
+                                CoePath::Tools,
                                 coe.secondary.chat_with_tools(secondary_messages, &tools),
                             )
                             .await;
-                            router.fold_shadow_usage(outcome.shadow_usage);
-                            return Ok(outcome.response);
+                            return Ok(router.apply_coe_outcome(coe, outcome));
                         }
                         return Ok(r);
                     }

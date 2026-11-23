@@ -15,7 +15,11 @@
 //! symlink-based path traversal attacks where a skill might try to read files outside
 //! its own directory.
 
-use std::path::{Path, PathBuf};
+use std::fmt::Write as _;
+use std::io::Read as _;
+use std::path::{Component, Path, PathBuf};
+
+use crate::error::SkillError;
 
 /// Discovered resource files for a skill, organized by subdirectory.
 ///
@@ -56,45 +60,187 @@ pub(crate) fn discover_resources(skill_dir: &Path) -> SkillResources {
     resources
 }
 
-/// Load a skill resource file as a UTF-8 string with path traversal protection.
+/// Upper bound in bytes for a single file read by [`load_skill_resource`] (256 KiB).
+pub const MAX_SKILL_RESOURCE_BYTES: u64 = 256 * 1024;
+
+const MAX_RESOURCE_PATH_BYTES: usize = 512;
+const RESOURCE_DIRS: [&str; 3] = ["scripts", "references", "assets"];
+
+/// A model-supplied, skill-relative resource path that passed shape validation.
+///
+/// Constructed only through [`SkillResourcePath::parse`], which rejects absolute paths,
+/// parent-directory components, backslashes, NUL bytes, single-component paths and any first
+/// component other than `scripts`, `references` or `assets`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_skills::resource::SkillResourcePath;
+///
+/// assert!(SkillResourcePath::parse("references/guide.md").is_ok());
+/// assert!(SkillResourcePath::parse("../secrets").is_err());
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkillResourcePath(Box<str>);
+
+impl SkillResourcePath {
+    /// Parse and validate a skill-relative resource path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SkillError::Invalid`] when the path has an unsafe or unsupported shape.
+    pub fn parse(raw: &str) -> Result<Self, SkillError> {
+        let invalid = |why: &str| SkillError::Invalid(format!("resource path rejected: {why}"));
+        if raw.is_empty() {
+            return Err(invalid("empty"));
+        }
+        if raw.len() > MAX_RESOURCE_PATH_BYTES {
+            return Err(invalid("too long"));
+        }
+        if raw.contains(['\\', '\0']) {
+            return Err(invalid("forbidden character"));
+        }
+        let mut components = Path::new(raw).components();
+        let Some(Component::Normal(first)) = components.next() else {
+            return Err(invalid("must start with a subdirectory name"));
+        };
+        if !RESOURCE_DIRS.iter().any(|dir| first == *dir) {
+            return Err(invalid("must be under scripts/, references/ or assets/"));
+        }
+        let mut rest = 0_usize;
+        for component in components {
+            if !matches!(component, Component::Normal(_)) {
+                return Err(invalid("only plain path segments are allowed"));
+            }
+            rest += 1;
+        }
+        if rest == 0 {
+            return Err(invalid("a file name is required"));
+        }
+        Ok(Self(raw.into()))
+    }
+
+    /// The validated path as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// List a skill's resource files as skill-relative paths, one `Available <kind>: ...` line per kind.
+///
+/// Returns `None` when the skill has no resources. Files outside `skill_dir` are skipped, so
+/// absolute paths never reach the prompt.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use zeph_skills::resource::{SkillResources, format_resource_paths};
+///
+/// assert!(format_resource_paths(&SkillResources::default(), Path::new("/skills/x")).is_none());
+/// ```
+#[must_use]
+pub fn format_resource_paths(resources: &SkillResources, skill_dir: &Path) -> Option<String> {
+    let mut out = String::new();
+    for (label, files) in [
+        ("references", &resources.references),
+        ("scripts", &resources.scripts),
+        ("assets", &resources.assets),
+    ] {
+        let names: Vec<String> = files
+            .iter()
+            .filter_map(|p| {
+                let rel = p.strip_prefix(skill_dir).ok()?;
+                let parts: Option<Vec<&str>> =
+                    rel.components().map(|c| c.as_os_str().to_str()).collect();
+                Some(parts?.join("/"))
+            })
+            .collect();
+        if !names.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            let _ = write!(out, "Available {label}: {}", names.join(", "));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// [`format_resource_paths`] followed by a one-line `load_skill` usage hint.
+///
+/// Use it where the reader may not have the `load_skill` tool description (sub-agent skill
+/// bodies); the main-agent prompt emits the bare paths, since the tool description already
+/// documents the `path` argument.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use zeph_skills::resource::{SkillResources, format_resource_listing};
+///
+/// assert!(format_resource_listing(&SkillResources::default(), Path::new("/skills/x")).is_none());
+/// ```
+#[must_use]
+pub fn format_resource_listing(resources: &SkillResources, skill_dir: &Path) -> Option<String> {
+    let mut out = format_resource_paths(resources, skill_dir)?;
+    out.push_str(
+        "\nRead one with load_skill {\"skill_name\": \"<this skill>\", \"path\": \"<path from the list>\"} (UTF-8 text files up to 256 KiB only; binary assets cannot be loaded)",
+    );
+    Some(out)
+}
+
+/// Load a skill resource file as a UTF-8 string with containment and size protection.
 ///
 /// # Errors
 ///
-/// Returns an error if the path escapes the skill directory or the file cannot be read.
+/// Returns an error if the path escapes the skill directory, the file exceeds
+/// [`MAX_SKILL_RESOURCE_BYTES`], is not UTF-8, or cannot be read.
 pub fn load_skill_resource(
     skill_dir: &Path,
-    relative_path: &str,
-) -> Result<String, crate::error::SkillError> {
-    use crate::error::SkillError;
+    path: &SkillResourcePath,
+) -> Result<String, SkillError> {
     let canonical_base = skill_dir.canonicalize().map_err(|e| {
         SkillError::Other(format!(
             "failed to canonicalize skill dir {}: {e}",
             skill_dir.display()
         ))
     })?;
-
-    let target = skill_dir.join(relative_path);
-    let canonical_target = target.canonicalize().map_err(|e| {
-        SkillError::Other(format!(
-            "failed to canonicalize resource path {}: {e}",
-            target.display()
-        ))
+    let canonical_target = skill_dir.join(path.as_str()).canonicalize().map_err(|e| {
+        SkillError::Other(format!("failed to resolve resource {}: {e}", path.as_str()))
     })?;
-
     if !canonical_target.starts_with(&canonical_base) {
         return Err(SkillError::Invalid(format!(
-            "path traversal detected: {} escapes {}",
-            relative_path,
-            skill_dir.display()
+            "path traversal detected: {} escapes the skill directory",
+            path.as_str()
         )));
     }
 
-    std::fs::read_to_string(&canonical_target).map_err(|e| {
-        SkillError::Other(format!(
-            "failed to read resource {}: {e}",
-            canonical_target.display()
-        ))
-    })
+    // A FIFO or device swapped in after discovery would block `open`/`read` indefinitely.
+    if !std::fs::metadata(&canonical_target)?.is_file() {
+        return Err(SkillError::Invalid(format!(
+            "resource {} is not a regular file",
+            path.as_str()
+        )));
+    }
+    let file = std::fs::File::open(&canonical_target)?;
+    if !file.metadata()?.is_file() {
+        return Err(SkillError::Invalid(format!(
+            "resource {} is not a regular file",
+            path.as_str()
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SKILL_RESOURCE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len())? > MAX_SKILL_RESOURCE_BYTES {
+        return Err(SkillError::Invalid(format!(
+            "resource {} exceeds {MAX_SKILL_RESOURCE_BYTES} bytes",
+            path.as_str()
+        )));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| SkillError::Invalid(format!("resource {} is not valid UTF-8", path.as_str())))
 }
 
 #[cfg(test)]
@@ -138,24 +284,17 @@ mod tests {
         std::fs::create_dir(&scripts).unwrap();
         std::fs::write(scripts.join("run.sh"), "echo hello").unwrap();
 
-        let content = load_skill_resource(dir.path(), "scripts/run.sh").unwrap();
-        assert_eq!(content, "echo hello");
-    }
-
-    #[test]
-    fn load_skill_resource_path_traversal() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("scripts")).unwrap();
-        std::fs::write(dir.path().join("scripts/ok.sh"), "ok").unwrap();
-
-        let err = load_skill_resource(dir.path(), "../../../etc/passwd").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("path traversal") || msg.contains("canonicalize"));
+        let path = SkillResourcePath::parse("scripts/run.sh").unwrap();
+        assert_eq!(
+            load_skill_resource(dir.path(), &path).unwrap(),
+            "echo hello"
+        );
     }
 
     #[test]
     fn load_skill_resource_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(load_skill_resource(dir.path(), "nonexistent.txt").is_err());
+        let path = SkillResourcePath::parse("scripts/nonexistent.txt").unwrap();
+        assert!(load_skill_resource(dir.path(), &path).is_err());
     }
 }

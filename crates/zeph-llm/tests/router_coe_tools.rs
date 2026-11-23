@@ -98,8 +98,8 @@ async fn chat_with_tools_high_entropy_text_escalates_to_secondary_text() {
     let resp = router.chat_with_tools(&user("q"), &tools()).await.unwrap();
 
     assert!(matches!(resp, ChatResponse::Text { ref text, .. } if text == "secondary answer"));
-    let (kept, intra, _inter, _fail) = router.coe_metrics().unwrap();
-    assert_eq!((kept, intra), (0, 1));
+    let m = router.coe_metrics().unwrap();
+    assert_eq!((m.kept_primary, m.intra_escalations), (0, 1));
 }
 
 #[tokio::test]
@@ -117,7 +117,7 @@ async fn chat_with_tools_low_entropy_text_keeps_primary_and_counts_kept() {
 
     assert!(matches!(resp, ChatResponse::Text { ref text, .. } if text == "primary"));
     assert_eq!(calls(&secondary_calls), 0);
-    assert_eq!(router.coe_metrics().unwrap().0, 1);
+    assert_eq!(router.coe_metrics().unwrap().kept_primary, 1);
 }
 
 #[tokio::test]
@@ -135,7 +135,10 @@ async fn chat_with_tools_tool_use_primary_is_kept_without_shadow_call_or_metric(
 
     assert!(matches!(resp, ChatResponse::ToolUse { .. }));
     assert_eq!(calls(&secondary_calls), 0);
-    assert_eq!(router.coe_metrics().unwrap(), (0, 0, 0, 0));
+    assert_eq!(
+        router.coe_metrics().unwrap(),
+        zeph_llm::router::coe::CoeMetricsSnapshot::default()
+    );
 }
 
 #[tokio::test]
@@ -237,7 +240,7 @@ async fn chat_with_tools_escalation_keeps_primary_replay_and_compaction() {
 }
 
 #[tokio::test]
-async fn chat_with_tools_escalation_leaves_reputation_tracker_as_without_coe() {
+async fn chat_with_tools_escalation_demotes_primary_in_reputation_tracker() {
     async fn stats(with_coe: bool) -> (Vec<(String, f64, f64, f64, u64)>, bool) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("reputation.json");
@@ -263,5 +266,11 @@ async fn chat_with_tools_escalation_leaves_reputation_tracker_as_without_coe() {
     let (with_coe, escalated) = stats(true).await;
 
     assert!(escalated, "CoE must have escalated on the tool path");
-    assert_eq!(with_coe, baseline);
+    let beta = |s: &[(String, f64, f64, f64, u64)]| {
+        s.iter().find(|r| r.0 == "primary").map_or(0.0, |r| r.2)
+    };
+    assert!(
+        beta(&with_coe) > beta(&baseline),
+        "primary quality demoted on escalation"
+    );
 }
