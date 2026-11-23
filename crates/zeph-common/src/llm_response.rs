@@ -23,7 +23,8 @@
 ///
 /// The closing fence is the last run of three backticks followed only by blanks up to the end
 /// of its line; anything after it is dropped. A missing closer takes the rest of the input.
-/// Fences of four or more backticks and tilde fences are not detected.
+/// Tilde fences are not detected; a fence of four or more backticks is read as a three-backtick
+/// fence, so its extra backtick stays in the payload.
 ///
 /// # Examples
 ///
@@ -64,8 +65,8 @@ fn strip_closing_fence(body: &str) -> &str {
         .find_map(|(at, _)| {
             let (head, tail) = body.split_at_checked(at)?;
             let rest = tail.strip_prefix(FENCE)?;
-            let line = rest.split_once('\n').map_or(rest, |(line, _)| line);
-            line.bytes()
+            rest.bytes()
+                .take_while(|&b| b != b'\n')
                 .all(|b| matches!(b, b' ' | b'\t' | b'\r'))
                 .then_some(head)
         })
@@ -128,6 +129,20 @@ fn extract_delimited(raw: &str, open: char, close: char) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_single_line_backtick_run_is_unchanged_and_fast() {
+        let raw = format!("```x{}", "```x".repeat(200_000));
+        assert_eq!(strip_code_fence(&raw), raw.trim_start_matches("```").trim());
+    }
+
+    #[test]
+    fn four_backtick_fence_leaves_stray_backtick() {
+        assert_eq!(
+            strip_code_fence("````json\n{\"a\":1}\n````"),
+            "{\"a\":1}\n`"
+        );
+    }
 
     #[test]
     fn extracts_array_wrapped_in_prose() {

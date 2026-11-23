@@ -1,4 +1,4 @@
-FROM rust:1.100.0-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS chef
+FROM rust:1.100.0-slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS chef
 RUN cargo install cargo-chef --locked --version 0.1.78
 WORKDIR /build
 
@@ -9,9 +9,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 ARG CARGO_FEATURES=""
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json ${CARGO_FEATURES:+--features $CARGO_FEATURES}
+RUN cargo chef cook --release --locked --recipe-path recipe.json ${CARGO_FEATURES:+--features $CARGO_FEATURES}
 COPY . .
-RUN cargo build --release ${CARGO_FEATURES:+--features $CARGO_FEATURES}
+RUN cargo build --release --locked ${CARGO_FEATURES:+--features $CARGO_FEATURES}
 
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 

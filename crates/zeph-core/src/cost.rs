@@ -64,7 +64,11 @@ impl DailyBudget {
     /// Whether `spent` has reached the limit. A non-positive limit is always exhausted.
     #[must_use]
     pub fn is_exhausted(self, spent: Cents) -> bool {
-        matches!(self, Self::Limited(limit) if spent >= limit)
+        match self {
+            Self::Unlimited => false,
+            // NaN limit compares as `None`, so it counts as exhausted (fail closed).
+            Self::Limited(limit) => spent.partial_cmp(&limit) != Some(std::cmp::Ordering::Less),
+        }
     }
 }
 
@@ -434,12 +438,12 @@ impl CostTracker {
     pub fn check_budget(&self) -> Result<(), BudgetExhausted> {
         let mut state = self.state.lock();
         reset_if_new_day(&mut state);
-        if let DailyBudget::Limited(limit) = self.budget
-            && self.budget.is_exhausted(state.spent_cents)
+        if self.budget.is_exhausted(state.spent_cents)
+            && let Some(budget_cents) = self.budget.limit()
         {
             return Err(BudgetExhausted {
                 spent_cents: state.spent_cents,
-                budget_cents: limit,
+                budget_cents,
             });
         }
         Ok(())
@@ -509,6 +513,11 @@ impl CostTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nan_limit_is_always_exhausted() {
+        assert!(DailyBudget::Limited(Cents::new(f64::NAN)).is_exhausted(Cents::ZERO));
+    }
 
     fn record(tracker: &CostTracker, provider: &str, model: &str, input: u64, output: u64) {
         tracker.record_usage(

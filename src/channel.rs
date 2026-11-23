@@ -12,6 +12,7 @@ use zeph_channels::discord::DiscordChannel;
 use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::{TelegramAllowlist, TelegramChannel};
 use zeph_common::TaskSupervisor;
+#[cfg(feature = "tui")]
 use zeph_common::money::Cents;
 
 use crate::execution_mode::ExecutionMode;

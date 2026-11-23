@@ -29,7 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-llm`: Ollama requests send prior tool calls as structured `tool_calls` (#7171, #7188).
 - `zeph-core`, `zeph-tui`: `/mcp list` reports the connected MCP tools; **Breaking** `MetricsSnapshot.mcp_tool_count` field becomes a method derived from the new `mcp_tools` field (#7172, #7188).
 - `ci`: new `lint-clippy-full` job lints `--features full` and is required by `ci-status` (#7170, #7188).
-
 - `docker`: `Dockerfile.dev` builds on Rust 1.100 and caches dependencies with cargo-chef; a workspace test keeps the builder tag at or above `rust-version` (#PR)
 
 ### Added
