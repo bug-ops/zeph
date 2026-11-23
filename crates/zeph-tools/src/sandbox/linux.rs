@@ -29,6 +29,7 @@
 //! - `strict = true` (default): returns `SandboxError::Unavailable` → startup aborts.
 //! - `strict = false`: falls back to `NoopSandbox` and logs `WARN`.
 
+use std::fmt::Write as _;
 use std::io::{Seek as _, Write as _};
 use std::os::fd::OwnedFd;
 use std::os::unix::io::AsRawFd as _;
@@ -441,7 +442,6 @@ pub fn generate_hosts_override(denied: &[String]) -> String {
     for domain in denied {
         // Wildcards: emit the base domain (shallow expansion only).
         let hostname = domain.strip_prefix("*.").unwrap_or(domain.as_str());
-        use std::fmt::Write as _;
         let _ = writeln!(out, "0.0.0.0 {hostname}");
     }
     out
