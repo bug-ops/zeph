@@ -9,7 +9,8 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 ARG CARGO_FEATURES=""
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --locked --recipe-path recipe.json ${CARGO_FEATURES:+--features $CARGO_FEATURES}
+# skeleton stubs trigger unused-dependency warnings; the real build below still denies warnings
+RUN CARGO_BUILD_WARNINGS=warn cargo chef cook --release --locked --recipe-path recipe.json ${CARGO_FEATURES:+--features $CARGO_FEATURES}
 COPY . .
 RUN cargo build --release --locked ${CARGO_FEATURES:+--features $CARGO_FEATURES}
 
