@@ -548,7 +548,7 @@ impl<C: Channel> Agent<C> {
             model_name: model.to_owned(),
             usage: total_usage,
             reasoning_tokens,
-            cost_cents: cost_cents.as_f64(),
+            cost_cents,
             latency_ms,
             ttft_ms,
             tokens_per_sec,
@@ -1393,7 +1393,7 @@ mod tests {
             .expect("cost tracker enabled");
 
         assert_eq!(record.model_name, "claude-opus-5-5");
-        assert!((record.cost_cents - rx.borrow().cost_spent_cents.as_f64()).abs() < 1e-9);
+        assert_eq!(record.cost_cents, rx.borrow().cost_spent_cents);
     }
 
     #[test]

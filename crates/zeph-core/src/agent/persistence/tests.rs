@@ -3485,7 +3485,7 @@ mod image_persistence_strip {
                 ..Default::default()
             },
             reasoning_tokens: None,
-            cost_cents,
+            cost_cents: zeph_common::money::Cents::new(cost_cents),
             latency_ms: 100,
             ttft_ms: None,
             tokens_per_sec: None,
@@ -3554,7 +3554,7 @@ mod image_persistence_strip {
             .unwrap()
             .expect("a usage row must exist for the successfully persisted message");
         assert!(
-            (row.cost_cents - 2.22).abs() < 1e-9,
+            (row.cost_cents.as_f64() - 2.22).abs() < 1e-9,
             "row must reflect call #2's cost (2.22), not call #1's leaked-forward 1.11 — \
              got {}",
             row.cost_cents

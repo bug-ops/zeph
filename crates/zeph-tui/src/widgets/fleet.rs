@@ -9,6 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 use zeph_common::format_tokens;
+use zeph_common::money::Cents;
 use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
 
 use crate::layout::truncate_to_width;
@@ -49,8 +50,8 @@ fn build_session_item(row: &AgentSessionRow, selected: bool) -> ListItem<'static
         format_tokens(row.prompt_tokens),
         format_tokens(row.completion_tokens)
     );
-    let cost = if row.cost_cents > 0.0 {
-        format!("${:.4}", row.cost_cents / 100.0)
+    let cost = if row.cost_cents > Cents::ZERO {
+        row.cost_cents.to_string()
     } else {
         "—".to_owned()
     };
@@ -167,7 +168,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             reasoning_tokens: 0,
-            cost_cents: 1.2345,
+            cost_cents: Cents::new(1.2345),
             goal_text: None,
         }
     }

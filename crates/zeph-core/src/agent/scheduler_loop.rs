@@ -1451,7 +1451,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     model_name: model.to_owned(),
                                                     usage: call_usage,
                                                     reasoning_tokens,
-                                                    cost_cents: cost_cents.as_f64(),
+                                                    cost_cents,
                                                     latency_ms: verify_latency_ms,
                                                     ttft_ms,
                                                     tokens_per_sec: None,

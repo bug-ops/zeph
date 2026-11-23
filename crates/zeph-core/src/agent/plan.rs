@@ -2265,7 +2265,7 @@ mod tests {
             .current_spend();
         let actual = memory_arc.sqlite().usage_cost_since(0).await.unwrap();
         assert!(
-            (actual - expected.as_f64()).abs() < 1e-6,
+            (actual.as_f64() - expected.as_f64()).abs() < 1e-6,
             "SUM(usage_records.cost_cents)={actual} must equal \
              CostTracker.current_spend()={expected}"
         );
@@ -2353,7 +2353,7 @@ mod tests {
 
         let total = memory_arc.sqlite().usage_cost_since(0).await.unwrap();
         assert!(
-            (total - 0.0).abs() < 1e-9,
+            total.as_f64().abs() < 1e-9,
             "no usage_records row should exist when cost tracking is disabled"
         );
     }
