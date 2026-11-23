@@ -15,6 +15,7 @@
 use std::io::{BufRead, BufReader, IsTerminal};
 use std::sync::Arc;
 
+use zeph_common::money::Cents;
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StatusText,
     StopHint, TokenUsage, ToolOutputEvent, ToolStartEvent,
@@ -308,7 +309,7 @@ impl Channel for JsonCliChannel {
         &mut self,
         _usage: TokenUsage,
         _context_window: u64,
-        _cost_cents: f64,
+        _cost_cents: Cents,
     ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
         std::future::ready(Ok(()))
     }
@@ -555,7 +556,7 @@ mod tests {
                     ..TokenUsage::default()
                 },
                 200_000,
-                0.0,
+                Cents::ZERO,
             )
             .await
             .is_ok()

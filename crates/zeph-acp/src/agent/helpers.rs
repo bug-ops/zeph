@@ -524,8 +524,8 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<SessionUpda
         } => {
             let used = usage.input.saturating_add(usage.output);
             let mut update = UsageUpdate::new(used, context_window);
-            if cost_cents > 0.0 {
-                update = update.cost(Cost::new(cost_cents / 100.0, "USD"));
+            if cost_cents > zeph_common::money::Cents::ZERO {
+                update = update.cost(Cost::new(cost_cents.usd(), "USD"));
             }
             vec![SessionUpdate::UsageUpdate(update)]
         }

@@ -13,6 +13,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
+use zeph_common::money::Cents;
 use zeph_core::channel::{ChannelError, ChannelMessage, TokenUsage, ToolOutputEvent};
 
 /// A single captured agent response corresponding to one benchmark prompt.
@@ -367,7 +368,7 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         &mut self,
         usage: TokenUsage,
         context_window: u64,
-        _cost_cents: f64,
+        _cost_cents: Cents,
     ) -> Result<(), ChannelError> {
         self.pending_input_tokens = usage.input;
         self.pending_output_tokens = usage.output;
@@ -473,7 +474,7 @@ mod tests {
                 ..TokenUsage::default()
             },
             128_000,
-            0.0,
+            Cents::ZERO,
         )
         .await
         .unwrap();

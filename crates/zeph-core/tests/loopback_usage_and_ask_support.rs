@@ -13,6 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use zeph_common::money::Cents;
 use zeph_core::channel::{
     AskUserOutcome, AskUserRequest, AskUserResponder, AskUserSupport, Channel, ChannelError,
     DeclineReason, LoopbackChannel, LoopbackEvent, TokenUsage,
@@ -38,7 +39,10 @@ async fn send_usage_emits_typed_usage_event() {
         cache_write: 3,
         cache_read: 4,
     };
-    channel.send_usage(usage, 200_000, 1.5).await.unwrap();
+    channel
+        .send_usage(usage, 200_000, Cents::new(1.5))
+        .await
+        .unwrap();
     let event = handle.output_rx.recv().await.expect("event");
     let LoopbackEvent::Usage {
         usage: got,
@@ -51,7 +55,7 @@ async fn send_usage_emits_typed_usage_event() {
     };
     assert_eq!(got, usage);
     assert_eq!(context_window, 200_000);
-    assert!((cost_cents - 1.5).abs() < f64::EPSILON);
+    assert_eq!(cost_cents, Cents::new(1.5));
 }
 
 #[test]

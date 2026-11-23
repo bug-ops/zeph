@@ -12,6 +12,7 @@ use zeph_channels::discord::DiscordChannel;
 use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::{TelegramAllowlist, TelegramChannel};
 use zeph_common::TaskSupervisor;
+use zeph_common::money::Cents;
 
 use crate::execution_mode::ExecutionMode;
 #[cfg(feature = "tui")]
@@ -149,7 +150,7 @@ impl Channel for AppChannel {
         &mut self,
         usage: TokenUsage,
         context_window: u64,
-        cost_cents: f64,
+        cost_cents: Cents,
     ) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_usage, usage, context_window, cost_cents)
     }
@@ -342,7 +343,7 @@ mod tests {
                     ..TokenUsage::default()
                 },
                 200_000,
-                0.0,
+                Cents::ZERO,
             )
             .await
             .is_ok()
@@ -414,7 +415,7 @@ mod tests {
                 ..TokenUsage::default()
             },
             8192,
-            0.0,
+            Cents::ZERO,
         )
         .await
         .unwrap();

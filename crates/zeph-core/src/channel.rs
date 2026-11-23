@@ -4,6 +4,7 @@
 /// Validated status text accepted by [`Channel::send_status`] and the typed status update
 /// carried by [`LoopbackEvent::Status`], re-exported so channel adapters need no direct
 /// `zeph-llm` dependency.
+use zeph_common::money::Cents;
 pub use zeph_llm::provider::TokenUsage;
 pub use zeph_llm::status::{StatusText, StatusUpdate};
 
@@ -581,7 +582,7 @@ pub trait Channel: Send {
         &mut self,
         _usage: TokenUsage,
         _context_window: u64,
-        _cost_cents: f64,
+        _cost_cents: Cents,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
@@ -844,7 +845,7 @@ pub enum LoopbackEvent {
         usage: TokenUsage,
         context_window: u64,
         /// Cumulative session cost in USD cents (overwrite, do not sum).
-        cost_cents: f64,
+        cost_cents: Cents,
     },
     /// Generated session title (emitted after the first agent response).
     SessionTitle(String),
@@ -1084,7 +1085,7 @@ impl Channel for LoopbackChannel {
         &mut self,
         usage: TokenUsage,
         context_window: u64,
-        cost_cents: f64,
+        cost_cents: Cents,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::Usage {
@@ -1674,7 +1675,7 @@ mod tests {
                     cache_write: 5,
                 },
                 200_000,
-                1.5,
+                Cents::new(1.5),
             )
             .await
             .unwrap();
@@ -1690,7 +1691,7 @@ mod tests {
                 assert_eq!(context_window, 200_000);
                 assert_eq!(usage.cache_read, 10);
                 assert_eq!(usage.cache_write, 5);
-                assert!((cost_cents - 1.5).abs() < f64::EPSILON);
+                assert_eq!(cost_cents, Cents::new(1.5));
             }
             _ => panic!("expected Usage event"),
         }
@@ -1708,7 +1709,7 @@ mod tests {
                     ..TokenUsage::default()
                 },
                 3,
-                0.0,
+                Cents::ZERO,
             )
             .await;
         assert_matches!(result, Err(ChannelError::ChannelClosed));
