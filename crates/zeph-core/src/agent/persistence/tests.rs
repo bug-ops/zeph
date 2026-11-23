@@ -3472,7 +3472,7 @@ mod image_persistence_strip {
         assert_note_only_in_sent_messages(&agent);
     }
 
-    fn fake_usage_record(cost_cents: f64) -> zeph_memory::UsageRecord {
+    fn fake_usage_record(cost_cents: zeph_common::money::Cents) -> zeph_memory::UsageRecord {
         zeph_memory::UsageRecord {
             message_id: None,
             conversation_id: None,
@@ -3485,7 +3485,7 @@ mod image_persistence_strip {
                 ..Default::default()
             },
             reasoning_tokens: None,
-            cost_cents: zeph_common::money::Cents::new(cost_cents),
+            cost_cents,
             latency_ms: 100,
             ttft_ms: None,
             tokens_per_sec: None,
@@ -3520,7 +3520,8 @@ mod image_persistence_strip {
         // Simulate LLM call #1's snapshot, then force this persist to fail to produce a
         // message_id (memory unavailable is one concrete way `PersistenceService::persist_message`
         // returns `message_id: None` — the S2 fix applies uniformly regardless of *why*).
-        agent.runtime.metrics.pending_usage = Some(fake_usage_record(1.11));
+        agent.runtime.metrics.pending_usage =
+            Some(fake_usage_record(zeph_common::money::Cents::new(1.11)));
         agent.services.memory.persistence.memory = None;
         agent
             .persist_message(Role::Assistant, "dropped — no memory available", &[], false)
@@ -3533,7 +3534,8 @@ mod image_persistence_strip {
 
         // Restore memory, simulate LLM call #2's snapshot, and persist for real.
         agent.services.memory.persistence.memory = Some(std::sync::Arc::clone(&memory_arc));
-        agent.runtime.metrics.pending_usage = Some(fake_usage_record(2.22));
+        agent.runtime.metrics.pending_usage =
+            Some(fake_usage_record(zeph_common::money::Cents::new(2.22)));
         agent
             .persist_message(Role::Assistant, "real assistant reply", &[], false)
             .await;

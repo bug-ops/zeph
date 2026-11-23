@@ -13,6 +13,7 @@ use crate::dag;
 use crate::graph::{ExecutionMode, GraphStatus, TaskId, TaskResult, TaskStatus};
 use crate::lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error, now_ms};
 use crate::topology::DispatchStrategy;
+use zeph_common::money::Cents;
 use zeph_subagent::SubAgentError;
 
 /// Bundles the fields carried by `TaskOutcome::Completed`, keeping
@@ -717,18 +718,18 @@ impl DagScheduler {
         let effective_budget = self.graph.tasks[task_id.index()]
             .token_budget_cents
             .unwrap_or(self.default_task_budget_cents);
-        if effective_budget > 0.0 {
+        if effective_budget > Cents::ZERO {
             // 1 cent per second is a conservative placeholder until real cost attribution lands.
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "estimated_cents uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
             )]
-            let estimated_cents = duration_ms as f64 / 1_000.0;
+            let estimated_cents = Cents::new(duration_ms as f64 / 1_000.0);
             if estimated_cents > effective_budget {
                 tracing::warn!(
                     task_id = %task_id,
-                    estimated_cents,
-                    budget_cents = effective_budget,
+                    estimated_cents = estimated_cents.as_f64(),
+                    budget_cents = effective_budget.as_f64(),
                     "task exceeded token budget (warn-only; hard enforcement is future work)"
                 );
             }

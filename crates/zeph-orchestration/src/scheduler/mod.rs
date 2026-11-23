@@ -25,6 +25,7 @@ use super::topology::{TopologyAnalysis, TopologyClassifier};
 use std::sync::Arc;
 
 use zeph_common::OutputSanitizer;
+use zeph_common::money::Cents;
 use zeph_config::OrchestrationConfig;
 
 /// A single real tool invocation recorded during a task's execution.
@@ -409,7 +410,7 @@ pub struct DagScheduler {
     /// Per-provider admission gate. `None` when no provider has `max_concurrent` set.
     pub(super) admission_gate: Option<super::admission::AdmissionGate>,
     /// Default per-task cost budget in cents (`0.0` = unlimited).
-    pub(super) default_task_budget_cents: f64,
+    pub(super) default_task_budget_cents: Cents,
     /// Temporary holding map for admission permits between `dispatch_ready_tasks` and
     /// `record_spawn`. Permits are transferred into `RunningTask::admission_permit` when
     /// the caller confirms a successful spawn via `record_spawn`.
@@ -988,7 +989,7 @@ mod tests {
             predicate_timeout_secs: 30,
             persistence_enabled: true,
             orchestrator_provider: Default::default(),
-            default_task_budget_cents: 0.0,
+            default_task_budget_cents: Cents::ZERO,
             default_asset_sensitivity: zeph_config::AssetSensitivity::default(),
             aggregator_timeout_secs: 60,
             planner_timeout_secs: 120,
