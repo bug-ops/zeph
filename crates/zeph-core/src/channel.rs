@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeph_common::money::Cents;
+
 /// Validated status text accepted by [`Channel::send_status`] and the typed status update
 /// carried by [`LoopbackEvent::Status`], re-exported so channel adapters need no direct
 /// `zeph-llm` dependency.
-use zeph_common::money::Cents;
 pub use zeph_llm::provider::TokenUsage;
 pub use zeph_llm::status::{StatusText, StatusUpdate};
 

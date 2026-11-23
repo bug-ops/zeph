@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 /// Wraps an `f64` so cent amounts cannot be mixed up with dollars, token counts or rates.
 /// Any finite or non-finite `f64` is accepted by [`Cents::new`]; no range is enforced.
 /// `Display` prints dollars (`$0.0150` for 1.5 cents, four decimals unless a precision is given).
+/// Width and fill flags are ignored; format `.to_string()` with `{:>8}` when padding is needed.
 ///
 /// # Examples
 ///

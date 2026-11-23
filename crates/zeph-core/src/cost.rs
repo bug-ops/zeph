@@ -100,6 +100,7 @@ pub struct ProviderUsage {
     pub model: String,
 }
 
+/// Per-model token prices; every rate is in [`Cents`] per 1000 tokens ([`CentsPer1k`]).
 #[derive(Debug, Clone)]
 pub struct ModelPricing {
     pub prompt_cents_per_1k: CentsPer1k,
@@ -257,6 +258,21 @@ fn reset_if_new_day(state: &mut CostState) {
 }
 
 impl CostTracker {
+    /// Creates a tracker that enforces `budget` against today's accumulated spend.
+    ///
+    /// There is no enabled flag: a caller that does not want cost tracking simply does not
+    /// build a tracker. A [`DailyBudget::Limited`] limit that is zero, negative or NaN counts
+    /// as already exhausted, so [`check_budget`](Self::check_budget) fails closed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::money::Cents;
+    /// use zeph_core::cost::{CostTracker, DailyBudget};
+    ///
+    /// assert!(CostTracker::new(DailyBudget::Unlimited).check_budget().is_ok());
+    /// assert!(CostTracker::new(DailyBudget::Limited(Cents::new(f64::NAN))).check_budget().is_err());
+    /// ```
     #[must_use]
     pub fn new(budget: DailyBudget) -> Self {
         Self {
