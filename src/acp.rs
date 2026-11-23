@@ -3164,6 +3164,7 @@ pub(crate) fn print_acp_manifest() {
 ///
 /// The scope is unique per call, so two agents of one session id (an ACP `session/load` of a
 /// live id) never replace each other's named tasks on the shared shell supervisor.
+#[cfg(feature = "acp")]
 fn acp_session_task_supervisor(
     shell: &zeph_common::TaskSupervisor,
     session_id: &str,
