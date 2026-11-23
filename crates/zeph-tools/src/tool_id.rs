@@ -70,5 +70,5 @@ impl ToolMatchKey {
 pub fn argument_pattern(raw: &str) -> Option<&str> {
     let (_, rest) = raw.split_once('(')?;
     let rest = rest.trim_end();
-    Some(rest.strip_suffix(')').unwrap_or(rest))
+    Some(rest.trim_suffix(')'))
 }
