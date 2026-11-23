@@ -534,12 +534,12 @@ impl App {
     pub(crate) fn format_cost_stats(&self) -> String {
         use std::fmt::Write as _;
         let cps_line = match self.metrics.cost_cps_cents {
-            Some(cps) => format!("\n  CPS: ${:.4}", cps / 100.0),
+            Some(cps) => format!("\n  CPS: {cps}"),
             None => String::new(),
         };
         let mut out = format!(
-            "Cost:\n  Spent: ${:.4}{}\n  Successful tasks today: {}\n  Prompt tokens: {}\n  Completion tokens: {}\n  Total tokens: {}\n  Cache read: {}\n  Cache creation: {}",
-            self.metrics.cost_spent_cents / 100.0,
+            "Cost:\n  Spent: {}{}\n  Successful tasks today: {}\n  Prompt tokens: {}\n  Completion tokens: {}\n  Total tokens: {}\n  Cache read: {}\n  Cache creation: {}",
+            self.metrics.cost_spent_cents,
             cps_line,
             self.metrics.cost_successful_tasks,
             self.metrics.prompt_tokens,
@@ -551,9 +551,8 @@ impl App {
         if self.metrics.cache_keepalive_pings > 0 {
             let _ = write!(
                 out,
-                "\n  Cache keepalive: {} pings, ${:.4} (included in Spent)",
-                self.metrics.cache_keepalive_pings,
-                self.metrics.cache_keepalive_cost_cents / 100.0,
+                "\n  Cache keepalive: {} pings, {} (included in Spent)",
+                self.metrics.cache_keepalive_pings, self.metrics.cache_keepalive_cost_cents,
             );
         }
         if !self.metrics.provider_cost_breakdown.is_empty() {
@@ -574,7 +573,7 @@ impl App {
                     usage.cache_read_tokens,
                     usage.cache_write_tokens,
                     usage.output_tokens,
-                    format!("${:.4}", usage.cost_cents / 100.0),
+                    usage.cost_cents.to_string(),
                 );
             }
             let _ = write!(
@@ -1300,6 +1299,8 @@ impl App {
 mod tests {
     use tokio::sync::mpsc;
 
+    use zeph_common::money::Cents;
+
     use super::*;
     use crate::event::{AgentEvent, LaneUpdate, ProducerLane};
     use crate::types::MessageRole;
@@ -1321,7 +1322,7 @@ mod tests {
         let (mut app, _rx, _tx) = make_app();
         assert!(!app.format_cost_stats().contains("keepalive"));
         app.metrics.cache_keepalive_pings = 2;
-        app.metrics.cache_keepalive_cost_cents = 5.0;
+        app.metrics.cache_keepalive_cost_cents = Cents::new(5.0);
         assert!(
             app.format_cost_stats()
                 .contains("Cache keepalive: 2 pings, $0.0500")

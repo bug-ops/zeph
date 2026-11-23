@@ -5,7 +5,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.100"
 version = "0.24.0"
 authors = ["bug-ops"]
 license = "MIT OR Apache-2.0"
@@ -212,6 +212,10 @@ unsafe_code = "deny"
 # either a manual `ci-non-linux.yml` workflow_dispatch run or the next tagged
 # `release.yml` build. See #5961.
 linker_messages = "allow"
+
+# cargo 1.100 warns by default; build.warnings = "deny" makes it fatal on trimmed-feature CI builds. Enabling it deliberately is a follow-up.
+[workspace.lints.cargo]
+unused_dependencies = "allow"
 
 [workspace.lints.clippy]
 all = "warn"

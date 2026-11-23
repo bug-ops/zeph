@@ -277,16 +277,16 @@ impl<C: Channel> Agent<C> {
     /// The single source for both the turn-start system-prompt hint (`used = 0`) and the
     /// per-iteration runtime note, so the two can never disagree on how a budget is derived.
     pub(in crate::agent) fn budget_hint_snapshot(&self, tool_calls_used: usize) -> BudgetHint {
-        let cost = self.runtime.metrics.cost_tracker.as_ref();
-        let max_cost = cost
-            .map(|tracker| tracker.max_daily_cents())
-            .filter(|m| *m > 0.0);
+        let budget = self
+            .runtime
+            .metrics
+            .cost_tracker
+            .as_ref()
+            .map(|tracker| (tracker.budget(), tracker.current_spend()));
         let max_tool_calls = self.tool_orchestrator.max_iterations;
         BudgetHint {
-            remaining_cost_cents: cost
-                .zip(max_cost)
-                .map(|(ct, max)| (max - ct.current_spend()).max(0.0)),
-            total_budget_cents: max_cost,
+            remaining_cost_cents: budget.and_then(|(budget, spent)| budget.remaining(spent)),
+            total_budget_cents: budget.and_then(|(budget, _)| budget.limit()),
             remaining_tool_calls: max_tool_calls.saturating_sub(tool_calls_used),
             max_tool_calls,
         }
@@ -3107,8 +3107,8 @@ mod tests {
     #[test]
     fn budget_hint_full_produces_all_fields() {
         let hint = BudgetHint {
-            remaining_cost_cents: Some(42.5),
-            total_budget_cents: Some(100.0),
+            remaining_cost_cents: Some(zeph_common::money::Cents::new(42.5)),
+            total_budget_cents: Some(zeph_common::money::Cents::new(100.0)),
             remaining_tool_calls: 5,
             max_tool_calls: 10,
         };

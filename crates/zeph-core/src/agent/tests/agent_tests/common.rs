@@ -317,7 +317,7 @@ impl Channel for MockChannel {
         &mut self,
         usage: zeph_llm::provider::TokenUsage,
         _context_window: u64,
-        _cost_cents: f64,
+        _cost_cents: zeph_common::money::Cents,
     ) -> Result<(), crate::channel::ChannelError> {
         self.usage_events.lock().unwrap().push(UsageEvent {
             input: usage.input,

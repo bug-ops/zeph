@@ -491,6 +491,7 @@ impl std::str::FromStr for UsageSource {
 /// # Examples
 ///
 /// ```
+/// use zeph_common::money::Cents;
 /// use zeph_llm::provider::TokenUsage;
 /// use zeph_memory::{UsageRecord, UsageSource};
 ///
@@ -502,7 +503,7 @@ impl std::str::FromStr for UsageSource {
 ///     model_name: "claude-sonnet-5".to_string(),
 ///     usage: TokenUsage { input: 100, output: 50, ..TokenUsage::default() },
 ///     reasoning_tokens: None,
-///     cost_cents: 0.05,
+///     cost_cents: Cents::new(0.05),
 ///     latency_ms: 800,
 ///     ttft_ms: None,
 ///     tokens_per_sec: None,
@@ -529,7 +530,7 @@ pub struct UsageRecord {
     pub reasoning_tokens: Option<u64>,
     /// Cost in cents, computed by `CostTracker::price_of` — the same pricing source of
     /// truth used by the live daily-budget aggregate.
-    pub cost_cents: f64,
+    pub cost_cents: zeph_common::money::Cents,
     /// Full call latency (request send to response fully received); always populated.
     pub latency_ms: u64,
     /// True time-to-first-token when the call streamed (currently: the speculative-decoding

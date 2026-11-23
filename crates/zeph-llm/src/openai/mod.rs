@@ -523,8 +523,8 @@ impl OpenAiProvider {
     pub fn cache_slug(&self) -> String {
         let host = self
             .base_url
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
+            .trim_prefix("https://")
+            .trim_prefix("http://")
             .split('/')
             .next()
             .unwrap_or("openai")
@@ -2050,8 +2050,8 @@ fn inline_refs_openai_inner(schema: &mut serde_json::Value, defs: &serde_json::V
         && let Some(ref_val) = obj.get("$ref").and_then(|v| v.as_str())
     {
         let name = ref_val
-            .trim_start_matches("#/$defs/")
-            .trim_start_matches("#/definitions/");
+            .trim_prefix("#/$defs/")
+            .trim_prefix("#/definitions/");
         if let Some(resolved) = defs.get(name) {
             let mut resolved = resolved.clone();
             inline_refs_openai_inner(&mut resolved, defs, depth - 1);

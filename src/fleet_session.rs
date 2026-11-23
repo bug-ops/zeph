@@ -49,7 +49,7 @@ impl FleetRegistry for SqliteFleetRegistry {
                 prompt_tokens: 0,
                 completion_tokens: 0,
                 reasoning_tokens: 0,
-                cost_cents: 0.0,
+                cost_cents: zeph_common::money::Cents::ZERO,
                 goal_text: Some(format!("sub-agent: {}", info.agent_name)),
             };
             self.0
@@ -114,7 +114,7 @@ pub(crate) async fn start_session(
         prompt_tokens: 0,
         completion_tokens: 0,
         reasoning_tokens: 0,
-        cost_cents: 0.0,
+        cost_cents: zeph_common::money::Cents::ZERO,
         goal_text: None,
     };
     sqlite

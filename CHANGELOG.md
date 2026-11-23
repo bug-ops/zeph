@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-llm`: Ollama requests send prior tool calls as structured `tool_calls` (#7171, #7188).
 - `zeph-core`, `zeph-tui`: `/mcp list` reports the connected MCP tools; **Breaking** `MetricsSnapshot.mcp_tool_count` field becomes a method derived from the new `mcp_tools` field (#7172, #7188).
 - `ci`: new `lint-clippy-full` job lints `--features full` and is required by `ci-status` (#7170, #7188).
+- `docker`: `Dockerfile.dev` builds on Rust 1.100 and caches dependencies with cargo-chef; a workspace test keeps the builder tag at or above `rust-version` (#7192)
 
 ### Added
 
@@ -37,6 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** minimum supported Rust version is now 1.100; CI stable pin 1.100 and nightly pin `nightly-2026-09-24`, workspace `cargo::unused_dependencies` set to `allow` (#7192)
+- `zeph-common`, `zeph-llm`, `zeph-memory`, `zeph-skills`, `zeph-core`: one shared `strip_code_fence` replaces eight divergent fence-stripping copies, accepting any language tag and removing exactly one fence (#7192)
+- **Breaking:** money amounts are typed `Cents`/`CentsPer1k` (`zeph-common`); `CostTracker::new` takes a `DailyBudget`, `Channel::send_usage` takes `Cents`; config, database and wire formats unchanged (#7192)
+- Adopt Rust 1.99/1.100 std APIs (`trim_prefix`, `DropGuard`, `Vec::from_fn`, `bool::toggle`, `fs::set_times`, `from_utf8_lossy_owned`) (#7192)
 - **Breaking:** `rust-agent-handoff` skill: handoff protocol v2 (spec 032) replaces nested `.yaml` files with Markdown files with flat YAML frontmatter; per-role output sections move from the skill's `references/` into the `.zeph/agents/` definitions (#7160).
 - **Breaking**: `McpManager::list_servers` and `McpCaller::list_servers` return `Vec<McpServerId>`; `active_skill_names` is `Vec<SkillName>`; tool-call attribution is built once per dispatch batch (#7173).
 - Workspace: fix the isolated `profiling-alloc` build and synchronize the debug dump redaction test with completion of the asynchronous file write.

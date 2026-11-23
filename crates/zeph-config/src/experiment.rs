@@ -536,7 +536,7 @@ pub struct OrchestrationConfig {
     /// Individual tasks can override this via `TaskNode::token_budget_cents`.
     /// Default: `0.0` (unlimited).
     #[serde(default)]
-    pub default_task_budget_cents: f64,
+    pub default_task_budget_cents: zeph_common::money::Cents,
 
     /// Default asset sensitivity level for task nodes that do not set their own.
     ///
@@ -645,7 +645,7 @@ impl Default for OrchestrationConfig {
             predicate_timeout_secs: default_predicate_timeout_secs(),
             persistence_enabled: default_persistence_enabled(),
             orchestrator_provider: ProviderName::default(),
-            default_task_budget_cents: 0.0,
+            default_task_budget_cents: zeph_common::money::Cents::ZERO,
             default_asset_sensitivity: AssetSensitivity::default(),
             aggregator_timeout_secs: default_aggregator_timeout_secs(),
             planner_timeout_secs: default_planner_timeout_secs(),

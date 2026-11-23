@@ -296,7 +296,7 @@ fn render_fields(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, 
     }
 
     // Allocate 2 rows per field
-    let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Length(2)).collect();
+    let constraints: Vec<Constraint> = vec![Constraint::Length(2); n];
     let rows = Layout::vertical(constraints).split(area);
 
     for (i, field) in state.request.fields.iter().enumerate() {

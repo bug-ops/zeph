@@ -441,7 +441,7 @@ pub fn generate_hosts_override(denied: &[String]) -> String {
     );
     for domain in denied {
         // Wildcards: emit the base domain (shallow expansion only).
-        let hostname = domain.strip_prefix("*.").unwrap_or(domain.as_str());
+        let hostname = domain.trim_prefix("*.");
         let _ = writeln!(out, "0.0.0.0 {hostname}");
     }
     out

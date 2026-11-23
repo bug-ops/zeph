@@ -149,7 +149,7 @@ fn build_index(root: &Path) -> SymbolIndex {
             continue;
         }
 
-        let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+        let rel = path.trim_prefix(root).to_path_buf();
 
         for sym in &symbols {
             let def = SymbolDef {

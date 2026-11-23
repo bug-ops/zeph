@@ -4,6 +4,7 @@
 //! CRUD for the `agent_sessions` table used by the fleet dashboard (#3884).
 
 use serde::{Deserialize, Serialize};
+use zeph_common::money::Cents;
 use zeph_db::ActiveDialect;
 use zeph_db::sql;
 
@@ -179,7 +180,7 @@ pub struct AgentSessionRow {
     /// Reasoning tokens (subset of `completion_tokens`; `OpenAI` only, others are 0).
     pub reasoning_tokens: u64,
     /// Estimated session cost in US cents.
-    pub cost_cents: f64,
+    pub cost_cents: Cents,
     /// Goal description for autonomous sessions; `None` for interactive sessions.
     pub goal_text: Option<String>,
 }
@@ -235,7 +236,7 @@ impl SqliteStore {
             .bind(s.prompt_tokens.cast_signed())
             .bind(s.completion_tokens.cast_signed())
             .bind(s.reasoning_tokens.cast_signed())
-            .bind(s.cost_cents)
+            .bind(s.cost_cents.as_f64())
             .bind(&s.goal_text)
             .execute(&self.pool)
             .await?;
@@ -395,7 +396,7 @@ impl SqliteStore {
                         prompt_tokens: u64::try_from(prompt_tokens).unwrap_or(0),
                         completion_tokens: u64::try_from(completion_tokens).unwrap_or(0),
                         reasoning_tokens: u64::try_from(reasoning_tokens).unwrap_or(0),
-                        cost_cents,
+                        cost_cents: Cents::new(cost_cents),
                         goal_text,
                     }
                 },
@@ -427,7 +428,7 @@ mod tests {
             prompt_tokens: 0,
             completion_tokens: 0,
             reasoning_tokens: 0,
-            cost_cents: 0.0,
+            cost_cents: Cents::ZERO,
             goal_text: None,
         }
     }

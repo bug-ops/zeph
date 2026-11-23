@@ -227,7 +227,7 @@ impl Folded {
 
     fn body(&self) -> &[u8] {
         let bytes = &self.buf[..self.len];
-        bytes.strip_prefix(b"/").unwrap_or(bytes)
+        bytes.trim_prefix(b"/")
     }
 
     fn may_open(&self, tags: &[DelimiterTag]) -> bool {

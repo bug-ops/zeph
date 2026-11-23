@@ -30,6 +30,7 @@ pub mod http_middleware;
 pub mod llm_response;
 pub mod math;
 pub mod memory;
+pub mod money;
 pub mod monotonic;
 pub mod native_tools;
 pub mod net;

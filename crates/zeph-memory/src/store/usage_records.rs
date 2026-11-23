@@ -3,6 +3,7 @@
 
 //! Durable per-LLM-call usage ledger (`usage_records` table, issue #6549).
 
+use zeph_common::money::Cents;
 use zeph_db::ActiveDialect;
 use zeph_db::sql;
 use zeph_llm::provider::TokenUsage;
@@ -71,7 +72,7 @@ fn row_to_usage_record(row: UsageRow) -> UsageRecord {
             cache_write: to_u64(cache_write_tokens),
         },
         reasoning_tokens: reasoning_tokens.map(to_u64),
-        cost_cents,
+        cost_cents: Cents::new(cost_cents),
         latency_ms: to_u64(latency_ms),
         ttft_ms: ttft_ms.map(to_u64),
         tokens_per_sec,
@@ -107,7 +108,7 @@ impl SqliteStore {
         .bind(to_i64(record.usage.cache_read))
         .bind(to_i64(record.usage.cache_write))
         .bind(record.reasoning_tokens.map(to_i64))
-        .bind(record.cost_cents)
+        .bind(record.cost_cents.as_f64())
         .bind(to_i64(record.latency_ms))
         .bind(record.ttft_ms.map(to_i64))
         .bind(record.tokens_per_sec)
@@ -173,7 +174,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub async fn usage_cost_since(&self, since_epoch_secs: i64) -> Result<f64, MemoryError> {
+    pub async fn usage_cost_since(&self, since_epoch_secs: i64) -> Result<Cents, MemoryError> {
         let epoch_expr = <ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("created_at");
         let raw = format!(
             "SELECT COALESCE(SUM(cost_cents), 0.0) FROM usage_records WHERE {epoch_expr} >= ?"
@@ -183,7 +184,7 @@ impl SqliteStore {
             .bind(since_epoch_secs)
             .fetch_one(&self.pool)
             .await?;
-        Ok(total)
+        Ok(Cents::new(total))
     }
 }
 
@@ -205,7 +206,7 @@ mod tests {
                 cache_write: 5,
             },
             reasoning_tokens: Some(20),
-            cost_cents: 0.42,
+            cost_cents: Cents::new(0.42),
             latency_ms: 800,
             ttft_ms: Some(120),
             tokens_per_sec: Some(63.5),
@@ -237,7 +238,7 @@ mod tests {
         assert_eq!(fetched.usage.cache_read, 10);
         assert_eq!(fetched.usage.cache_write, 5);
         assert_eq!(fetched.reasoning_tokens, Some(20));
-        assert!((fetched.cost_cents - 0.42).abs() < 1e-9);
+        assert_eq!(fetched.cost_cents, Cents::new(0.42));
         assert_eq!(fetched.ttft_ms, Some(120));
 
         let conv_rows = store.conversation_usage(cid).await.expect("conv query");
@@ -282,7 +283,7 @@ mod tests {
             .expect("insert 2");
 
         let total = store.usage_cost_since(0).await.expect("sum");
-        assert!((total - 0.84).abs() < 1e-6, "total={total}");
+        assert!((total.as_f64() - 0.84).abs() < 1e-6, "total={total}");
 
         let future = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -291,6 +292,6 @@ mod tests {
             .cast_signed()
             + 3600;
         let none_yet = store.usage_cost_since(future).await.expect("sum future");
-        assert!((none_yet - 0.0).abs() < 1e-9);
+        assert_eq!(none_yet, Cents::ZERO);
     }
 }

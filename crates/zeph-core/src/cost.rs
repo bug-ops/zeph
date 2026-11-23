@@ -7,17 +7,84 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use thiserror::Error;
+use zeph_common::money::{Cents, CentsPer1k};
 use zeph_config::ServiceSpeed;
 use zeph_llm::provider::TokenUsage;
 
+/// Daily spend cap: either unlimited or a limit in [`Cents`].
+///
+/// Replaces the `max_daily_cents > 0.0` sentinel check: `0` in config maps to
+/// [`DailyBudget::Unlimited`] at the type boundary ([`DailyBudget::from_config`]).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::money::Cents;
+/// use zeph_core::cost::DailyBudget;
+///
+/// assert_eq!(DailyBudget::from_config(0), DailyBudget::Unlimited);
+/// let budget = DailyBudget::from_config(500);
+/// assert_eq!(budget.remaining(Cents::new(120.0)), Some(Cents::new(380.0)));
+/// assert!(budget.is_exhausted(Cents::new(500.0)));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DailyBudget {
+    /// No daily cap.
+    Unlimited,
+    /// Spending is blocked once the day's spend reaches this amount.
+    Limited(Cents),
+}
+
+impl DailyBudget {
+    /// Maps the `[cost] max_daily_cents` config value; `0` means unlimited.
+    #[must_use]
+    pub fn from_config(max_daily_cents: u32) -> Self {
+        if max_daily_cents == 0 {
+            Self::Unlimited
+        } else {
+            Self::Limited(Cents::new(f64::from(max_daily_cents)))
+        }
+    }
+
+    /// The configured limit, or `None` when unlimited.
+    #[must_use]
+    pub fn limit(self) -> Option<Cents> {
+        match self {
+            Self::Unlimited => None,
+            Self::Limited(limit) => Some(limit),
+        }
+    }
+
+    /// Budget left after `spent`, floored at zero; `None` when unlimited.
+    #[must_use]
+    pub fn remaining(self, spent: Cents) -> Option<Cents> {
+        self.limit().map(|limit| limit.saturating_sub(spent))
+    }
+
+    /// Whether `spent` has reached the limit. A non-positive limit is always exhausted.
+    #[must_use]
+    pub fn is_exhausted(self, spent: Cents) -> bool {
+        match self {
+            Self::Unlimited => false,
+            // NaN limit compares as `None`, so it counts as exhausted (fail closed).
+            Self::Limited(limit) => spent.partial_cmp(&limit) != Some(std::cmp::Ordering::Less),
+        }
+    }
+}
+
+/// Returned by [`CostTracker::check_budget`] when the daily budget is spent.
 #[derive(Debug, Error)]
 #[error(
-    "daily budget exhausted: spent {spent_cents:.2} / {budget_cents:.2} cents \
-     (raise or disable via `[cost] max_daily_cents` in config.toml; 0 = unlimited)"
+    "daily budget exhausted: spent {:.2} / {:.2} cents \
+     (raise or disable via `[cost] max_daily_cents` in config.toml; 0 = unlimited)",
+    .spent_cents.as_f64(),
+    .budget_cents.as_f64()
 )]
 pub struct BudgetExhausted {
-    pub spent_cents: f64,
-    pub budget_cents: f64,
+    /// Spend so far today.
+    pub spent_cents: Cents,
+    /// The configured daily limit.
+    pub budget_cents: Cents,
 }
 
 /// Per-provider usage and cost breakdown for the current session/day.
@@ -27,24 +94,25 @@ pub struct ProviderUsage {
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
     pub output_tokens: u64,
-    pub cost_cents: f64,
+    pub cost_cents: Cents,
     pub request_count: u64,
     /// Last model seen for this provider (informational only — may change per-call).
     pub model: String,
 }
 
+/// Per-model token prices; every rate is in [`Cents`] per 1000 tokens ([`CentsPer1k`]).
 #[derive(Debug, Clone)]
 pub struct ModelPricing {
-    pub prompt_cents_per_1k: f64,
-    pub completion_cents_per_1k: f64,
+    pub prompt_cents_per_1k: CentsPer1k,
+    pub completion_cents_per_1k: CentsPer1k,
     /// Cache read (cache hit) price. Claude: 10% of prompt; `OpenAI`: 50%; others: 0%.
-    pub cache_read_cents_per_1k: f64,
+    pub cache_read_cents_per_1k: CentsPer1k,
     /// Cache write (cache creation) price. Claude: 125% of prompt; others: 0%.
-    pub cache_write_cents_per_1k: f64,
+    pub cache_write_cents_per_1k: CentsPer1k,
 }
 
 struct CostState {
-    spent_cents: f64,
+    spent_cents: Cents,
     day: u32,
     providers: HashMap<String, ProviderUsage>,
     successful_tasks: u64,
@@ -56,8 +124,7 @@ pub struct CostTracker {
     unpriced_models_warned: Mutex<HashSet<String>>,
     fast_unpriced_warned: Mutex<HashSet<String>>,
     state: Arc<Mutex<CostState>>,
-    max_daily_cents: f64,
-    enabled: bool,
+    budget: DailyBudget,
 }
 
 fn current_day() -> u32 {
@@ -81,10 +148,10 @@ fn claude_pricing_with_cache_read(
     cache_read_ratio: f64,
 ) -> ModelPricing {
     ModelPricing {
-        prompt_cents_per_1k: prompt,
-        completion_cents_per_1k: completion,
-        cache_read_cents_per_1k: prompt * cache_read_ratio,
-        cache_write_cents_per_1k: prompt * 1.25,
+        prompt_cents_per_1k: CentsPer1k::new(prompt),
+        completion_cents_per_1k: CentsPer1k::new(completion),
+        cache_read_cents_per_1k: CentsPer1k::new(prompt * cache_read_ratio),
+        cache_write_cents_per_1k: CentsPer1k::new(prompt * 1.25),
     }
 }
 
@@ -98,11 +165,11 @@ fn strip_date_suffix(model: &str) -> &str {
 
 fn openai_pricing(prompt: f64, completion: f64) -> ModelPricing {
     ModelPricing {
-        prompt_cents_per_1k: prompt,
-        completion_cents_per_1k: completion,
+        prompt_cents_per_1k: CentsPer1k::new(prompt),
+        completion_cents_per_1k: CentsPer1k::new(completion),
         // OpenAI: cache read = 50% of prompt, no cache write charge
-        cache_read_cents_per_1k: prompt * 0.5,
-        cache_write_cents_per_1k: 0.0,
+        cache_read_cents_per_1k: CentsPer1k::new(prompt * 0.5),
+        cache_write_cents_per_1k: CentsPer1k::new(0.0),
     }
 }
 
@@ -183,7 +250,7 @@ fn default_fast_pricing() -> HashMap<String, ModelPricing> {
 fn reset_if_new_day(state: &mut CostState) {
     let today = current_day();
     if state.day != today {
-        state.spent_cents = 0.0;
+        state.spent_cents = Cents::ZERO;
         state.day = today;
         state.providers.clear();
         state.successful_tasks = 0;
@@ -191,21 +258,35 @@ fn reset_if_new_day(state: &mut CostState) {
 }
 
 impl CostTracker {
+    /// Creates a tracker that enforces `budget` against today's accumulated spend.
+    ///
+    /// There is no enabled flag: a caller that does not want cost tracking simply does not
+    /// build a tracker. A [`DailyBudget::Limited`] limit that is zero, negative or NaN counts
+    /// as already exhausted, so [`check_budget`](Self::check_budget) fails closed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::money::Cents;
+    /// use zeph_core::cost::{CostTracker, DailyBudget};
+    ///
+    /// assert!(CostTracker::new(DailyBudget::Unlimited).check_budget().is_ok());
+    /// assert!(CostTracker::new(DailyBudget::Limited(Cents::new(f64::NAN))).check_budget().is_err());
+    /// ```
     #[must_use]
-    pub fn new(enabled: bool, max_daily_cents: f64) -> Self {
+    pub fn new(budget: DailyBudget) -> Self {
         Self {
             pricing: default_pricing(),
             fast_pricing: default_fast_pricing(),
             unpriced_models_warned: Mutex::new(HashSet::new()),
             fast_unpriced_warned: Mutex::new(HashSet::new()),
             state: Arc::new(Mutex::new(CostState {
-                spent_cents: 0.0,
+                spent_cents: Cents::ZERO,
                 day: current_day(),
                 providers: HashMap::new(),
                 successful_tasks: 0,
             })),
-            max_daily_cents,
-            enabled,
+            budget,
         }
     }
 
@@ -236,7 +317,7 @@ impl CostTracker {
         found
     }
 
-    /// Compute the cost in cents for a single LLM call's token counts, without recording it.
+    /// Compute the cost for a single LLM call's token counts, without recording it.
     ///
     /// Pure pricing arithmetic, extracted from [`Self::record_usage`] (issue #6549) so the
     /// per-message usage ledger can compute the exact same cost as the live daily aggregate
@@ -245,20 +326,14 @@ impl CostTracker {
     /// additionally emits a WARN/debug log for that case (it has `provider_kind`, which this
     /// pure signature does not); callers that want the log must check pricing themselves.
     #[must_use]
-    pub fn price_of(&self, model: &str, usage: TokenUsage, speed: ServiceSpeed) -> f64 {
+    pub fn price_of(&self, model: &str, usage: TokenUsage, speed: ServiceSpeed) -> Cents {
         let Some(pricing) = self.pricing_for(model, speed) else {
-            return 0.0;
+            return Cents::ZERO;
         };
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "record_auxiliary_usage uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
-        )]
-        {
-            pricing.prompt_cents_per_1k * (usage.input as f64) / 1000.0
-                + pricing.completion_cents_per_1k * (usage.output as f64) / 1000.0
-                + pricing.cache_read_cents_per_1k * (usage.cache_read as f64) / 1000.0
-                + pricing.cache_write_cents_per_1k * (usage.cache_write as f64) / 1000.0
-        }
+        pricing.prompt_cents_per_1k.cost(usage.input)
+            + pricing.completion_cents_per_1k.cost(usage.output)
+            + pricing.cache_read_cents_per_1k.cost(usage.cache_read)
+            + pricing.cache_write_cents_per_1k.cost(usage.cache_write)
     }
 
     /// Record auxiliary usage (for example Claude server-side compaction iterations) for the
@@ -300,23 +375,23 @@ impl CostTracker {
     /// Record the usage of a prompt-cache keepalive ping and return its cost in cents.
     ///
     /// The tokens and cost count toward the provider totals and the daily spend, but a ping is
-    /// not a provider request, so `request_count` is unchanged. Returns `0.0` when cost
-    /// tracking is disabled.
+    /// not a provider request, so `request_count` is unchanged.
     ///
     /// # Examples
     ///
     /// ```
-    /// use zeph_core::cost::CostTracker;
+    /// use zeph_common::money::Cents;
+    /// use zeph_core::cost::{CostTracker, DailyBudget};
     /// use zeph_llm::provider::{CacheUsage, ResponseUsage};
     ///
-    /// let tracker = CostTracker::new(true, 0.0);
+    /// let tracker = CostTracker::new(DailyBudget::Unlimited);
     /// let usage = ResponseUsage {
     ///     cache: Some(CacheUsage { creation: 0, read: 10_000 }),
     ///     ..ResponseUsage::default()
     /// };
     /// let cents = tracker.record_keepalive_usage("claude", "cloud", "claude-sonnet-4-6", usage);
-    /// assert!(cents > 0.0);
-    /// assert!((tracker.current_spend() - cents).abs() < 1e-9);
+    /// assert!(cents > Cents::ZERO);
+    /// assert_eq!(tracker.current_spend(), cents);
     /// ```
     pub fn record_keepalive_usage(
         &self,
@@ -324,10 +399,7 @@ impl CostTracker {
         provider_kind: &str,
         model: &str,
         usage: zeph_llm::provider::ResponseUsage,
-    ) -> f64 {
-        if !self.enabled {
-            return 0.0;
-        }
+    ) -> Cents {
         let cache = usage.cache.unwrap_or_default();
         let tokens = TokenUsage {
             input: usage.input,
@@ -349,9 +421,6 @@ impl CostTracker {
         speed: ServiceSpeed,
         requests: u64,
     ) {
-        if !self.enabled {
-            return;
-        }
         if self.pricing_for(model, ServiceSpeed::Standard).is_none() {
             let is_local = matches!(provider_kind, "ollama" | "candle" | "local");
             if is_local {
@@ -383,47 +452,43 @@ impl CostTracker {
     ///
     /// Returns `BudgetExhausted` when daily spend exceeds the configured limit.
     pub fn check_budget(&self) -> Result<(), BudgetExhausted> {
-        if !self.enabled {
-            return Ok(());
-        }
         let mut state = self.state.lock();
         reset_if_new_day(&mut state);
-        if self.max_daily_cents > 0.0 && state.spent_cents >= self.max_daily_cents {
+        if self.budget.is_exhausted(state.spent_cents)
+            && let Some(budget_cents) = self.budget.limit()
+        {
             return Err(BudgetExhausted {
                 spent_cents: state.spent_cents,
-                budget_cents: self.max_daily_cents,
+                budget_cents,
             });
         }
         Ok(())
     }
 
-    /// Returns the configured daily budget in cents. Zero means unlimited.
+    /// Returns the configured daily budget.
     #[must_use]
-    pub fn max_daily_cents(&self) -> f64 {
-        self.max_daily_cents
+    pub fn budget(&self) -> DailyBudget {
+        self.budget
     }
 
+    /// Returns today's accumulated spend.
     #[must_use]
-    pub fn current_spend(&self) -> f64 {
-        let state = self.state.lock();
-        state.spent_cents
+    pub fn current_spend(&self) -> Cents {
+        self.state.lock().spent_cents
     }
 
     /// Increment the successful-task counter.
     ///
     /// Call after each turn that completes without error and produces a usable agent response.
     pub fn record_successful_task(&self) {
-        if !self.enabled {
-            return;
-        }
         let mut state = self.state.lock();
         reset_if_new_day(&mut state);
         state.successful_tasks += 1;
     }
 
-    /// Returns cost-per-successful-task in cents, or `None` if no tasks recorded yet.
+    /// Returns cost-per-successful-task, or `None` if no tasks recorded yet.
     #[must_use]
-    pub fn cps(&self) -> Option<f64> {
+    pub fn cps(&self) -> Option<Cents> {
         let state = self.state.lock();
         if state.successful_tasks == 0 {
             return None;
@@ -432,7 +497,9 @@ impl CostTracker {
             clippy::cast_precision_loss,
             reason = "successful_tasks uses approximate floating-point values for ranking, display, or telemetry, where integer precision is not part of the contract"
         )]
-        Some(state.spent_cents / state.successful_tasks as f64)
+        Some(Cents::new(
+            state.spent_cents.as_f64() / state.successful_tasks as f64,
+        ))
     }
 
     /// Returns total number of successful tasks recorded today.
@@ -463,6 +530,11 @@ impl CostTracker {
 mod tests {
     use super::*;
 
+    #[test]
+    fn nan_limit_is_always_exhausted() {
+        assert!(DailyBudget::Limited(Cents::new(f64::NAN)).is_exhausted(Cents::ZERO));
+    }
+
     fn record(tracker: &CostTracker, provider: &str, model: &str, input: u64, output: u64) {
         tracker.record_usage(
             provider,
@@ -480,10 +552,10 @@ mod tests {
 
     #[test]
     fn cost_tracker_records_usage_and_calculates_cost() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         record(&tracker, "openai", "gpt-4o", 1000, 1000);
         // 0.25 + 1.0 = 1.25
-        let spend = tracker.current_spend();
+        let spend = tracker.current_spend().as_f64();
         assert!((spend - 1.25).abs() < 0.001);
     }
 
@@ -491,7 +563,7 @@ mod tests {
     fn keepalive_usage_counts_toward_spend_but_not_request_count() {
         use zeph_llm::provider::{CacheUsage, ResponseUsage};
 
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         let usage = ResponseUsage {
             input: 10,
             output: 1,
@@ -502,8 +574,8 @@ mod tests {
             ..ResponseUsage::default()
         };
         let cost = tracker.record_keepalive_usage("claude", "cloud", "claude-sonnet-4-6", usage);
-        assert!(cost > 0.0);
-        assert!((tracker.current_spend() - cost).abs() < 1e-9);
+        assert!(cost > Cents::ZERO);
+        assert_eq!(tracker.current_spend(), cost);
         let breakdown = tracker.provider_breakdown();
         let (_, claude) = breakdown.iter().find(|(n, _)| n == "claude").unwrap();
         assert_eq!(claude.request_count, 0);
@@ -511,40 +583,24 @@ mod tests {
     }
 
     #[test]
-    fn keepalive_usage_is_free_when_cost_tracking_is_disabled() {
-        let tracker = CostTracker::new(false, 0.0);
-        let usage = zeph_llm::provider::ResponseUsage {
-            input: 1_000,
-            ..zeph_llm::provider::ResponseUsage::default()
-        };
-        assert!(
-            tracker
-                .record_keepalive_usage("claude", "cloud", "claude-sonnet-4-6", usage)
-                .abs()
-                < f64::EPSILON
-        );
-        assert!(tracker.current_spend().abs() < f64::EPSILON);
-    }
-
-    #[test]
     fn check_budget_passes_when_under_limit() {
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         record(&tracker, "openai", "gpt-4o-mini", 100, 100);
         assert!(tracker.check_budget().is_ok());
     }
 
     #[test]
     fn check_budget_fails_when_over_limit() {
-        let tracker = CostTracker::new(true, 0.01);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(0.01)));
         record(&tracker, "claude", "claude-opus-4-20250514", 10000, 10000);
         assert!(tracker.check_budget().is_err());
     }
 
     #[test]
     fn daily_reset_clears_spending() {
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         record(&tracker, "openai", "gpt-4o", 1000, 1000);
-        assert!(tracker.current_spend() > 0.0);
+        assert!(tracker.current_spend().as_f64() > 0.0);
         // Simulate day change
         {
             let mut state = tracker.state.lock();
@@ -552,12 +608,12 @@ mod tests {
         }
         // check_budget should reset
         assert!(tracker.check_budget().is_ok());
-        assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+        assert!((tracker.current_spend().as_f64() - 0.0).abs() < 0.001);
     }
 
     #[test]
     fn daily_reset_clears_provider_breakdown() {
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         record(&tracker, "openai", "gpt-4o", 1000, 1000);
         assert!(!tracker.provider_breakdown().is_empty());
         // Simulate day change
@@ -571,15 +627,15 @@ mod tests {
 
     #[test]
     fn ollama_zero_cost() {
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         record(&tracker, "ollama", "llama3:8b", 10000, 10000);
-        assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+        assert!((tracker.current_spend().as_f64() - 0.0).abs() < 0.001);
     }
 
     #[test]
     fn ollama_unknown_model_no_warn_no_panic() {
         // Local providers should silently record zero cost for unknown models.
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         tracker.record_usage(
             "local",
             "ollama",
@@ -592,13 +648,13 @@ mod tests {
             },
             ServiceSpeed::Standard,
         );
-        assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+        assert!((tracker.current_spend().as_f64() - 0.0).abs() < 0.001);
     }
 
     #[test]
     fn cloud_unknown_model_still_records_zero_cost() {
         // Cloud providers record zero cost for unknown models (WARN emitted separately).
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         tracker.record_usage(
             "openai",
             "cloud",
@@ -611,29 +667,31 @@ mod tests {
             },
             ServiceSpeed::Standard,
         );
-        assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+        assert!((tracker.current_spend().as_f64() - 0.0).abs() < 0.001);
     }
 
     #[test]
     fn unknown_model_zero_cost() {
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         record(&tracker, "unknown", "totally-unknown-model", 5000, 5000);
-        assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+        assert!((tracker.current_spend().as_f64() - 0.0).abs() < 0.001);
     }
 
     #[test]
     fn price_of_distinguishes_cache_read_from_cache_write() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         let price = |cache_read, cache_write| {
-            tracker.price_of(
-                "claude-opus-4-6",
-                TokenUsage {
-                    cache_read,
-                    cache_write,
-                    ..TokenUsage::default()
-                },
-                ServiceSpeed::Standard,
-            )
+            tracker
+                .price_of(
+                    "claude-opus-4-6",
+                    TokenUsage {
+                        cache_read,
+                        cache_write,
+                        ..TokenUsage::default()
+                    },
+                    ServiceSpeed::Standard,
+                )
+                .as_f64()
         };
         let read_only = price(1000, 0);
         let write_only = price(0, 1000);
@@ -648,107 +706,99 @@ mod tests {
     /// missing-model fallback (unpriced/local models price at zero in both places).
     #[test]
     fn price_of_matches_record_usage_for_known_model() {
-        let tracker = CostTracker::new(true, 1000.0);
-        let expected = tracker.price_of(
-            "gpt-4o",
-            TokenUsage {
-                input: 1000,
-                cache_read: 0,
-                cache_write: 0,
-                output: 1000,
-            },
-            ServiceSpeed::Standard,
-        );
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
+        let expected = tracker
+            .price_of(
+                "gpt-4o",
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 1000,
+                },
+                ServiceSpeed::Standard,
+            )
+            .as_f64();
         record(&tracker, "openai", "gpt-4o", 1000, 1000);
         assert!(
-            (tracker.current_spend() - expected).abs() < 1e-9,
+            (tracker.current_spend().as_f64() - expected).abs() < 1e-9,
             "price_of={expected} current_spend={}",
-            tracker.current_spend()
+            tracker.current_spend().as_f64()
         );
     }
 
     #[test]
     fn price_of_zero_for_unpriced_model_matches_record_usage_fallback() {
-        let tracker = CostTracker::new(true, 1000.0);
-        let price = tracker.price_of(
-            "totally-unknown-model",
-            TokenUsage {
-                input: 5000,
-                cache_read: 0,
-                cache_write: 0,
-                output: 5000,
-            },
-            ServiceSpeed::Standard,
-        );
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
+        let price = tracker
+            .price_of(
+                "totally-unknown-model",
+                TokenUsage {
+                    input: 5000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 5000,
+                },
+                ServiceSpeed::Standard,
+            )
+            .as_f64();
         assert!(
             (price - 0.0).abs() < 1e-9,
             "unpriced model must price at zero"
         );
 
         record(&tracker, "unknown", "totally-unknown-model", 5000, 5000);
-        assert!((tracker.current_spend() - price).abs() < 1e-9);
+        assert!((tracker.current_spend().as_f64() - price).abs() < 1e-9);
     }
 
     #[test]
     fn price_of_includes_cache_tokens() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         // Mirrors cache_write_cost_included_in_total: claude-opus-4-6 cache_write = 125% of
         // prompt price (0.5 cents/1k) -> 1000 tokens = 0.625 cents.
-        let price = tracker.price_of(
-            "claude-opus-4-6",
-            TokenUsage {
-                input: 0,
-                cache_read: 0,
-                cache_write: 1000,
-                output: 0,
-            },
-            ServiceSpeed::Standard,
-        );
+        let price = tracker
+            .price_of(
+                "claude-opus-4-6",
+                TokenUsage {
+                    input: 0,
+                    cache_read: 0,
+                    cache_write: 1000,
+                    output: 0,
+                },
+                ServiceSpeed::Standard,
+            )
+            .as_f64();
         assert!((price - 0.625).abs() < 0.001);
     }
 
     #[test]
     fn known_claude_model_has_nonzero_cost() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         record(&tracker, "claude", "claude-haiku-4-5-20251001", 1000, 1000);
-        assert!(tracker.current_spend() > 0.0);
+        assert!(tracker.current_spend().as_f64() > 0.0);
     }
 
     #[test]
     fn gpt5_pricing_is_correct() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         record(&tracker, "openai", "gpt-5", 1000, 1000);
         // 0.125 + 1.0 = 1.125
-        let spend = tracker.current_spend();
+        let spend = tracker.current_spend().as_f64();
         assert!((spend - 1.125).abs() < 0.001);
     }
 
     #[test]
     fn gpt5_mini_pricing_is_correct() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         record(&tracker, "openai", "gpt-5-mini", 1000, 1000);
         // 0.025 + 0.2 = 0.225
-        let spend = tracker.current_spend();
+        let spend = tracker.current_spend().as_f64();
         assert!((spend - 0.225).abs() < 0.001);
     }
 
     #[test]
-    fn disabled_tracker_always_passes() {
-        let tracker = CostTracker::new(false, 0.0);
-        record(
-            &tracker,
-            "claude",
-            "claude-opus-4-20250514",
-            1_000_000,
-            1_000_000,
-        );
-        assert!(tracker.check_budget().is_ok());
-        assert!((tracker.current_spend() - 0.0).abs() < 0.001);
-    }
-
-    #[test]
     fn check_budget_unlimited_when_max_daily_cents_is_zero() {
-        let tracker = CostTracker::new(true, 0.0);
+        let tracker = CostTracker::new(DailyBudget::Unlimited);
         record(
             &tracker,
             "claude",
@@ -761,7 +811,7 @@ mod tests {
 
     #[test]
     fn per_provider_accumulation() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         record(&tracker, "claude", "claude-haiku-4-5-20251001", 1000, 500);
         record(&tracker, "openai", "gpt-4o", 2000, 1000);
         record(&tracker, "claude", "claude-haiku-4-5-20251001", 500, 200);
@@ -781,7 +831,7 @@ mod tests {
 
     #[test]
     fn provider_breakdown_sorted_by_cost_desc() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         // gpt-4o: cheap; claude-opus: expensive
         record(&tracker, "cheap", "gpt-4o-mini", 100, 100);
         record(&tracker, "expensive", "claude-opus-4-20250514", 10000, 5000);
@@ -792,7 +842,7 @@ mod tests {
 
     #[test]
     fn cache_tokens_included_in_cost() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         // claude-haiku prompt=0.1, cache_read=0.01 per 1k
         // 1000 cache_read tokens = 0.01 cents; 0 input/output for isolation
         tracker.record_usage(
@@ -807,13 +857,13 @@ mod tests {
             },
             ServiceSpeed::Standard,
         );
-        let spend = tracker.current_spend();
+        let spend = tracker.current_spend().as_f64();
         assert!(spend > 0.0, "cache read should contribute to cost");
     }
 
     #[test]
     fn cache_write_cost_included_in_total() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         // Claude pricing: cache_write = 125% of prompt price
         // claude-opus-4-6: prompt = 0.5 cents/1k
         // 1000 cache_write tokens = (0.5 * 1.25 * 1000) / 1000 = 0.625 cents
@@ -829,23 +879,25 @@ mod tests {
             },
             ServiceSpeed::Standard,
         );
-        let cost = tracker.current_spend();
+        let cost = tracker.current_spend().as_f64();
         assert!((cost - 0.625).abs() < 0.001);
     }
 
     #[test]
     fn opus_4_8_prices_like_retained_opus_4_6() {
         let price = |model: &str| {
-            CostTracker::new(true, 1000.0).price_of(
-                model,
-                TokenUsage {
-                    input: 1000,
-                    cache_read: 0,
-                    cache_write: 0,
-                    output: 1000,
-                },
-                ServiceSpeed::Standard,
-            )
+            CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)))
+                .price_of(
+                    model,
+                    TokenUsage {
+                        input: 1000,
+                        cache_read: 0,
+                        cache_write: 0,
+                        output: 1000,
+                    },
+                    ServiceSpeed::Standard,
+                )
+                .as_f64()
         };
         assert!((price("claude-opus-4-8") - price("claude-opus-4-6")).abs() < f64::EPSILON);
         assert!(price("claude-opus-4-8") > 0.0);
@@ -853,7 +905,7 @@ mod tests {
 
     #[test]
     fn claude_5_generation_prices_per_million_tokens() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         // (model, $/MTok input, $/MTok output); 1 cent per 1k tokens = $10 per MTok.
         let rows = [
             ("claude-sonnet-5", 2.0, 10.0),
@@ -870,16 +922,18 @@ mod tests {
         ];
         for (model, input, output) in rows {
             let expected = (input + output) / 10.0;
-            let got = tracker.price_of(
-                model,
-                TokenUsage {
-                    input: 1000,
-                    cache_read: 0,
-                    cache_write: 0,
-                    output: 1000,
-                },
-                ServiceSpeed::Standard,
-            );
+            let got = tracker
+                .price_of(
+                    model,
+                    TokenUsage {
+                        input: 1000,
+                        cache_read: 0,
+                        cache_write: 0,
+                        output: 1000,
+                    },
+                    ServiceSpeed::Standard,
+                )
+                .as_f64();
             assert!(
                 (got - expected).abs() < 1e-9,
                 "{model}: {got} != {expected}"
@@ -889,18 +943,20 @@ mod tests {
 
     #[test]
     fn cache_read_ratio_is_model_specific() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         let read = |model: &str| {
-            tracker.price_of(
-                model,
-                TokenUsage {
-                    input: 0,
-                    cache_read: 1000,
-                    cache_write: 0,
-                    output: 0,
-                },
-                ServiceSpeed::Standard,
-            )
+            tracker
+                .price_of(
+                    model,
+                    TokenUsage {
+                        input: 0,
+                        cache_read: 1000,
+                        cache_write: 0,
+                        output: 0,
+                    },
+                    ServiceSpeed::Standard,
+                )
+                .as_f64()
         };
         assert!((read("claude-sonnet-5-5") - 0.02).abs() < 1e-9);
         assert!((read("claude-opus-5-5") - 0.02).abs() < 1e-9);
@@ -913,41 +969,49 @@ mod tests {
 
     #[test]
     fn dated_snapshot_id_resolves_to_base_entry() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         assert!(
-            (tracker.price_of(
-                "claude-sonnet-5-5-20261001",
-                TokenUsage {
-                    input: 1000,
-                    cache_read: 0,
-                    cache_write: 0,
-                    output: 0
-                },
-                ServiceSpeed::Standard
-            ) - tracker.price_of(
-                "claude-sonnet-5-5",
-                TokenUsage {
-                    input: 1000,
-                    cache_read: 0,
-                    cache_write: 0,
-                    output: 0
-                },
-                ServiceSpeed::Standard
-            ))
+            (tracker
+                .price_of(
+                    "claude-sonnet-5-5-20261001",
+                    TokenUsage {
+                        input: 1000,
+                        cache_read: 0,
+                        cache_write: 0,
+                        output: 0
+                    },
+                    ServiceSpeed::Standard
+                )
+                .as_f64()
+                - tracker
+                    .price_of(
+                        "claude-sonnet-5-5",
+                        TokenUsage {
+                            input: 1000,
+                            cache_read: 0,
+                            cache_write: 0,
+                            output: 0
+                        },
+                        ServiceSpeed::Standard
+                    )
+                    .as_f64())
             .abs()
                 < f64::EPSILON
         );
         assert!(
-            tracker.price_of(
-                "claude-sonnet-5-5-20261001",
-                TokenUsage {
-                    input: 1000,
-                    cache_read: 0,
-                    cache_write: 0,
-                    output: 0
-                },
-                ServiceSpeed::Standard
-            ) > 0.0
+            tracker
+                .price_of(
+                    "claude-sonnet-5-5-20261001",
+                    TokenUsage {
+                        input: 1000,
+                        cache_read: 0,
+                        cache_write: 0,
+                        output: 0
+                    },
+                    ServiceSpeed::Standard
+                )
+                .as_f64()
+                > 0.0
         );
         assert!(
             tracker
@@ -961,6 +1025,7 @@ mod tests {
                     },
                     ServiceSpeed::Standard
                 )
+                .as_f64()
                 .abs()
                 < 1e-9
         );
@@ -968,7 +1033,7 @@ mod tests {
 
     #[test]
     fn unknown_model_warns_once_per_model_id() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         for _ in 0..3 {
             tracker.record_usage(
                 "p",
@@ -1001,7 +1066,7 @@ mod tests {
 
     #[test]
     fn auxiliary_usage_adds_cost_without_counting_a_request() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         tracker.record_usage(
             "claude",
             "cloud",
@@ -1014,7 +1079,7 @@ mod tests {
             },
             ServiceSpeed::Standard,
         );
-        let base = tracker.current_spend();
+        let base = tracker.current_spend().as_f64();
         let aux = TokenUsage {
             input: 2000,
             output: 500,
@@ -1028,9 +1093,11 @@ mod tests {
             aux,
             ServiceSpeed::Standard,
         );
-        let expected = tracker.price_of("claude-sonnet-5-5", aux, ServiceSpeed::Standard);
+        let expected = tracker
+            .price_of("claude-sonnet-5-5", aux, ServiceSpeed::Standard)
+            .as_f64();
         assert!(expected > 0.0);
-        assert!((tracker.current_spend() - base - expected).abs() < 1e-9);
+        assert!((tracker.current_spend().as_f64() - base - expected).abs() < 1e-9);
         let breakdown = tracker.provider_breakdown();
         assert_eq!(breakdown[0].1.request_count, 1);
         assert_eq!(breakdown[0].1.input_tokens, 3000);
@@ -1038,46 +1105,31 @@ mod tests {
     }
 
     #[test]
-    fn provider_breakdown_empty_when_disabled() {
-        let tracker = CostTracker::new(false, 100.0);
-        tracker.record_usage(
-            "claude",
-            "cloud",
-            "claude-haiku-4-5-20251001",
-            TokenUsage {
-                input: 1000,
-                cache_read: 0,
-                cache_write: 0,
-                output: 1000,
-            },
-            ServiceSpeed::Standard,
-        );
-        assert!(tracker.provider_breakdown().is_empty());
-    }
-
-    #[test]
     fn cps_none_when_no_tasks() {
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         assert!(tracker.cps().is_none());
         assert_eq!(tracker.successful_tasks(), 0);
     }
 
     #[test]
     fn cps_calculated_correctly() {
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         // 0.25 (input) + 1.0 (output) = 1.25 cents
         record(&tracker, "openai", "gpt-4o", 1000, 1000);
         tracker.record_successful_task();
         tracker.record_successful_task();
         assert_eq!(tracker.successful_tasks(), 2);
-        let cps = tracker.cps().expect("cps should be Some after tasks");
+        let cps = tracker
+            .cps()
+            .expect("cps should be Some after tasks")
+            .as_f64();
         // 1.25 / 2 = 0.625
         assert!((cps - 0.625).abs() < 0.001, "cps={cps}");
     }
 
     #[test]
     fn cps_resets_on_new_day() {
-        let tracker = CostTracker::new(true, 100.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
         record(&tracker, "openai", "gpt-4o", 1000, 1000);
         tracker.record_successful_task();
         assert_eq!(tracker.successful_tasks(), 1);
@@ -1093,28 +1145,33 @@ mod tests {
     }
     #[test]
     fn dated_mythos_snapshot_prices_like_base() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         let std = ServiceSpeed::Standard;
         assert!(
-            (tracker.price_of(
-                "claude-mythos-5-2-20261109",
-                TokenUsage {
-                    input: 1000,
-                    cache_read: 0,
-                    cache_write: 0,
-                    output: 1000
-                },
-                std
-            ) - tracker.price_of(
-                "claude-mythos-5-2",
-                TokenUsage {
-                    input: 1000,
-                    cache_read: 0,
-                    cache_write: 0,
-                    output: 1000
-                },
-                std
-            ))
+            (tracker
+                .price_of(
+                    "claude-mythos-5-2-20261109",
+                    TokenUsage {
+                        input: 1000,
+                        cache_read: 0,
+                        cache_write: 0,
+                        output: 1000
+                    },
+                    std
+                )
+                .as_f64()
+                - tracker
+                    .price_of(
+                        "claude-mythos-5-2",
+                        TokenUsage {
+                            input: 1000,
+                            cache_read: 0,
+                            cache_write: 0,
+                            output: 1000
+                        },
+                        std
+                    )
+                    .as_f64())
             .abs()
                 < f64::EPSILON
         );
@@ -1122,7 +1179,7 @@ mod tests {
 
     #[test]
     fn fast_mode_prices_at_double_standard_with_stacked_cache() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         for model in ["claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2"] {
             for (input, cache_read, cache_write, output) in [
                 (1000, 0, 0, 0),
@@ -1130,26 +1187,30 @@ mod tests {
                 (0, 0, 1000, 0),
                 (0, 0, 0, 1000),
             ] {
-                let std = tracker.price_of(
-                    model,
-                    TokenUsage {
-                        input,
-                        cache_read,
-                        cache_write,
-                        output,
-                    },
-                    ServiceSpeed::Standard,
-                );
-                let fast = tracker.price_of(
-                    model,
-                    TokenUsage {
-                        input,
-                        cache_read,
-                        cache_write,
-                        output,
-                    },
-                    ServiceSpeed::Fast,
-                );
+                let std = tracker
+                    .price_of(
+                        model,
+                        TokenUsage {
+                            input,
+                            cache_read,
+                            cache_write,
+                            output,
+                        },
+                        ServiceSpeed::Standard,
+                    )
+                    .as_f64();
+                let fast = tracker
+                    .price_of(
+                        model,
+                        TokenUsage {
+                            input,
+                            cache_read,
+                            cache_write,
+                            output,
+                        },
+                        ServiceSpeed::Fast,
+                    )
+                    .as_f64();
                 assert!((fast - 2.0 * std).abs() < 1e-9, "{model}: {fast} vs {std}");
             }
         }
@@ -1157,34 +1218,38 @@ mod tests {
 
     #[test]
     fn fast_mode_without_row_falls_back_to_standard_price() {
-        let tracker = CostTracker::new(true, 1000.0);
-        let std = tracker.price_of(
-            "claude-sonnet-5-5",
-            TokenUsage {
-                input: 1000,
-                cache_read: 0,
-                cache_write: 0,
-                output: 1000,
-            },
-            ServiceSpeed::Standard,
-        );
-        let fast = tracker.price_of(
-            "claude-sonnet-5-5",
-            TokenUsage {
-                input: 1000,
-                cache_read: 0,
-                cache_write: 0,
-                output: 1000,
-            },
-            ServiceSpeed::Fast,
-        );
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
+        let std = tracker
+            .price_of(
+                "claude-sonnet-5-5",
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 1000,
+                },
+                ServiceSpeed::Standard,
+            )
+            .as_f64();
+        let fast = tracker
+            .price_of(
+                "claude-sonnet-5-5",
+                TokenUsage {
+                    input: 1000,
+                    cache_read: 0,
+                    cache_write: 0,
+                    output: 1000,
+                },
+                ServiceSpeed::Fast,
+            )
+            .as_f64();
         assert!((fast - std).abs() < f64::EPSILON);
         assert!(fast > 0.0);
     }
 
     #[test]
     fn record_usage_applies_fast_price() {
-        let tracker = CostTracker::new(true, 1000.0);
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));
         tracker.record_usage(
             "p",
             "cloud",
@@ -1198,6 +1263,6 @@ mod tests {
             ServiceSpeed::Fast,
         );
         // (1.6 + 8.0) cents
-        assert!((tracker.current_spend() - 9.6).abs() < 1e-9);
+        assert!((tracker.current_spend().as_f64() - 9.6).abs() < 1e-9);
     }
 }

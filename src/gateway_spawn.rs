@@ -157,7 +157,7 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
         &mut self,
         usage: zeph_core::channel::TokenUsage,
         context_window: u64,
-        cost_cents: f64,
+        cost_cents: zeph_common::money::Cents,
     ) -> Result<(), zeph_core::channel::ChannelError> {
         self.inner
             .send_usage(usage, context_window, cost_cents)

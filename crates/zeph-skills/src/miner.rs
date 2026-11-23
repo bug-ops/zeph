@@ -568,7 +568,7 @@ impl SkillMiner {
         }
 
         let bytes = read_prefix(resp, README_BODY_LIMIT).await;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(String::from_utf8_lossy_owned(bytes))
     }
 
     /// Generate a SKILL.md candidate from a `RepoCandidate`.

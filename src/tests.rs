@@ -632,7 +632,7 @@ async fn a2a_response_shift_drain_until_flush_prevents_leak() {
                     ..Default::default()
                 },
                 context_window: 8192,
-                cost_cents: 0.0,
+                cost_cents: zeph_common::money::Cents::ZERO,
             })
             .await;
         let _ = tx2.send(LoopbackEvent::Flush).await;
@@ -694,7 +694,7 @@ async fn a2a_drain_completes_on_flush_within_timeout() {
                     ..Default::default()
                 },
                 context_window: 8192,
-                cost_cents: 0.0,
+                cost_cents: zeph_common::money::Cents::ZERO,
             })
             .await;
         let _ = tx2.send(LoopbackEvent::Flush).await;

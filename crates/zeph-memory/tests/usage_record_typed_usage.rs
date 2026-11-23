@@ -30,7 +30,7 @@ fn record(
             cache_read: 3,
         },
         reasoning_tokens: Some(11),
-        cost_cents: 0.25,
+        cost_cents: zeph_common::money::Cents::new(0.25),
         latency_ms: 800,
         ttft_ms: Some(120),
         tokens_per_sec: Some(42.5),
@@ -85,5 +85,5 @@ async fn usage_record_planner_row_without_ids_is_accepted() {
     let mut planner = record(None, None);
     planner.source = UsageSource::Planner;
     store.record_usage_row(&planner).await.unwrap();
-    assert!(store.usage_cost_since(0).await.unwrap() > 0.0);
+    assert!(store.usage_cost_since(0).await.unwrap() > zeph_common::money::Cents::ZERO);
 }

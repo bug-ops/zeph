@@ -35,24 +35,6 @@ pub enum ChatJsonError {
     Parse(String),
 }
 
-/// Strip markdown code fences from LLM output.
-#[expect(clippy::string_slice, reason = "nl comes from find on the same string")]
-fn strip_fences(raw: &str) -> &str {
-    let trimmed = raw.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        let after_lang = if let Some(nl) = rest.find('\n') {
-            &rest[nl + 1..]
-        } else {
-            rest
-        };
-        if let Some(end) = after_lang.rfind("```") {
-            return after_lang[..end].trim();
-        }
-        return after_lang.trim();
-    }
-    trimmed
-}
-
 /// Find the first `{...}` or `[...]` span in the string.
 #[expect(
     clippy::string_slice,
@@ -86,7 +68,7 @@ fn find_first_brace_span(s: &str) -> Option<&str> {
 ///
 /// Returns [`ParseError`] if no brace span is found or JSON deserialization fails.
 pub fn parse_json<T: DeserializeOwned>(raw: &str) -> Result<T, ParseError> {
-    let stripped = strip_fences(raw);
+    let stripped = zeph_common::llm_response::strip_code_fence(raw);
     let span = find_first_brace_span(stripped).ok_or(ParseError::NoBraceSpan)?;
     Ok(serde_json::from_str(span)?)
 }

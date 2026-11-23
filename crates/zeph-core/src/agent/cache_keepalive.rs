@@ -133,11 +133,12 @@ impl<C: Channel> Agent<C> {
             }
             "" | "status" => {
                 let shared = &self.runtime.cache_keepalive.shared;
-                let (pings, cost_cents) = shared.stats();
+                let stats = shared.stats();
                 format!(
-                    "keepalive: {} ({pings} pings, ${:.4})",
+                    "keepalive: {} ({} pings, {})",
                     self.keepalive_status_text(),
-                    cost_cents / 100.0
+                    stats.pings,
+                    stats.cost
                 )
             }
             other => format!("keepalive: unknown argument `{other}`; use on, off or status"),

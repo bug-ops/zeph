@@ -501,15 +501,7 @@ async fn extract_facts_via_llm(
         return Ok(Vec::new());
     }
 
-    // Strip optional ```json … ``` fencing.
-    let json_str = if let Some(inner) = text
-        .strip_prefix("```json")
-        .or_else(|| text.strip_prefix("```"))
-    {
-        inner.trim_end_matches("```").trim()
-    } else {
-        text.as_str()
-    };
+    let json_str = zeph_common::llm_response::strip_code_fence(&text);
 
     let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         MemoryError::Other(format!(

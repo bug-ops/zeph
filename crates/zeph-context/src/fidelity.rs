@@ -390,7 +390,7 @@ fn compute_scores(
     )]
     let max_dist = score_end.saturating_sub(1) as f32;
 
-    let mut scores: Vec<Option<FidelityScore>> = (0..n).map(|_| None).collect();
+    let mut scores: Vec<Option<FidelityScore>> = Vec::from_fn(n, |_| None);
     let floor = context_floor(messages);
 
     for (i, msg) in messages.iter().enumerate().take(score_end) {

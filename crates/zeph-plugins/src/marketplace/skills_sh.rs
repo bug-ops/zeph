@@ -233,7 +233,7 @@ async fn backend_error(response: reqwest::Response) -> RegistryError {
     let raw = read_prefix(response, MAX_ERROR_BODY).await;
     RegistryError::Backend {
         status,
-        body: String::from_utf8_lossy(&raw).into_owned(),
+        body: String::from_utf8_lossy_owned(raw),
     }
 }
 
@@ -248,7 +248,7 @@ async fn read_text(response: reqwest::Response) -> Result<String, RegistryError>
             }
             BodyReadError::Transport(e) => RegistryError::Request(e.to_string()),
         })?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(String::from_utf8_lossy_owned(bytes))
 }
 
 fn classify_send_error(e: &reqwest::Error) -> RegistryError {

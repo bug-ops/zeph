@@ -12,6 +12,7 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
+use zeph_common::money::Cents;
 use zeph_config::ContextFormat;
 use zeph_llm::provider::{Message, MessagePart, Role};
 use zeph_memory::{RetrievalFailureRecord, RetrievalFailureType, TokenCounter};
@@ -466,9 +467,9 @@ pub async fn fetch_cross_session(
 /// `format_xml` and append the result to the system prompt when `Some`.
 pub struct BudgetHint {
     /// Remaining daily budget in US cents, if a daily limit is configured.
-    pub remaining_cost_cents: Option<f64>,
+    pub remaining_cost_cents: Option<Cents>,
     /// Total daily budget in US cents, if a daily limit is configured.
-    pub total_budget_cents: Option<f64>,
+    pub total_budget_cents: Option<Cents>,
     /// Remaining tool-call iterations this turn.
     pub remaining_tool_calls: usize,
     /// Maximum allowed tool-call iterations per turn (0 = no limit configured).
@@ -485,10 +486,11 @@ impl BudgetHint {
     ///
     /// ```
     /// use zeph_agent_context::helpers::BudgetHint;
+    /// use zeph_common::money::Cents;
     ///
     /// let hint = BudgetHint {
-    ///     remaining_cost_cents: Some(50.0),
-    ///     total_budget_cents: Some(100.0),
+    ///     remaining_cost_cents: Some(Cents::new(50.0)),
+    ///     total_budget_cents: Some(Cents::new(100.0)),
     ///     remaining_tool_calls: 8,
     ///     max_tool_calls: 10,
     /// };
@@ -507,11 +509,16 @@ impl BudgetHint {
         if let Some(remaining) = self.remaining_cost_cents {
             let _ = write!(
                 s,
-                "\n<remaining_cost_cents>{remaining:.2}</remaining_cost_cents>"
+                "\n<remaining_cost_cents>{:.2}</remaining_cost_cents>",
+                remaining.as_f64()
             );
         }
         if let Some(total) = self.total_budget_cents {
-            let _ = write!(s, "\n<total_budget_cents>{total:.2}</total_budget_cents>");
+            let _ = write!(
+                s,
+                "\n<total_budget_cents>{:.2}</total_budget_cents>",
+                total.as_f64()
+            );
         }
         if self.max_tool_calls > 0 {
             let _ = write!(
@@ -548,8 +555,8 @@ mod budget_hint_tests {
     #[test]
     fn format_xml_with_cost_only() {
         let hint = BudgetHint {
-            remaining_cost_cents: Some(25.5),
-            total_budget_cents: Some(100.0),
+            remaining_cost_cents: Some(Cents::new(25.5)),
+            total_budget_cents: Some(Cents::new(100.0)),
             remaining_tool_calls: 0,
             max_tool_calls: 0,
         };
@@ -574,8 +581,8 @@ mod budget_hint_tests {
     #[test]
     fn format_xml_with_all_fields() {
         let hint = BudgetHint {
-            remaining_cost_cents: Some(50.0),
-            total_budget_cents: Some(100.0),
+            remaining_cost_cents: Some(Cents::new(50.0)),
+            total_budget_cents: Some(Cents::new(100.0)),
             remaining_tool_calls: 8,
             max_tool_calls: 10,
         };

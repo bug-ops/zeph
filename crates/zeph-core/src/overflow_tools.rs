@@ -72,7 +72,7 @@ impl ToolExecutor for OverflowToolExecutor {
         }
         let params: ReadOverflowParams = deserialize_params(&call.params)?;
 
-        let id = params.id.strip_prefix("overflow:").unwrap_or(&params.id);
+        let id = params.id.trim_prefix("overflow:");
 
         if uuid::Uuid::parse_str(id).is_err() {
             return Err(ToolError::InvalidParams {
@@ -88,7 +88,7 @@ impl ToolExecutor for OverflowToolExecutor {
 
         match self.sqlite.load_overflow(id, conv_id).await {
             Ok(Some(entry)) => {
-                let text = String::from_utf8_lossy(&entry.content).into_owned();
+                let text = String::from_utf8_lossy_owned(entry.content);
                 Ok(Some(ToolOutput {
                     tool_name: zeph_common::ToolName::new(Self::TOOL_NAME),
                     summary: text,

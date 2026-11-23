@@ -222,7 +222,7 @@ impl AdditionalDir {
         // Expand leading `~`.
         let expanded = if raw.starts_with("~") {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-            home.join(raw.strip_prefix("~").unwrap_or(&raw))
+            home.join(raw.trim_prefix("~"))
         } else {
             raw.clone()
         };

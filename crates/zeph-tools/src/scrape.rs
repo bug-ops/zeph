@@ -131,9 +131,7 @@ impl ExtractMode {
         match s {
             "text" => Self::Text,
             "html" => Self::Html,
-            attr if attr.starts_with("attr:") => {
-                Self::Attr(attr.strip_prefix("attr:").unwrap_or(attr).to_owned())
-            }
+            attr if attr.starts_with("attr:") => Self::Attr(attr.trim_prefix("attr:").to_owned()),
             _ => Self::Text,
         }
     }

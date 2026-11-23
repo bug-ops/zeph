@@ -27,6 +27,7 @@
 //! - **M2**: `OverflowPolicy` has only `Drop`; coalesce is not implemented.
 
 use std::future::Future;
+use std::mem::DropGuard;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -132,21 +133,21 @@ enum TaskResult {
     SummarizationDone(Duration),
 }
 
-/// RAII guard that decrements a class inflight counter when dropped.
+/// Decrements a class inflight counter when the returned guard is dropped.
 ///
 /// Placed inside every spawned future so the concurrency slot is freed as soon as the
 /// task future resolves, not when `reap()` next polls the `JoinSet` (M1).
-struct InflightGuard(Arc<AtomicUsize>);
-
-impl Drop for InflightGuard {
-    fn drop(&mut self) {
+fn inflight_guard(
+    counter: Arc<AtomicUsize>,
+) -> DropGuard<Arc<AtomicUsize>, impl FnOnce(Arc<AtomicUsize>)> {
+    DropGuard::new(counter, |counter| {
         // Saturating: avoids underflow if somehow called more than once.
-        self.0
+        counter
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             })
             .ok();
-    }
+    })
 }
 
 impl BackgroundSupervisor {
@@ -189,7 +190,7 @@ impl BackgroundSupervisor {
         }
 
         self.class_inflight[idx].fetch_add(1, Ordering::Relaxed);
-        let guard = InflightGuard(Arc::clone(&self.class_inflight[idx]));
+        let guard = inflight_guard(Arc::clone(&self.class_inflight[idx]));
         self.class_metrics[idx].spawned += 1;
         let spawned_at = Instant::now();
 
@@ -233,7 +234,7 @@ impl BackgroundSupervisor {
         }
 
         self.class_inflight[idx].fetch_add(1, Ordering::Relaxed);
-        let guard = InflightGuard(Arc::clone(&self.class_inflight[idx]));
+        let guard = inflight_guard(Arc::clone(&self.class_inflight[idx]));
         self.class_metrics[idx].spawned += 1;
         let spawned_at = Instant::now();
 

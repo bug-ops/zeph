@@ -228,7 +228,7 @@ async fn run_purge(
     let db_path: Option<PathBuf> = if postgres {
         None
     } else {
-        let raw = db_url.strip_prefix("sqlite:").unwrap_or(db_url);
+        let raw = db_url.trim_prefix("sqlite:");
         Some(PathBuf::from(raw))
     };
 

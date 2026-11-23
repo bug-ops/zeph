@@ -234,7 +234,9 @@ impl<C: Channel> Agent<C> {
             .metrics
             .metrics_tx
             .as_ref()
-            .map_or(0.0, |tx| tx.borrow().cost_spent_cents);
+            .map_or(zeph_common::money::Cents::ZERO, |tx| {
+                tx.borrow().cost_spent_cents
+            });
         let _ = self
             .channel
             .send_usage(tokens, context_window, cost_cents)

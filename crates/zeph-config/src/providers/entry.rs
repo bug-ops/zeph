@@ -9,6 +9,7 @@
 //! [`CocoonPricing`], and the per-session [`ProviderOverrides`].
 
 use serde::{Deserialize, Serialize};
+use zeph_common::money::CentsPer1k;
 
 use super::{
     CacheTtl, CandleInlineConfig, CompactionTrigger, GeminiThinkingLevel, ProviderKind,
@@ -44,11 +45,11 @@ pub struct GonkaNode {
 pub struct CocoonPricing {
     /// Prompt (input) token price in cents per 1K tokens.
     #[serde(default)]
-    pub prompt_cents_per_1k: f64,
+    pub prompt_cents_per_1k: CentsPer1k,
     /// Completion (output) token price in cents per 1K tokens.
     /// Reasoning tokens are counted here since the sidecar folds them into completion tokens.
     #[serde(default)]
-    pub completion_cents_per_1k: f64,
+    pub completion_cents_per_1k: CentsPer1k,
 }
 
 /// Claude service speed tier requested for every message call of a provider entry.
@@ -440,13 +441,17 @@ impl ProviderEntry {
                 )));
             }
             if let Some(ref p) = self.cocoon_pricing {
-                if !p.prompt_cents_per_1k.is_finite() || p.prompt_cents_per_1k < 0.0 {
+                if !p.prompt_cents_per_1k.as_f64().is_finite()
+                    || p.prompt_cents_per_1k.as_f64() < 0.0
+                {
                     return Err(ConfigError::Validation(format!(
                         "[[llm.providers]] entry '{name}': cocoon_pricing.prompt_cents_per_1k \
                          must be a finite non-negative number"
                     )));
                 }
-                if !p.completion_cents_per_1k.is_finite() || p.completion_cents_per_1k < 0.0 {
+                if !p.completion_cents_per_1k.as_f64().is_finite()
+                    || p.completion_cents_per_1k.as_f64() < 0.0
+                {
                     return Err(ConfigError::Validation(format!(
                         "[[llm.providers]] entry '{name}': \
                          cocoon_pricing.completion_cents_per_1k \

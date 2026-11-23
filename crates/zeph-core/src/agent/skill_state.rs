@@ -143,7 +143,7 @@ fn strip_sections(text: &str) -> Option<String> {
         };
         out.push_str(&rest[..start]);
         rest = &rest[start + len + SECTION_CLOSE.len()..];
-        rest = rest.strip_prefix('\n').unwrap_or(rest);
+        rest = rest.trim_prefix('\n');
         removed = true;
     }
     out.push_str(rest);

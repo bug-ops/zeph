@@ -88,7 +88,7 @@ impl From<serde_json::Error> for EmbeddingRegistryError {
 
 // Ollama appends :latest when no tag is specified; treat the two as equivalent.
 fn normalize_model_name(name: &str) -> &str {
-    name.strip_suffix(":latest").unwrap_or(name)
+    name.trim_suffix(":latest")
 }
 
 /// Probe the embedding dimension via [`crate::embed_probe::probe_vector_size`], adapting its

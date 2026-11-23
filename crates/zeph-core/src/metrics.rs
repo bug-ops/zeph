@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 use zeph_common::SecurityEventCategory;
+use zeph_common::money::Cents;
 
 pub use zeph_llm::{ClassifierMetricsSnapshot, TaskMetricsSnapshot};
 pub use zeph_memory::{CategoryScore, ProbeCategory, ProbeVerdict};
@@ -463,13 +464,13 @@ pub struct MetricsSnapshot {
     /// Keepalive pings sent this session.
     pub cache_keepalive_pings: u64,
     /// Cost of keepalive pings this session, in cents.
-    pub cache_keepalive_cost_cents: f64,
+    pub cache_keepalive_cost_cents: Cents,
     pub cache_creation_tokens: u64,
-    pub cost_spent_cents: f64,
+    pub cost_spent_cents: Cents,
     /// Effective service speed of the main provider's last call (drives the TUI `fast` marker).
     pub service_speed: zeph_config::ServiceSpeed,
     /// Cost per successful task in cents. `None` until at least one task completes.
-    pub cost_cps_cents: Option<f64>,
+    pub cost_cps_cents: Option<Cents>,
     /// Number of successful tasks recorded today.
     pub cost_successful_tasks: u64,
     /// Per-provider cost breakdown, sorted by cost descending.

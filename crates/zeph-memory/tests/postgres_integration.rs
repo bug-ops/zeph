@@ -1788,7 +1788,7 @@ mod pg {
             prompt_tokens: 100,
             completion_tokens: 50,
             reasoning_tokens: 0,
-            cost_cents: 1.5,
+            cost_cents: zeph_common::money::Cents::new(1.5),
             goal_text: None,
         };
         store.upsert_agent_session(&row).await.unwrap();

@@ -778,12 +778,12 @@ fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
         && let Some((name, body_part)) = rest.split_once("]\n```\n")
     {
         let name = name.to_owned();
-        let body = body_part.strip_suffix(suffix).unwrap_or(body_part);
+        let body = body_part.trim_suffix(suffix);
         return Some((name, body.to_owned()));
     }
     // Legacy format: [tool output] — infer tool name from body
     if let Some(rest) = content.strip_prefix("[tool output]\n```\n") {
-        let body = rest.strip_suffix(suffix).unwrap_or(rest);
+        let body = rest.trim_suffix(suffix);
         let name = if body.starts_with("$ ") {
             "bash"
         } else {

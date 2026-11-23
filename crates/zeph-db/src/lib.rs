@@ -165,7 +165,7 @@ pub fn rewrite_placeholders(query: &str) -> String {
     while let Some(ch) = chars.next() {
         match ch {
             '\'' => {
-                in_string = !in_string;
+                in_string.toggle();
                 out.push(ch);
             }
             '?' if !in_string => {

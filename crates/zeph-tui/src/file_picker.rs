@@ -73,7 +73,7 @@ impl FileIndex {
         for entry in walker.flatten() {
             if entry.file_type().is_some_and(|ft| ft.is_file()) {
                 let path = entry.path();
-                let rel = path.strip_prefix(root).unwrap_or(path);
+                let rel = path.trim_prefix(root);
                 if let Some(s) = rel.to_str() {
                     // Normalize Windows backslashes to forward slashes
                     let path = s.replace('\\', "/");

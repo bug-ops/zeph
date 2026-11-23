@@ -572,7 +572,10 @@ impl PrometheusMetrics {
         }
 
         // --- LLM cost ---
-        let cost_delta = counter_delta_f64(current.cost_spent_cents, prev.cost_spent_cents);
+        let cost_delta = counter_delta_f64(
+            current.cost_spent_cents.as_f64(),
+            prev.cost_spent_cents.as_f64(),
+        );
         if cost_delta > 0.0 {
             self.llm_cost_cents_total.inc_by(cost_delta);
         }

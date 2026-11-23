@@ -9,6 +9,7 @@
 //! to populate the session-close usage summary. Isolating this type keeps the feature's
 //! surface out of the main agent dispatch logic in [`super`].
 
+use zeph_common::money::Cents;
 use zeph_llm::provider::TokenUsage;
 
 /// Per-session token and cost totals used to populate the session-close usage summary.
@@ -20,14 +21,14 @@ use zeph_llm::provider::TokenUsage;
 pub(crate) struct SessionUsageAccumulator {
     pub(crate) totals: TokenUsage,
     /// Cumulative cost in USD cents — overwrite on each update, do not sum.
-    pub(crate) last_cost_cents: f64,
+    pub(crate) last_cost_cents: Cents,
     /// Most recent context window size in tokens — overwrite on each update.
     pub(crate) last_context_window: u64,
 }
 
 impl SessionUsageAccumulator {
     /// Record one LLM call's token deltas, latest cumulative cost, and context window size.
-    pub(crate) fn record(&mut self, usage: TokenUsage, cost_cents: f64, context_window: u64) {
+    pub(crate) fn record(&mut self, usage: TokenUsage, cost_cents: Cents, context_window: u64) {
         self.totals += usage;
         // cost_cents and context_window are snapshot values — overwrite, do not accumulate.
         self.last_cost_cents = cost_cents;
@@ -37,7 +38,7 @@ impl SessionUsageAccumulator {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionUsageAccumulator, TokenUsage};
+    use super::{Cents, SessionUsageAccumulator, TokenUsage};
     use crate::agent::build_prompt_response;
     use agent_client_protocol as acp;
 
@@ -51,7 +52,7 @@ mod tests {
                 cache_read: 10,
                 cache_write: 5,
             },
-            1.5,
+            Cents::new(1.5),
             128_000,
         );
         // cost and context_window must overwrite
@@ -61,7 +62,7 @@ mod tests {
                 output: 80,
                 ..TokenUsage::default()
             },
-            3.0,
+            Cents::new(3.0),
             64_000,
         );
         assert_eq!(
@@ -73,7 +74,7 @@ mod tests {
                 cache_write: 5,
             }
         );
-        assert!((acc.last_cost_cents - 3.0).abs() < f64::EPSILON);
+        assert_eq!(acc.last_cost_cents, Cents::new(3.0));
         assert_eq!(acc.last_context_window, 64_000);
     }
 
@@ -81,7 +82,7 @@ mod tests {
     fn session_accumulator_default_is_zero() {
         let acc = SessionUsageAccumulator::default();
         assert_eq!(acc.totals, TokenUsage::default());
-        assert!(acc.last_cost_cents.abs() < f64::EPSILON);
+        assert_eq!(acc.last_cost_cents, Cents::ZERO);
         assert_eq!(acc.last_context_window, 0);
     }
 

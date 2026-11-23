@@ -298,19 +298,8 @@ fn parse_eval_response(raw: &str) -> Result<SkillQualityScore, serde_json::Error
         rationale: String,
     }
 
-    let trimmed = raw.trim();
-    // Strip markdown code fences if present.
-    let json_str = if let Some(inner) = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .and_then(|s| s.trim_start_matches('\n').rsplit_once("```"))
-    {
-        inner.0.trim()
-    } else {
-        trimmed
-    };
-
-    let resp: EvalResponse = serde_json::from_str(json_str)?;
+    let resp: EvalResponse =
+        serde_json::from_str(zeph_common::llm_response::strip_code_fence(raw))?;
     Ok(SkillQualityScore {
         correctness: resp.correctness.clamp(0.0, 1.0),
         reusability: resp.reusability.clamp(0.0, 1.0),

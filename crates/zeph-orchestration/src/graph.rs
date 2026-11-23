@@ -534,7 +534,7 @@ pub struct TaskNode {
     /// On task completion the scheduler checks whether this budget was exceeded and
     /// emits a `tracing::warn!`. Hard enforcement is deferred post-v1.0.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_budget_cents: Option<f64>,
+    pub token_budget_cents: Option<zeph_common::money::Cents>,
 
     /// Per-task network egress policy. Enforced (best-effort) for both spawned
     /// sub-agents and `RunInline` tasks.

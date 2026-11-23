@@ -805,13 +805,7 @@ fn build_transcript_prompt(messages: &[Message]) -> String {
 /// Strips markdown code fences, then tries direct parse; on failure, locates the
 /// outermost `{…}` brackets and tries again. Returns `None` on persistent parse failure.
 fn parse_self_judge_response(response: &str) -> Option<SelfJudgeOutcome> {
-    // Strip markdown fences (```json … ```)
-    let stripped = response
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
+    let stripped = zeph_common::llm_response::strip_code_fence(response);
 
     if let Ok(v) = serde_json::from_str::<SelfJudgeOutcome>(stripped) {
         return Some(v);

@@ -189,7 +189,7 @@ fn reduce_inner(app: &mut App, action: Action) -> Vec<Effect> {
 
         // ── Panel toggles ───────────────────────────────────────────────────────
         Action::ToggleToolExpanded => {
-            app.tool_expanded = !app.tool_expanded;
+            app.tool_expanded.toggle();
             app.sessions.current_mut().render_cache.clear();
             vec![]
         }
@@ -199,11 +199,11 @@ fn reduce_inner(app: &mut App, action: Action) -> Vec<Effect> {
             vec![]
         }
         Action::ToggleSidePanels => {
-            app.show_side_panels = !app.show_side_panels;
+            app.show_side_panels.toggle();
             vec![]
         }
         Action::ToggleHelp => {
-            app.show_help = !app.show_help;
+            app.show_help.toggle();
             vec![]
         }
         Action::SetHelp(v) => {
@@ -930,7 +930,7 @@ fn reduce_inner(app: &mut App, action: Action) -> Vec<Effect> {
                     return reduce(app, Action::SetMouse(!cur));
                 }
                 TuiCommand::ToggleEqualizer => {
-                    app.show_equalizer = !app.show_equalizer;
+                    app.show_equalizer.toggle();
                     return vec![];
                 }
                 TuiCommand::SetPanelSizing(mode) => {

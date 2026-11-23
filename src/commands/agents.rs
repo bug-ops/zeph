@@ -279,8 +279,8 @@ fn print_fleet_table(sessions: &[AgentSessionRow]) {
             format_tokens(s.prompt_tokens),
             format_tokens(s.completion_tokens)
         );
-        let cost = if s.cost_cents > 0.0 {
-            format!("${:.4}", s.cost_cents / 100.0)
+        let cost = if s.cost_cents > zeph_common::money::Cents::ZERO {
+            s.cost_cents.to_string()
         } else {
             "—".to_owned()
         };

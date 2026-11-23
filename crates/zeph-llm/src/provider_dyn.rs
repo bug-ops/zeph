@@ -405,7 +405,7 @@ where
     augmented.insert(0, Message::from_legacy(Role::System, instruction));
 
     let raw = provider.chat(&augmented).await?;
-    let cleaned = strip_json_fences(&raw);
+    let cleaned = zeph_common::llm_response::strip_code_fence(&raw);
     match serde_json::from_str::<T>(cleaned) {
         Ok(val) => Ok(val),
         Err(first_err) => {
@@ -418,20 +418,11 @@ where
                 ),
             ));
             let retry_raw = provider.chat(&augmented).await?;
-            let retry_cleaned = strip_json_fences(&retry_raw);
+            let retry_cleaned = zeph_common::llm_response::strip_code_fence(&retry_raw);
             serde_json::from_str::<T>(retry_cleaned)
                 .map_err(|e| LlmError::StructuredParse(format!("parse failed after retry: {e}")))
         }
     }
-}
-
-/// Strip markdown code fences from LLM output.
-fn strip_json_fences(s: &str) -> &str {
-    s.trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim()
 }
 
 #[cfg(test)]
