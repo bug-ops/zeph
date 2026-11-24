@@ -20,7 +20,7 @@ fn app() -> App {
 fn format_tool_list_lists_loaded_tools_before_any_turn() {
     let mut app = app();
     app.metrics.mcp_tools = vec!["gh_issues".to_owned(), "gh_prs".to_owned()].into();
-    assert!(app.metrics.active_mcp_tools.is_empty());
+    assert_eq!(app.metrics.active_mcp_tools, [] as [String; 0]);
     let out = app.format_tool_list();
     assert!(out.contains("gh_issues") && out.contains("gh_prs"), "{out}");
     assert!(out.contains("(2)"), "{out}");
