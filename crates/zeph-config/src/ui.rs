@@ -826,6 +826,9 @@ impl Default for AcpIdeMcpConfig {
 ///
 /// let no_tools = AcpIdeMcpTarget::Http { url: "https://mcp.example.com/mcp".to_owned() };
 /// assert!(AcpIdeMcpGrant::new(no_tools, Vec::new()).is_err());
+///
+/// let loopback = AcpIdeMcpTarget::Http { url: "http://127.0.0.1:8080/mcp".to_owned() };
+/// assert!(AcpIdeMcpGrant::new(loopback, vec!["search".to_owned()]).is_err());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "AcpIdeMcpGrantRaw", into = "AcpIdeMcpGrantRaw")]
@@ -849,6 +852,12 @@ pub enum AcpIdeMcpGrantError {
     /// `args` or `env_keys` were given next to `url`.
     #[error("`args` and `env_keys` apply only to `command` grants")]
     StdioFieldsOnHttp,
+    /// The pinned `url` targets a loopback, link-local or private address, which the SSRF policy
+    /// for untrusted IDE servers always refuses.
+    #[error(
+        "grant url `{0}` targets a loopback or private address, which IDE servers can never reach"
+    )]
+    UnreachableUrl(String),
 }
 
 impl AcpIdeMcpGrant {
@@ -857,7 +866,10 @@ impl AcpIdeMcpGrant {
     /// # Errors
     ///
     /// [`AcpIdeMcpGrantError::NoTools`] when `tools` is empty and
-    /// [`AcpIdeMcpGrantError::EmptyTarget`] when the target's `command` or `url` is empty.
+    /// [`AcpIdeMcpGrantError::EmptyTarget`] when the target's `command` or `url` is empty, and
+    /// [`AcpIdeMcpGrantError::UnreachableUrl`] when an HTTP `url` host is `localhost` or an IP
+    /// literal in a loopback, link-local or private range. Hostnames that need DNS to resolve
+    /// are not checked.
     pub fn new(target: AcpIdeMcpTarget, tools: Vec<String>) -> Result<Self, AcpIdeMcpGrantError> {
         if tools.is_empty() {
             return Err(AcpIdeMcpGrantError::NoTools);
@@ -868,6 +880,11 @@ impl AcpIdeMcpGrant {
         };
         if pinned_empty {
             return Err(AcpIdeMcpGrantError::EmptyTarget);
+        }
+        if let AcpIdeMcpTarget::Http { url } = &target
+            && is_unreachable_http_url(url)
+        {
+            return Err(AcpIdeMcpGrantError::UnreachableUrl(url.clone()));
         }
         Ok(Self { target, tools })
     }
@@ -882,6 +899,19 @@ impl AcpIdeMcpGrant {
     #[must_use]
     pub fn tools(&self) -> &[String] {
         &self.tools
+    }
+}
+
+fn is_unreachable_http_url(url: &str) -> bool {
+    use url::Host;
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    match parsed.host() {
+        Some(Host::Ipv4(ip)) => zeph_common::net::is_private_ip(ip.into()),
+        Some(Host::Ipv6(ip)) => zeph_common::net::is_private_ip(ip.into()),
+        Some(Host::Domain(domain)) => zeph_common::net::is_loopback_host(domain),
+        None => false,
     }
 }
 

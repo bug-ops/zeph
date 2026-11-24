@@ -337,7 +337,7 @@ mod tests {
         use zeph_core::metrics::McpServerStatus;
 
         let metrics = MetricsSnapshot {
-            mcp_tools: vec!["tool-a".into(), "tool-b".into()],
+            mcp_tools: vec!["tool-a".into(), "tool-b".into()].into(),
             mcp_servers: vec![McpServerStatus {
                 id: "srv1".into(),
                 status: McpServerConnectionStatus::Connected,
@@ -370,7 +370,7 @@ mod tests {
                 "five".into(),
             ],
             total_skills: 5,
-            mcp_tools: vec!["tool-a".into(), "tool-b".into(), "tool-c".into()],
+            mcp_tools: vec!["tool-a".into(), "tool-b".into(), "tool-c".into()].into(),
             active_mcp_tools: vec!["tool-a".into(), "tool-b".into(), "tool-c".into()],
             ..MetricsSnapshot::default()
         };
@@ -403,7 +403,7 @@ mod tests {
                 posterior: 0.8,
                 total_uses: 12,
             }],
-            mcp_tools: vec!["tool-a".into(), "tool-b".into()],
+            mcp_tools: vec!["tool-a".into(), "tool-b".into()].into(),
             active_mcp_tools: vec!["tool-a".into()],
             mcp_servers: vec![McpServerStatus {
                 id: "srv1".into(),

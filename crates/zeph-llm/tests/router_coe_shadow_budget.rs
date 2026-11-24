@@ -24,6 +24,7 @@ fn cfg(budget: Duration) -> CoeConfig {
         inter_threshold: 0.2,
         shadow_sample_rate: 0.0,
         shadow_budget: budget,
+        request_timeout: Duration::from_secs(600),
     }
 }
 

@@ -228,15 +228,12 @@ impl<C: Channel> Agent<C> {
             cache_read: cache.read,
             cache_write: cache.creation,
         };
-        // Read cumulative cost after record_cost_and_cache updated the metrics snapshot.
         let cost_cents = self
             .runtime
             .metrics
-            .metrics_tx
+            .cost_tracker
             .as_ref()
-            .map_or(zeph_common::money::Cents::ZERO, |tx| {
-                tx.borrow().cost_spent_cents
-            });
+            .map_or(zeph_common::money::Cents::ZERO, |t| t.session_spend());
         let _ = self
             .channel
             .send_usage(tokens, context_window, cost_cents)
@@ -284,5 +281,58 @@ mod tests {
                 cache_write: 7,
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn usage_event_cost_comes_from_session_spend_without_metrics_channel() {
+        use crate::channel::{LoopbackChannel, LoopbackEvent};
+        use crate::cost::{CostTracker, DailyBudget, ModelPricing};
+        use zeph_common::money::{Cents, CentsPer1k};
+
+        const MODEL: &str = "usage-cost-model";
+        let tracker = CostTracker::new(DailyBudget::Unlimited).with_pricing(
+            MODEL,
+            ModelPricing {
+                prompt_cents_per_1k: CentsPer1k::new(1.0),
+                completion_cents_per_1k: CentsPer1k::new(0.0),
+                cache_read_cents_per_1k: CentsPer1k::new(0.0),
+                cache_write_cents_per_1k: CentsPer1k::new(0.0),
+            },
+        );
+        tracker.record_usage(
+            "p",
+            "cloud",
+            MODEL,
+            zeph_llm::provider::TokenUsage {
+                input: 2_000,
+                ..Default::default()
+            },
+            zeph_config::ServiceSpeed::Standard,
+        );
+        let expected = tracker.session_spend();
+        assert_eq!(expected, Cents::new(2.0));
+
+        let usage = ResponseUsage {
+            input: 10,
+            output: 5,
+            ..ResponseUsage::default()
+        };
+        let (channel, mut handle) = LoopbackChannel::pair(8);
+        let mut agent = Agent::new(
+            AnyProvider::Mock(MockProvider::with_responses(vec![]).with_response_usage(usage)),
+            channel,
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_cost_tracker(tracker);
+        assert!(agent.runtime.metrics.metrics_tx.is_none());
+
+        agent.emit_usage_event().await;
+        match handle.output_rx.recv().await.expect("usage event") {
+            LoopbackEvent::Usage { cost_cents, .. } => assert_eq!(cost_cents, expected),
+            _ => panic!("expected Usage event"),
+        }
     }
 }

@@ -130,7 +130,7 @@ pub struct AcpServerConfig {
     ///
     /// Vault-resolved API keys are never passed here — only the public routing identity.
     #[cfg(feature = "unstable-llm-providers")]
-    pub provider_names: Vec<(String, agent_client_protocol_schema::v1::LlmProtocol)>,
+    pub provider_names: Vec<(String, agent_client_protocol::v1::schema::LlmProtocol)>,
     /// Optional shared MCP manager for `ext_method` add/remove/list.
     pub mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     /// Named bearer-token clients for HTTP and WebSocket transport authentication (#5868).

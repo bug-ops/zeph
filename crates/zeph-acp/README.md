@@ -9,7 +9,7 @@ ACP (Agent Client Protocol) server adapter for embedding Zeph in IDE environment
 
 ## Overview
 
-Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`. Built on the `agent-client-protocol` SDK v2.0.
+Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`. Built on the `agent-client-protocol` SDK v5.5.
 
 ## Installation
 
@@ -377,10 +377,10 @@ The `initialize` response includes an `auth_hint` key in its metadata map. For s
 | Feature | Status | Description |
 |---------|--------|-------------|
 | `acp-http` | stable | Enables the HTTP+SSE and WebSocket transports (axum-based). Required for `post_handler`, `get_handler`, `ws_upgrade_handler`, and `router`. |
-| `unstable-session-fork` | unstable | Enables the `fork_session` ACP method. See below. |
+| `unstable-session-fork` | unstable | Forwards the SDK `unstable_session_fork` gate and enables the `fork_session` ACP method. See below. |
 | `unstable-session-usage` | unstable | Enables `UsageUpdate` events — token counts (input, output, cache) sent to the IDE after each turn. See below. |
-| `unstable-elicitation` | unstable | Exposes elicitation schema types (`ElicitationRequest`, etc.) for future agent-loop integration. |
-| `unstable-llm-providers` | unstable | Exposes the `LlmProtocol` wire type for advertising available LLM providers to the IDE. |
+| `unstable-elicitation` | unstable | Local-only gate for elicitation support (no upstream feature in SDK 5.x). |
+| `unstable-llm-providers` | unstable | Forwards the SDK `unstable_llm_providers` gate to advertise available LLM providers to the IDE. |
 | `unstable-auth-methods` | unstable | Enables the ACP auth-methods extension. |
 | `unstable-cancel-request` | unstable | Wires the real `$/cancel_request` protocol notification onto the internal cancel signal. Deliberate local opt-in, not in `default` (#5362). |
 

@@ -29,6 +29,7 @@ Persistence and Resume](session-persistence.md) — a session created here can b
 | `DELETE /sessions/:id` | End a live session |
 | `POST /sessions/:id/prompt` | Submit a prompt (fire-and-forget; `202 Accepted` once queued) |
 | `GET /sessions/:id/events` | Server-Sent Events stream of the session's output (tokens, tool calls, tool results, turn completion) |
+| `POST /sessions/:id/answer` | Answer a pending `ask_user` question announced as an `ask_user` event on the stream (`204`; `409` if no matching question; `422` for an invalid selection). With no stream client connected, a question is declined at once |
 | `POST /sessions/:id/fork` | Eager-copy the session into a fresh child, which becomes immediately usable |
 
 ```bash

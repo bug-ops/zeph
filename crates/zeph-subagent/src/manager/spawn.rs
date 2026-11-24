@@ -21,6 +21,7 @@ use super::SubAgentManager;
 use super::SubAgentStatus;
 use super::worktree::WorktreeCleanupGuard;
 use crate::agent_loop::{AgentLoopArgs, TaskLayout, ToolGates, run_agent_loop};
+use crate::ask_user::{AskUserInstall, AskUserToolExecutor, plan_install};
 use crate::cwd_guard::CwdRestoreGuard;
 use crate::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use crate::error::SubAgentError;
@@ -168,6 +169,7 @@ pub(crate) fn build_filtered_executor(
     memory_dir: Option<PathBuf>,
     network_denied: bool,
     peer: Option<PeerInstallArgs>,
+    ask_user: Option<AskUserInstall>,
 ) -> FilteredToolExecutor {
     let base: Arc<dyn ErasedToolExecutor> = match memory_dir {
         Some(dir) => Arc::new(MemoryAwareExecutor::new(tool_executor, dir)),
@@ -196,6 +198,13 @@ pub(crate) fn build_filtered_executor(
             peer.exfil_guard,
             peer.max_wait_ms,
         ))
+    } else {
+        base
+    };
+    // `ask_user` (spec 090) also wraps inside FilteredToolExecutor, so a definition's tool
+    // policy can still deny it; it is user interaction, not network egress.
+    let base: Arc<dyn ErasedToolExecutor> = if let Some(install) = ask_user {
+        Arc::new(AskUserToolExecutor::new(base, install))
     } else {
         base
     };
@@ -487,7 +496,7 @@ fn effective_skill_scope(ctx: &SpawnContext) -> SkillScope {
     let permitted = ctx
         .inherited_tool_allowlist
         .as_ref()
-        .is_none_or(|set| set.iter().any(|t| ToolMatchKey::new(t) == key));
+        .is_none_or(|set| set.iter().any(|t| key.matches(t)));
     if permitted {
         ctx.skill_scope.clone()
     } else {
@@ -902,6 +911,8 @@ impl SubAgentManager {
             (None, None)
         };
 
+        let (ask_user_install, ask_user_rx) =
+            plan_install(&def, ctx.ask_user.as_deref(), &cancel).unzip();
         let executor = build_filtered_executor(
             tool_executor,
             permission_mode,
@@ -909,6 +920,7 @@ impl SubAgentManager {
             memory_dir,
             network_denied,
             peer_install,
+            ask_user_install,
         )
         .with_skill_scope(skill_scope);
 
@@ -1096,6 +1108,7 @@ impl SubAgentManager {
         };
 
         self.agents.insert(task_id.clone(), handle);
+        self.register_ask_user_questions(&task_id, ask_user_rx);
         // Commit point for the session-wide spawn budget (issue #6545): the handle is now
         // owned by the manager and every fallible step above has already succeeded, so this
         // spawn is real and must count toward the cap. Must stay after the insert, not at the
@@ -1452,6 +1465,12 @@ impl SubAgentManager {
         } else {
             (None, None)
         };
+        let (ask_user_install, ask_user_rx) = plan_install(
+            &def,
+            spawn_context.and_then(|c| c.ask_user.as_deref()),
+            &cancel,
+        )
+        .unzip();
         let executor = build_filtered_executor(
             tool_executor,
             permission_mode,
@@ -1459,6 +1478,7 @@ impl SubAgentManager {
             None,
             network_denied,
             peer_install,
+            ask_user_install,
         )
         .with_skill_scope(spawn_context.map_or_default(effective_skill_scope));
 
@@ -1599,6 +1619,7 @@ impl SubAgentManager {
         };
 
         self.agents.insert(new_task_id.clone(), handle);
+        self.register_ask_user_questions(&new_task_id, ask_user_rx);
         // Commit point for the session-wide spawn budget (issue #6545) — see the matching
         // note in `spawn()`.
         self.session_spawn_budget.record_spawn();
@@ -1822,6 +1843,7 @@ mod build_filtered_executor_tests {
             None,
             true,
             None,
+            None,
         );
         let res = exec
             .execute_tool_call_erased(&bash_call("curl https://evil.example"))
@@ -1838,6 +1860,7 @@ mod build_filtered_executor_tests {
             &def,
             None,
             false,
+            None,
             None,
         );
         let res = exec
@@ -1858,6 +1881,7 @@ mod build_filtered_executor_tests {
             &def,
             None,
             true,
+            None,
             None,
         );
         let res = exec.execute_tool_call_erased(&bash_call("ls -la")).await;

@@ -413,7 +413,7 @@ pub struct MetricsSnapshot {
     pub mcp_servers: Vec<McpServerStatus>,
     pub active_mcp_tools: Vec<String>,
     /// Sorted qualified names of every loaded MCP tool.
-    pub mcp_tools: Vec<String>,
+    pub mcp_tools: std::sync::Arc<[String]>,
     pub sqlite_message_count: u64,
     pub sqlite_conversation_id: Option<zeph_memory::ConversationId>,
     pub qdrant_available: bool,

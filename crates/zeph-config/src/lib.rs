@@ -196,9 +196,9 @@ pub use providers::{
     CascadeClassifierMode, CascadeConfig, CocoonPricing, CoeConfig, CompactionTrigger,
     CompactionTriggerError, ComplexityRoutingConfig, FAST_TIER_MODEL_HINTS, GeminiThinkingLevel,
     GenerationParams, GonkaNode, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry,
-    ProviderKind, ProviderName, ProviderOverrides, RouterConfig, RouterStrategyConfig,
+    ProviderKey, ProviderKind, ProviderName, ProviderOverrides, RouterConfig, RouterStrategyConfig,
     ServiceSpeed, StreamLimits, SttConfig, ThinkingConfig, ThinkingEffort, TierMapping,
-    validate_pool,
+    find_provider, validate_pool,
 };
 pub use quality::{QualityConfig, TriggerPolicy};
 pub use rate_limit::RateLimitConfig;

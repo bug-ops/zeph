@@ -132,13 +132,13 @@ fn apply_coe(router: RouterProvider, config: &Config) -> RouterProvider {
         let intra = coe_cfg.intra_threshold.get();
         let inter = coe_cfg.inter_threshold.get();
         let shadow = coe_cfg.shadow_sample_rate.get();
+        let llm_timeout = std::time::Duration::from_secs(config.timeouts.llm_seconds);
         let router_coe = RouterCoeConfig {
             intra_threshold: intra,
             inter_threshold: inter,
             shadow_sample_rate: shadow,
-            shadow_budget: shadow_budget_for(std::time::Duration::from_secs(
-                config.timeouts.llm_seconds,
-            )),
+            shadow_budget: shadow_budget_for(llm_timeout),
+            request_timeout: llm_timeout,
         };
         tracing::info!("coe: enabled (intra={:.2} inter={:.2})", intra, inter);
         router.with_coe(router_coe, sec, emb)

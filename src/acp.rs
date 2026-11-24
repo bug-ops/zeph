@@ -466,6 +466,9 @@ pub(crate) struct SharedAgentDeps {
     /// sessions got no static repo-map injection, `IndexMcpServer` registration, or automatic
     /// code-RAG context retrieval).
     index_config: zeph_core::config::IndexConfig,
+    /// `[[llm.providers]]` snapshot for the display-only per-session cost tracker (#7189);
+    /// `Some` iff `[cost] enabled`.
+    display_cost_providers: Option<std::sync::Arc<[zeph_config::ProviderEntry]>>,
     /// Dedicated embedding provider for code retrieval, resolved once per connection via
     /// `resolve_index_embed_provider` — passed to `apply_code_rag_retriever` per session.
     code_index_provider: zeph_llm::any::AnyProvider,
@@ -1251,6 +1254,10 @@ async fn build_acp_deps(
         channel_provider_persistence: config.session.provider_persistence,
         channel_persist_provider_overrides: config.session.persist_provider_overrides,
         index_config: config.index.clone(),
+        display_cost_providers: config
+            .cost
+            .enabled
+            .then(|| config.llm.providers.as_slice().into()),
         code_index_provider: index_provider,
         code_qdrant_ops: app.qdrant_ops().cloned(),
         shutdown_rx,
@@ -2284,6 +2291,9 @@ async fn spawn_acp_agent(
     let mut agent = Box::pin(build_acp_agent(build_params, channel)).await;
 
     agent = agent.with_acp_session(true);
+
+    // #7189: display-only (no daily budget) so `usage_update` carries session cost.
+    agent = agent_setup::apply_display_cost_tracker(agent, d.display_cost_providers.as_deref());
 
     // #6022: wire code-RAG retrieval (static repo-map/IndexMcpServer injection plus automatic
     // per-turn code-context retrieval) — mirrors src/runner.rs and src/daemon.rs. Previously ACP

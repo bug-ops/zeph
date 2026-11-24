@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 
 use glob::Pattern;
 
+use crate::tool_id::base_tool_id;
+
 pub(crate) use zeph_config::tools::{
     AutonomyLevel, PermissionAction, PermissionRule, PermissionsConfig,
 };
@@ -164,10 +166,12 @@ impl PermissionPolicy {
     /// over-restrict the child's visible tool list relative to what the parent could
     /// still do for `/`-bearing inputs, which is acceptable for a hygiene-only signal.
     ///
-    /// Rule-map keys are matched case-insensitively against `normalize_tool_id`-style
-    /// bare tool ids (lowercased, stripped of any `(...)` argument suffix) so a
-    /// differently-cased or parenthesized config key like `"Bash(cargo *)"` still matches
-    /// the runtime tool id `"bash"` in `universe`.
+    /// Rule-map keys are matched case-insensitively against bare tool ids (lowercased,
+    /// stripped of any `(...)` argument suffix) so a differently-cased or parenthesized
+    /// config key like `"Bash(cargo *)"` still matches the runtime tool id `"bash"` in
+    /// `universe`. Shell aliases are deliberately not resolved: [`PermissionPolicy::check`]
+    /// matches exact runtime ids, so resolving `shell` to `bash` here would hide `bash` from a
+    /// child while the parent can still run it.
     #[must_use]
     pub fn effective_tool_allowlist(
         &self,
@@ -179,13 +183,10 @@ impl PermissionPolicy {
 
         let mut normalized_rules: HashMap<String, &Vec<PermissionRule>> = HashMap::new();
         for (tool_id, rules) in &self.rules {
-            normalized_rules.insert(normalize_tool_id(tool_id), rules);
+            normalized_rules.insert(base_tool_id(tool_id), rules);
         }
 
-        let universe: HashSet<String> = universe
-            .into_iter()
-            .map(|t| normalize_tool_id(&t))
-            .collect();
+        let universe: HashSet<String> = universe.into_iter().map(|t| base_tool_id(&t)).collect();
         let kept: HashSet<String> = universe
             .iter()
             .filter(|tool| {
@@ -198,14 +199,6 @@ impl PermissionPolicy {
 
         if kept == universe { None } else { Some(kept) }
     }
-}
-
-/// Lowercase and strip any `(...)` argument suffix, mirroring
-/// `zeph_subagent::filter::normalize_tool_id` without introducing a `zeph-tools` →
-/// `zeph-subagent` dependency (the reverse dependency already exists).
-fn normalize_tool_id(s: &str) -> String {
-    let base = s.split('(').next().unwrap_or(s);
-    base.trim().to_lowercase()
 }
 
 /// Returns `true` if the first rule that would match any input for this tool is a

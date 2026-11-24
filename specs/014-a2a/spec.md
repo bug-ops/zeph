@@ -34,7 +34,7 @@ related:
 | `crates/zeph-a2a/src/types.rs` | `Task`, `Message`, `AgentCard`, `Artifact` |
 | `crates/zeph-a2a/src/jsonrpc.rs` | JSON-RPC 2.0 envelope, error codes |
 | `crates/zeph-a2a/src/client.rs` | `A2aClient`, `send_message`, `stream_message`, `get_task`, `cancel_task` |
-| `crates/zeph-a2a/src/discovery.rs` | `AgentRegistry`, TTL cache, `/.well-known/agent.json`, `CardTrustPolicy` enforcement |
+| `crates/zeph-a2a/src/discovery.rs` | `AgentRegistry`, TTL cache, `/.well-known/agent-card.json` with `agent.json` fallback, `CardTrustPolicy` enforcement |
 | `crates/zeph-a2a/src/card.rs` | `AgentCard` serialization |
 | `crates/zeph-a2a/src/card_signing.rs` | `AgentCardSignature` JWS verification (`card-signing` feature), `TrustedKey`, `SigAlg`, `SignatureVerification` |
 | `crates/zeph-a2a/src/server/mod.rs` | `A2aServer`, `TaskProcessor` trait |
@@ -57,13 +57,15 @@ related:
 AgentRegistry
 ├── cache: RwLock<HashMap<String, CachedCard>>  — URL → AgentCard, TTL-cached
 ├── trust: TrustConfig { policy: CardTrustPolicy, trusted_keys: Vec<TrustedKey> }
-└── discovery: GET {base_url}/.well-known/agent.json → AgentCard → check_trust() → cache
+└── discovery: GET {base_url}/.well-known/agent-card.json (fallback agent.json) → AgentCard → check_trust() → cache
 ```
 
-- Discovery endpoint: `/.well-known/agent.json` — standard A2A (pre-1.0.0) well-known path.
-  A2A 1.0.0 renames this to `/.well-known/agent-card.json`; Zeph has not adopted the rename
-  (see `A2A_PROTOCOL_VERSION` below) — a pure-1.0.0 peer that only serves the new path is not
-  currently discoverable.
+- Discovery endpoints (client, #6932): `/.well-known/agent-card.json` (A2A 1.0.0) is tried first and
+  `/.well-known/agent.json` (pre-1.0.0) is the fallback. The fallback happens only when no card was
+  evaluated: any 4xx, or a 2xx body that is not JSON or not an `AgentCard`. It never happens on a
+  trust-check failure, 5xx, timeout, transport error or oversized body. One overall
+  `request_timeout` covers both attempts, and the path that worked is cached per peer and tried first
+  next time. The Zeph server still serves only `agent.json` (see `A2A_PROTOCOL_VERSION` below).
 - `AgentCard`: describes capabilities, supported methods, authentication requirements, and
   (A2A 1.0.0 §4.4.7) an optional `signatures: Vec<AgentCardSignature>` — `#[serde(default)]`,
   so unsigned/pre-1.0.0 peers deserialize with an empty vec (backward-compatible).
@@ -325,7 +327,7 @@ verification (§8.4, one 1.0.0 feature) has been added. Bumping the advertised v
 over-claim full 1.0.0 conformance. Other 1.0.0 deltas remain unimplemented and are explicitly
 deferred, not silently dropped:
 
-- Well-known path rename `/.well-known/agent.json` → `/.well-known/agent-card.json`
+- Serving our own card at `/.well-known/agent-card.json` (client discovery already tries it first)
 - gRPC/REST transport bindings (JSON-RPC only today)
 - Method-name/field-shape reconciliation against the 1.0.0 spec text
 

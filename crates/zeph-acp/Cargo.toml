@@ -23,8 +23,8 @@ gonka = ["zeph-core/gonka"]
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
 # renamed from unstable_session_usage in acp 0.14.0; Usage struct + PromptResponse.usage remain gated
 unstable-session-usage = ["agent-client-protocol/unstable_end_turn_token_usage"]
-unstable-elicitation = ["dep:agent-client-protocol-schema"]
-unstable-llm-providers = ["dep:agent-client-protocol-schema", "agent-client-protocol-schema/unstable_llm_providers"]
+unstable-elicitation = []
+unstable-llm-providers = ["agent-client-protocol/unstable_llm_providers"]
 unstable-auth-methods = []
 # Wires the real $/cancel_request protocol notification onto the existing internal cancel_signal.
 # Cancellation itself was stabilized upstream in acp 1.1.0 (no feature gate needed there anymore);
@@ -33,7 +33,6 @@ unstable-cancel-request = []
 
 [dependencies]
 agent-client-protocol = { workspace = true }
-agent-client-protocol-schema = { workspace = true, optional = true }
 async-stream = { workspace = true, optional = true }
 axum = { workspace = true, features = ["ws"], optional = true }
 base64.workspace = true

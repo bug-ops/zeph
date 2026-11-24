@@ -1912,6 +1912,390 @@ async fn fresh_spawn_final_meta_is_per_result() {
     assert_eq!(meta.inherited_trust, None);
 }
 
+// ── sub-agent ask_user relay (#7121) ───────────────────────────────────────
+
+mod ask_user_relay {
+    use std::time::Duration;
+
+    use tokio_util::sync::CancellationToken;
+    use zeph_tools::ClaimSource;
+    use zeph_tools::executor::ToolStatus;
+    use zeph_tools::registry::{InvocationHint, ToolDef};
+
+    use super::*;
+    use crate::ask_user::{AskUserReply, SubagentAskUser, plan_install};
+    use crate::def::AskUserGrant;
+    use crate::manager::spawn::build_filtered_executor;
+
+    fn offer() -> SubagentAskUser {
+        SubagentAskUser {
+            tool: ToolDef {
+                id: "ask_user".into(),
+                description: "ask".into(),
+                schema: schemars::json_schema!({"type": "object"}),
+                invocation: InvocationHint::ToolCall,
+                output_schema: None,
+                server_id: None,
+            },
+            timeout: Duration::from_secs(1),
+        }
+    }
+
+    fn def_with(grant: AskUserGrant, background: bool) -> SubAgentDef {
+        let mut def = sample_def();
+        def.permissions.ask_user = grant;
+        def.permissions.background = background;
+        def
+    }
+
+    fn ask_call() -> ToolCall {
+        let mut params = serde_json::Map::new();
+        params.insert("question".into(), serde_json::Value::from("Which target?"));
+        ToolCall {
+            tool_id: "ask_user".into(),
+            params,
+            attribution: zeph_tools::CallAttribution::default(),
+            context: None,
+            tool_call_id: None,
+        }
+    }
+
+    fn executor_for(
+        def: &SubAgentDef,
+        cancel: &CancellationToken,
+    ) -> (
+        crate::filter::FilteredToolExecutor,
+        tokio::sync::mpsc::Receiver<crate::ask_user::AskUserQuestion>,
+    ) {
+        let (install, rx) = plan_install(def, Some(&offer()), cancel).expect("granted");
+        let exec = build_filtered_executor(
+            noop_executor(),
+            PermissionMode::Default,
+            def,
+            None,
+            false,
+            None,
+            Some(install),
+        );
+        (exec, rx)
+    }
+
+    #[test]
+    fn grant_defaults_to_deny_and_parses_allow() {
+        assert_eq!(sample_def().permissions.ask_user, AskUserGrant::Deny);
+        let allow = SubAgentDef::parse(
+            "---\nname: bot\ndescription: A bot\npermissions:\n  ask_user: allow\n---\n\nbody\n",
+        )
+        .unwrap();
+        assert_eq!(allow.permissions.ask_user, AskUserGrant::Allow);
+        let reparsed = SubAgentDef::parse(&allow.serialize_to_markdown()).unwrap();
+        assert_eq!(reparsed.permissions.ask_user, AskUserGrant::Allow);
+    }
+
+    #[test]
+    fn install_requires_grant_offer_and_foreground() {
+        let cancel = CancellationToken::new();
+        let plan = |def: &SubAgentDef, offered: bool| {
+            plan_install(def, offered.then(offer).as_ref(), &cancel).is_some()
+        };
+        assert!(plan(&def_with(AskUserGrant::Allow, false), true));
+        assert!(!plan(&def_with(AskUserGrant::Deny, false), true));
+        assert!(!plan(&def_with(AskUserGrant::Allow, true), true));
+        assert!(!plan(&def_with(AskUserGrant::Allow, false), false));
+    }
+
+    #[tokio::test]
+    async fn relay_returns_user_answer_with_local_untrusted_tier() {
+        let cancel = CancellationToken::new();
+        let (exec, mut rx) = executor_for(&def_with(AskUserGrant::Allow, false), &cancel);
+        assert!(
+            exec.tool_definitions_erased()
+                .iter()
+                .any(|d| d.id == "ask_user")
+        );
+
+        let responder = tokio::spawn(async move {
+            let question = rx.recv().await.expect("question forwarded");
+            assert_eq!(question.input["question"], "Which target?");
+            question
+                .reply
+                .send(AskUserReply {
+                    text: "User answered: staging".to_owned(),
+                    status: ToolStatus::Success,
+                })
+                .unwrap();
+        });
+        let out = exec
+            .execute_tool_call_erased(&ask_call())
+            .await
+            .unwrap()
+            .unwrap();
+        responder.await.unwrap();
+
+        assert_eq!(out.summary, "User answered: staging");
+        assert_eq!(out.claim_source, Some(ClaimSource::UserAnswer));
+        assert_eq!(
+            ClaimSource::UserAnswer.content_trust(),
+            TurnContextTrust::LocalUntrusted
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_stops_when_the_sub_agent_is_cancelled() {
+        let cancel = CancellationToken::new();
+        let (exec, _rx) = executor_for(&def_with(AskUserGrant::Allow, false), &cancel);
+        cancel.cancel();
+        let res = exec.execute_tool_call_erased(&ask_call()).await;
+        assert_matches!(res, Err(ToolError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn relay_reports_failure_when_the_parent_stopped_listening() {
+        let cancel = CancellationToken::new();
+        let (exec, rx) = executor_for(&def_with(AskUserGrant::Allow, false), &cancel);
+        drop(rx);
+        let out = exec
+            .execute_tool_call_erased(&ask_call())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.status, ToolStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn tool_policy_can_still_deny_a_granted_ask_user() {
+        let cancel = CancellationToken::new();
+        let mut def = def_with(AskUserGrant::Allow, false);
+        def.disallowed_tools.push("ask_user".to_owned());
+        let (exec, mut rx) = executor_for(&def, &cancel);
+        assert!(
+            !exec
+                .tool_definitions_erased()
+                .iter()
+                .any(|d| d.id == "ask_user")
+        );
+        let res = exec.execute_tool_call_erased(&ask_call()).await;
+        assert_matches!(res, Err(ToolError::Blocked { .. }));
+        assert!(
+            rx.try_recv().is_err(),
+            "a denied call must not reach the parent"
+        );
+    }
+
+    fn inherited(tools: &[&str]) -> SpawnContext {
+        SpawnContext {
+            inherited_tool_allowlist: Some(tools.iter().map(|t| (*t).to_owned()).collect()),
+            ..SpawnContext::default()
+        }
+    }
+
+    fn listed_after_propagation(mut def: SubAgentDef, ctx: &SpawnContext) -> bool {
+        apply_constraint_propagation(&mut def, ctx);
+        let cancel = CancellationToken::new();
+        let install = plan_install(&def, Some(&offer()), &cancel).map(|(install, _rx)| install);
+        build_filtered_executor(
+            noop_executor(),
+            PermissionMode::Default,
+            &def,
+            None,
+            false,
+            None,
+            install,
+        )
+        .tool_definitions_erased()
+        .iter()
+        .any(|d| d.id == "ask_user")
+    }
+
+    #[test]
+    fn inherit_all_with_an_inherited_set_naming_ask_user_lists_it() {
+        let ctx = inherited(&["read", "ask_user"]);
+        let mut def = def_with(AskUserGrant::Allow, false);
+        apply_constraint_propagation(&mut def, &ctx);
+        assert_matches!(&def.tools, ToolPolicy::AllowList(l) if l.iter().any(|t| t == "ask_user"));
+        assert!(listed_after_propagation(
+            def_with(AskUserGrant::Allow, false),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn a_definition_allow_list_without_ask_user_still_hides_it() {
+        let mut def = def_with(AskUserGrant::Allow, false);
+        def.tools = ToolPolicy::AllowList(vec!["read".to_owned()]);
+        assert!(!listed_after_propagation(
+            def,
+            &inherited(&["read", "ask_user"])
+        ));
+    }
+
+    #[test]
+    fn without_the_grant_the_set_is_unchanged_and_the_tool_absent() {
+        let ctx = inherited(&["read", "ask_user"]);
+        let def = def_with(AskUserGrant::Deny, false);
+        assert!(!listed_after_propagation(def, &ctx));
+        assert_eq!(
+            ctx.inherited_tool_allowlist.as_ref().map(HashSet::len),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
+    async fn spawn_registers_questions_only_for_a_granted_foreground_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = make_cfg_with_dir(tmp.path());
+        let mut mgr = make_manager();
+        let mut granted = def_with(AskUserGrant::Allow, false);
+        granted.name = "granted".to_owned();
+        let mut plain = sample_def();
+        plain.name = "plain".to_owned();
+        mgr.definitions.push(granted);
+        mgr.definitions.push(plain);
+
+        let ctx = || SpawnContext {
+            ask_user: Some(Box::new(offer())),
+            ..SpawnContext::default()
+        };
+        let granted_id = mgr
+            .spawn(
+                "granted",
+                "t",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                ctx(),
+            )
+            .await
+            .unwrap();
+        let plain_id = mgr
+            .spawn(
+                "plain",
+                "t",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                ctx(),
+            )
+            .await
+            .unwrap();
+
+        assert!(mgr.ask_user_questions.contains_key(&granted_id));
+        assert!(!mgr.ask_user_questions.contains_key(&plain_id));
+        assert!(mgr.cancel_child_token(&granted_id).is_some());
+        assert!(mgr.cancel_child_token("missing").is_none());
+
+        wait_completed(&mgr, &granted_id).await;
+        mgr.collect(&granted_id).await.unwrap();
+        assert!(mgr.try_recv_ask_user_question_for(&granted_id).is_none());
+        assert!(!mgr.ask_user_questions.contains_key(&granted_id));
+    }
+}
+
+fn transcript_user_texts(dir: &std::path::Path, id: &str) -> Vec<String> {
+    let messages =
+        crate::transcript::TranscriptReader::load(&dir.join(format!("{id}.jsonl"))).unwrap();
+    messages
+        .into_iter()
+        .filter(|m| {
+            m.role == Role::User && !m.content.starts_with("Please use the available tools")
+        })
+        .map(|m| m.content)
+        .collect()
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn fresh_spawn_transcript_starts_with_task_not_parent_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = make_cfg_with_dir(tmp.path());
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+
+    let ctx = SpawnContext {
+        parent_messages: vec![make_message(Role::User, "parent question".to_owned())],
+        ..SpawnContext::default()
+    };
+    let id = mgr
+        .spawn(
+            "bot",
+            "do stuff",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            ctx,
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &id).await;
+    mgr.collect(&id).await.unwrap();
+
+    let users = transcript_user_texts(tmp.path(), &id);
+    assert_eq!(users.first().map(String::as_str), Some("do stuff"));
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn resume_of_resumed_agent_keeps_original_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = make_cfg_with_dir(tmp.path());
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+
+    let first = mgr
+        .spawn(
+            "bot",
+            "original task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &first).await;
+    mgr.collect(&first).await.unwrap();
+
+    let (second, _) = mgr
+        .resume(
+            &first,
+            "first resume",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            None,
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &second).await;
+    mgr.collect(&second).await.unwrap();
+
+    let (third, _) = mgr
+        .resume(
+            &second,
+            "second resume",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            None,
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &third).await;
+    mgr.collect(&third).await.unwrap();
+
+    assert_eq!(
+        transcript_user_texts(tmp.path(), &third),
+        ["original task", "first resume", "second resume"]
+    );
+}
+
 fn tagged_message(trust: TurnContextTrust) -> zeph_llm::provider::Message {
     let mut msg = zeph_llm::provider::Message::from_legacy(zeph_llm::provider::Role::User, "r");
     msg.metadata.trust_level = Some(trust.as_u8());

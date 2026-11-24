@@ -62,4 +62,22 @@ proptest! {
         let key = ToolMatchKey::new(&raw);
         prop_assert_eq!(ToolMatchKey::new(key.as_str()), key);
     }
+
+    #[test]
+    fn test_tool_match_key_matches_agrees_with_new(
+        key_raw in "[A-Za-zé_ ]{0,8}(\\([a-z *]{0,6}\\))?",
+        raw in "[A-Za-zé_ ]{0,8}(\\([a-z *]{0,6}\\))?",
+    ) {
+        let key = ToolMatchKey::new(&key_raw);
+        prop_assert_eq!(key.matches(&raw), ToolMatchKey::new(&raw) == key);
+        prop_assert!(key.matches(&key_raw));
+    }
+
+    #[test]
+    fn test_tool_match_key_matches_shell_aliases(
+        alias in prop::sample::select(vec!["bash", "Sh", "SHELL", " shell (x)"]),
+    ) {
+        prop_assert!(ToolMatchKey::new("bash").matches(alias));
+        prop_assert!(!ToolMatchKey::new("read").matches(alias));
+    }
 }

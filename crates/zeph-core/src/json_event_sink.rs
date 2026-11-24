@@ -22,7 +22,16 @@
 use std::io::{self, Write};
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
+use zeph_common::money::Cents;
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde `serialize_with` requires a `&T` signature"
+)]
+fn serialize_cents_as_usd<S: Serializer>(cost: &Cents, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64(cost.usd())
+}
 
 #[non_exhaustive]
 /// Structured event emitted on stdout in `--json` mode.
@@ -59,11 +68,17 @@ pub enum JsonEvent<'a> {
         output: &'a str,
         is_error: bool,
     },
-    /// Token counts and estimated cost summary.
+    /// Emitted after each LLM call: that call's token counts plus the
+    /// session-cumulative estimated cost.
+    ///
+    /// The amount is held as typed [`Cents`] and converted to US dollars only when
+    /// serialized, as the `estimated_usd` field.
     Cost {
         input_tokens: u64,
         output_tokens: u64,
-        total_usd: f64,
+        cache_read_tokens: u64,
+        #[serde(rename = "estimated_usd", serialize_with = "serialize_cents_as_usd")]
+        cost: Cents,
     },
     /// Loop tick notification fired each `/loop` iteration.
     LoopTick {
@@ -170,6 +185,24 @@ mod tests {
         let event = JsonEvent::ResponseEnd;
         let s = serde_json::to_string(&event).unwrap();
         assert_eq!(s, r#"{"event":"response_end"}"#);
+    }
+
+    #[test]
+    fn cost_event_serializes_cents_as_estimated_usd() {
+        let event = JsonEvent::Cost {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 3,
+            cost: Cents::new(42.0),
+        };
+        let v: serde_json::Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(v["event"], "cost");
+        assert_eq!(v["input_tokens"], 10);
+        assert_eq!(v["output_tokens"], 5);
+        assert_eq!(v["cache_read_tokens"], 3);
+        assert_eq!(v["estimated_usd"], 0.42);
+        assert!(v.get("cost").is_none());
+        assert!(v.get("total_usd").is_none());
     }
 
     #[test]

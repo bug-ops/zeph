@@ -245,6 +245,9 @@ impl ServeTestHarness {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 pending_resume_banner: None,
+                ask_user: std::sync::Arc::new(zeph_core::serve::ServeAskUserResponder::new(
+                    tx_out.clone(),
+                )),
             },
         );
         (rx, tx_out)

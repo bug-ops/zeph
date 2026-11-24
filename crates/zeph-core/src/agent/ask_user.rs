@@ -219,6 +219,56 @@ impl<C: Channel> Agent<C> {
             && self.channel.ask_user_support() == AskUserSupport::Interactive
     }
 
+    /// The `ask_user` offer for a foreground sub-agent spawned or resumed by the current slash
+    /// command, or `None` when the tool must not reach a sub-agent.
+    ///
+    /// Requires everything the main loop requires ([`Self::ask_user_offered`]) plus that no
+    /// `[tools.permissions]` rule denies the tool wholesale (FR-012). Never used for background
+    /// or DAG spawns: only the two foreground call sites ask for it.
+    pub(in crate::agent) fn subagent_ask_user_offer(
+        &self,
+    ) -> Option<zeph_subagent::SubagentAskUser> {
+        if !self.ask_user_offered() || self.builtin_denied(ASK_USER_TOOL, &serde_json::json!({})) {
+            return None;
+        }
+        let definition = ask_user_tool_definition();
+        Some(zeph_subagent::SubagentAskUser {
+            tool: zeph_tools::registry::ToolDef {
+                id: ASK_USER_TOOL.into(),
+                description: definition.description.into(),
+                schema: schemars::Schema::try_from(definition.parameters).ok()?,
+                invocation: zeph_tools::registry::InvocationHint::ToolCall,
+                output_schema: None,
+                server_id: None,
+            },
+            timeout: question_timeout(&self.runtime.ask_user.config),
+        })
+    }
+
+    /// Answer one question forwarded by the foreground sub-agent `task_id`.
+    ///
+    /// The question goes through [`Self::handle_ask_user`], the same choke point as the main
+    /// loop: cap shared with the current ask scope, deadline raced with `cancel`, secret scrub
+    /// and channel sanitizing. The FR-012 deny rule is checked per call against the actual
+    /// input, as for a main-loop call.
+    pub(in crate::agent) async fn answer_subagent_question(
+        &mut self,
+        question: zeph_subagent::AskUserQuestion,
+        cancel: &CancellationToken,
+    ) {
+        let call = ToolUseRequest {
+            id: "subagent-ask-user".into(),
+            name: ASK_USER_TOOL.into(),
+            input: question.input,
+        };
+        let blocked = self.builtin_denied(ASK_USER_TOOL, &call.input);
+        let reply = self.handle_ask_user(&call, blocked, cancel).await;
+        let _ = question.reply.send(zeph_subagent::AskUserReply {
+            text: reply.text,
+            status: reply.status,
+        });
+    }
+
     /// Run one `ask_user` call to its tool reply. Never fails: every problem becomes a failed
     /// reply the model can read, and every outcome leaves a paired tool result.
     #[tracing::instrument(
@@ -445,6 +495,7 @@ mod tests {
     struct AnswerChannel {
         answer: String,
         sanitize: bool,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl Channel for AnswerChannel {
@@ -493,6 +544,7 @@ mod tests {
             _request: AskUserRequest,
         ) -> impl std::future::Future<Output = Result<AskUserOutcome, ChannelError>> + Send
         {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::future::ready(Ok(AskUserOutcome::answered_text(&self.answer)))
         }
     }
@@ -504,6 +556,7 @@ mod tests {
             AnswerChannel {
                 answer: answer.to_owned(),
                 sanitize,
+                asked: std::sync::Arc::default(),
             },
             zeph_skills::registry::SkillRegistry::empty(),
             None,
@@ -605,5 +658,153 @@ mod tests {
             )
             .await;
         assert_eq!(body, "mail a.b@example.com");
+    }
+
+    fn forwarded(
+        input: serde_json::Value,
+    ) -> (
+        zeph_subagent::AskUserQuestion,
+        tokio::sync::oneshot::Receiver<zeph_subagent::AskUserReply>,
+    ) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (zeph_subagent::AskUserQuestion { input, reply: tx }, rx)
+    }
+
+    fn deny_ask_user(agent: &mut Agent<AnswerChannel>) {
+        let rules = std::collections::HashMap::from([(
+            ASK_USER_TOOL.to_owned(),
+            vec![zeph_config::tools::PermissionRule {
+                pattern: "*".to_owned(),
+                action: zeph_config::tools::PermissionAction::Deny,
+            }],
+        )]);
+        agent.runtime.config.permission_policy = zeph_tools::PermissionPolicy::new(rules)
+            .with_autonomy(zeph_config::tools::AutonomyLevel::Supervised);
+    }
+
+    #[test]
+    fn subagent_offer_requires_everything_the_main_loop_requires() {
+        let mut agent = agent_answering("x", false);
+        agent.ask_user_on_turn_start(TurnOrigin::User);
+        let offer = agent.subagent_ask_user_offer().expect("offered");
+        assert_eq!(offer.tool.id, ASK_USER_TOOL);
+        assert_eq!(
+            offer.timeout,
+            question_timeout(&agent.runtime.ask_user.config)
+        );
+
+        agent.ask_user_on_turn_start(TurnOrigin::Injected);
+        assert!(agent.subagent_ask_user_offer().is_none());
+
+        agent.ask_user_on_turn_start(TurnOrigin::User);
+        agent.runtime.ask_user.config.enabled = false;
+        assert!(agent.subagent_ask_user_offer().is_none());
+    }
+
+    #[test]
+    fn subagent_offer_respects_a_wholesale_deny_rule() {
+        let mut agent = agent_answering("x", false);
+        agent.ask_user_on_turn_start(TurnOrigin::User);
+        deny_ask_user(&mut agent);
+        assert!(agent.subagent_ask_user_offer().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_question_is_answered_through_the_choke_point() {
+        let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+        let mut agent = agent_answering(&format!("key {secret}"), false);
+        agent.ask_user_on_turn_start(TurnOrigin::User);
+        let (question, rx) = forwarded(serde_json::json!({"question": "Your key?"}));
+        agent
+            .answer_subagent_question(question, &CancellationToken::new())
+            .await;
+        let reply = rx.await.unwrap();
+        assert!(reply.text.starts_with("User answered:"), "{}", reply.text);
+        assert!(!reply.text.contains(secret), "{}", reply.text);
+    }
+
+    #[tokio::test]
+    async fn a_denied_forwarded_call_never_reaches_the_channel() {
+        let mut agent = agent_answering("x", false);
+        agent.ask_user_on_turn_start(TurnOrigin::User);
+        deny_ask_user(&mut agent);
+        let asked = std::sync::Arc::clone(&agent.channel.asked);
+        let (question, rx) = forwarded(serde_json::json!({"question": "Your key?"}));
+        agent
+            .answer_subagent_question(question, &CancellationToken::new())
+            .await;
+        let reply = rx.await.unwrap();
+        assert_eq!(reply.status, zeph_tools::ToolStatus::Failed);
+        assert!(reply.text.contains("blocked"), "{}", reply.text);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            agent.runtime.ask_user.questions_this_turn, 0,
+            "no slot used"
+        );
+    }
+
+    #[tokio::test]
+    async fn forwarded_questions_share_the_cap_of_their_ask_scope() {
+        let mut agent = agent_answering("x", false);
+        agent.runtime.ask_user.config.max_questions_per_turn = std::num::NonZeroU8::MIN;
+        agent.ask_user_on_turn_start(TurnOrigin::User);
+        let asked = std::sync::Arc::clone(&agent.channel.asked);
+
+        let (first, first_rx) = forwarded(serde_json::json!({"question": "one?"}));
+        agent
+            .answer_subagent_question(first, &CancellationToken::new())
+            .await;
+        let (second, second_rx) = forwarded(serde_json::json!({"question": "two?"}));
+        agent
+            .answer_subagent_question(second, &CancellationToken::new())
+            .await;
+
+        assert!(first_rx.await.unwrap().text.starts_with("User answered:"));
+        let second = second_rx.await.unwrap();
+        assert_eq!(second.status, zeph_tools::ToolStatus::Failed);
+        assert!(second.text.contains("at most 1"), "{}", second.text);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        agent.ask_user_on_turn_start(TurnOrigin::User);
+        let (third, third_rx) = forwarded(serde_json::json!({"question": "three?"}));
+        agent
+            .answer_subagent_question(third, &CancellationToken::new())
+            .await;
+        assert!(third_rx.await.unwrap().text.starts_with("User answered:"));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_sub_agent_cancels_its_forwarded_question() {
+        let mut agent = agent_answering("x", false);
+        agent.ask_user_on_turn_start(TurnOrigin::User);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let (question, rx) = forwarded(serde_json::json!({"question": "still there?"}));
+        agent.answer_subagent_question(question, &cancel).await;
+        assert!(rx.await.unwrap().text.contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn a_slash_command_starts_its_own_ask_scope() {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec!["/agent list"]),
+            zeph_skills::registry::SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.runtime.ask_user = AskUserState::new(AskUserConfig {
+            enabled: true,
+            ..AskUserConfig::default()
+        });
+        agent.runtime.ask_user.begin_turn(TurnOrigin::Injected);
+        agent.runtime.ask_user.questions_this_turn = 3;
+
+        agent.run().await.unwrap();
+
+        assert_eq!(agent.runtime.ask_user.questions_this_turn, 0);
+        assert_eq!(agent.runtime.ask_user.origin, TurnOrigin::User);
     }
 }

@@ -2314,69 +2314,60 @@ async fn create_owned_session(
 /// created by one connection's owner must not appear in a different owner's list, even when
 /// both connections share the same `sqlite_path`.
 #[tokio::test(flavor = "current_thread")]
-#[cfg_attr(
-    feature = "acp-http",
-    expect(
-        clippy::large_futures,
-        reason = "The owner-isolation test exercises multiple local ACP sessions in one future."
-    )
-)]
 async fn list_sessions_isolated_by_owner_across_stdio_connections() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let workdir = temp_workdir();
-            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
-            let sqlite_path = db_dir
-                .path()
-                .join("acp-owner-list-test.db")
-                .to_string_lossy()
-                .into_owned();
+    Box::pin(local.run_until(async {
+        let workdir = temp_workdir();
+        let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+        let sqlite_path = db_dir
+            .path()
+            .join("acp-owner-list-test.db")
+            .to_string_lossy()
+            .into_owned();
 
-            // Two distinct owners each create a session on the shared store, then disconnect.
-            let alice_session = create_owned_session(&sqlite_path, "alice", workdir.path()).await;
-            let bob_session = create_owned_session(&sqlite_path, "bob", workdir.path()).await;
+        // Two distinct owners each create a session on the shared store, then disconnect.
+        let alice_session = create_owned_session(&sqlite_path, "alice", workdir.path()).await;
+        let bob_session = create_owned_session(&sqlite_path, "bob", workdir.path()).await;
 
-            // A fresh connection as "alice" lists sessions: must see her own, not bob's.
-            let (sw, sr, cw, cr) = duplex_pair();
-            let config = AcpServerConfig {
-                sqlite_path: Some(sqlite_path.clone()),
-                ..test_config("test-agent")
-            };
-            let server_fut = serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
-            let client_fut =
-                acp::Client
-                    .v1()
-                    .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                        cx.send_request(acp::v1::schema::InitializeRequest::new(
-                            acp::schema::ProtocolVersion::LATEST,
-                        ))
-                        .block_task()
-                        .await?;
-                        let resp = cx
-                            .send_request(acp::v1::schema::ListSessionsRequest::new())
-                            .block_task()
-                            .await?;
-                        let ids: Vec<&acp::v1::schema::SessionId> =
-                            resp.sessions.iter().map(|s| &s.session_id).collect();
-                        assert!(
-                            ids.contains(&&alice_session),
-                            "alice's own session missing from her list: {ids:?}"
-                        );
-                        assert!(
-                            !ids.contains(&&bob_session),
-                            "bob's session leaked into alice's list: {ids:?}"
-                        );
-                        Ok(())
-                    });
-            tokio::select! {
-                res = server_fut => panic!("server exited before client: {res:?}"),
-                result = client_fut => {
-                    assert!(result.is_ok(), "cross-owner list_sessions test failed: {result:?}");
-                }
+        // A fresh connection as "alice" lists sessions: must see her own, not bob's.
+        let (sw, sr, cw, cr) = duplex_pair();
+        let config = AcpServerConfig {
+            sqlite_path: Some(sqlite_path.clone()),
+            ..test_config("test-agent")
+        };
+        let server_fut = serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
+        let client_fut = acp::Client
+            .v1()
+            .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::v1::schema::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+                let resp = cx
+                    .send_request(acp::v1::schema::ListSessionsRequest::new())
+                    .block_task()
+                    .await?;
+                let ids: Vec<&acp::v1::schema::SessionId> =
+                    resp.sessions.iter().map(|s| &s.session_id).collect();
+                assert!(
+                    ids.contains(&&alice_session),
+                    "alice's own session missing from her list: {ids:?}"
+                );
+                assert!(
+                    !ids.contains(&&bob_session),
+                    "bob's session leaked into alice's list: {ids:?}"
+                );
+                Ok(())
+            });
+        tokio::select! {
+            res = server_fut => panic!("server exited before client: {res:?}"),
+            result = client_fut => {
+                assert!(result.is_ok(), "cross-owner list_sessions test failed: {result:?}");
             }
-        })
-        .await;
+        }
+    }))
+    .await;
 }
 
 /// `session/resume` on a session owned by a different connection must fail — a foreign

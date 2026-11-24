@@ -865,6 +865,10 @@ The sub-agent loop (`handle_tool_step`, `crates/zeph-subagent/src/agent_loop.rs`
 - **Instructions (#7157).** The parent's rendered instruction blocks travel in `SpawnContext.inherited_instructions` and are appended after the definition body (spawn and resume). `[agents] instructions = "none"` is a global kill switch resolved by the spawning caller (no block is passed); `permissions.instructions: none` opts a single definition out. A definition can only opt out, never opt in over a global `none`. No disk I/O at spawn.
 - **History pins (#7156).** `trim_message_history_pinned` never evicts the system message, the original task (resume) or the current task prompt (`HistoryPins`, laid out by `TaskLayout`). Eviction is oldest-first per unpinned region; a cut region starts on a role that cannot adjoin its pinned predecessor, and a region between two pinned `User` messages keeps its newest `Assistant` message. Result size is at most `max(limit, pins + 3)`. Orphaned tool halves are repaired; a trim that would drop a pinned message is skipped for that turn.
 
+- **Permission allowlist ids (#7186).** `PermissionPolicy::effective_tool_allowlist` normalizes tool ids alias-free (`tool_id::base_tool_id`: trim, drop `(...)`, lowercase) on purpose: `PermissionPolicy::check` matches exact runtime ids, so resolving `shell`/`sh` to `bash` would hide `bash` from a child the parent can still run. Sub-agent filters use `ToolMatchKey`, which resolves the aliases.
+- **`permissions.ask_user` (#7121).** `allow|deny`, default `deny`. `allow` offers the sub-agent the `ask_user` tool only in foreground `/agent spawn` and `/agent resume`, when the parent can show the question (see spec 090). Background and DAG spawns never get it.
+- **Resume transcript (#7180).** A resumed run's transcript starts with the loaded transcript, then the resume prompt; a fresh spawn writes only the task prompt.
+
 ### Key Invariants
 
 - NEVER compare tool names with raw string equality in access-control or routing code; use `ToolMatchKey`

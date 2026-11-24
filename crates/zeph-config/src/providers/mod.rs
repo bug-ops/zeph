@@ -30,7 +30,8 @@ pub use candle::{
 };
 pub use compaction::{CompactionTrigger, CompactionTriggerError};
 pub use entry::{
-    CocoonPricing, GonkaNode, ProviderEntry, ProviderOverrides, ServiceSpeed, validate_pool,
+    CocoonPricing, GonkaNode, ProviderEntry, ProviderKey, ProviderOverrides, ServiceSpeed,
+    find_provider, validate_pool,
 };
 pub use llm::{
     FAST_TIER_MODEL_HINTS, LlmConfig, ProviderKind, StreamLimits, SttConfig, default_stt_language,

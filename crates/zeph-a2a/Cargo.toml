@@ -20,12 +20,12 @@ readme = "README.md"
 # even when this crate's crypto path works (#5928).
 card-signing = ["dep:p256", "dep:serde_json_canonicalizer"]
 ibct = ["dep:hmac", "dep:sha2"]
-server = ["dep:axum", "dep:tower", "dep:tower-http", "zeph-common/http-middleware"]
+server = ["dep:axum", "dep:chrono", "dep:tower", "dep:tower-http", "zeph-common/http-middleware"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
 base64.workspace = true
-chrono = { workspace = true, features = ["clock"] }
+chrono = { workspace = true, features = ["clock"], optional = true }
 eventsource-stream.workspace = true
 futures.workspace = true
 futures-core.workspace = true

@@ -185,6 +185,8 @@ pub(crate) struct McpState {
     /// Full connected tool list. Private so the published registry cannot drift: change it only
     /// through [`McpState::set_tools`], [`McpState::extend_tools`] and [`McpState::retain_tools`].
     tools: Vec<zeph_mcp::McpTool>,
+    /// Sorted qualified names of `tools`, rebuilt only when the tool set changes.
+    tool_names: Arc<[String]>,
     pub(crate) registry: Option<zeph_mcp::McpToolRegistry>,
     pub(crate) manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     pub(crate) allowed_commands: Vec<String>,
@@ -1351,14 +1353,18 @@ impl McpState {
     }
 
     /// Sorted qualified names (`server:tool`) of every connected MCP tool.
-    pub(crate) fn tool_names(&self) -> Vec<String> {
+    pub(crate) fn tool_names(&self) -> Arc<[String]> {
+        Arc::clone(&self.tool_names)
+    }
+
+    fn rebuild_tool_names(&mut self) {
         let mut names: Vec<String> = self
             .tools
             .iter()
             .map(zeph_mcp::McpTool::qualified_name)
             .collect();
         names.sort_unstable();
-        names
+        self.tool_names = names.into();
     }
 
     /// The full connected MCP tool list.
@@ -1369,18 +1375,21 @@ impl McpState {
     /// Replace the stored tool list and publish it.
     pub(crate) fn set_tools(&mut self, tools: Vec<zeph_mcp::McpTool>) {
         self.tools = tools;
+        self.rebuild_tool_names();
         self.publish_full();
     }
 
     /// Append tools and publish the list.
     pub(crate) fn extend_tools(&mut self, tools: Vec<zeph_mcp::McpTool>) {
         self.tools.extend(tools);
+        self.rebuild_tool_names();
         self.publish_full();
     }
 
     /// Keep only tools matching `keep` and publish the list.
     pub(crate) fn retain_tools(&mut self, keep: impl FnMut(&zeph_mcp::McpTool) -> bool) {
         self.tools.retain(keep);
+        self.rebuild_tool_names();
         self.publish_full();
     }
 
@@ -1551,6 +1560,7 @@ impl Default for McpState {
     fn default() -> Self {
         Self {
             tools: Vec::new(),
+            tool_names: Arc::from([]),
             registry: None,
             manager: None,
             allowed_commands: Vec::new(),
@@ -1919,6 +1929,8 @@ pub(super) mod skill;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tool_names_tests;
 
 /// Test helper: parse a literal as a [`zeph_common::SkillName`].
 #[cfg(test)]

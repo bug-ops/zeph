@@ -92,13 +92,9 @@ impl<C: Channel> Agent<C> {
         if !registry_wired {
             return PoolProviderResolution::RegistryNotWired;
         }
-        let Some(entry) = self
-            .runtime
-            .providers
-            .provider_pool
-            .iter()
-            .find(|e| e.effective_name().eq_ignore_ascii_case(provider_name))
-            .cloned()
+        let Some(entry) =
+            zeph_config::find_provider(&self.runtime.providers.provider_pool, provider_name)
+                .cloned()
         else {
             return PoolProviderResolution::Unresolvable;
         };

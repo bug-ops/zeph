@@ -3,6 +3,7 @@
 
 //! Sub-agent lifecycle management: spawn, cancel, collect, and resume.
 
+mod ask_user;
 mod collect;
 mod peer_api;
 mod secrets;
@@ -136,6 +137,13 @@ pub struct SpawnContext {
     pub parent_messages: Vec<Message>,
     /// Parent's cancellation token for linked cancellation (foreground spawns).
     pub parent_cancel: Option<CancellationToken>,
+    /// The parent's offer of the `ask_user` tool (spec 090).
+    ///
+    /// Set only by the foreground spawn and resume paths, and only when the parent can show a
+    /// question now. The tool is installed when the definition also grants
+    /// [`AskUserGrant::Allow`](crate::def::AskUserGrant) and is not a background agent; `None`
+    /// (the default, including every DAG spawn) never offers it.
+    pub ask_user: Option<Box<crate::ask_user::SubagentAskUser>>,
     /// Parent's active provider name (for context propagation).
     pub parent_provider_name: Option<String>,
     /// Current spawn depth (0 = top-level agent).
@@ -637,6 +645,8 @@ impl Drop for SubAgentHandle {
 pub struct SubAgentManager {
     definitions: Vec<SubAgentDef>,
     agents: HashMap<String, SubAgentHandle>,
+    /// Questions forwarded by sub-agents that hold the `ask_user` relay, keyed by task id.
+    ask_user_questions: HashMap<String, mpsc::Receiver<crate::ask_user::AskUserQuestion>>,
     max_concurrent: usize,
     /// Number of slots soft-reserved by the orchestration scheduler.
     ///
@@ -750,6 +760,7 @@ impl std::fmt::Debug for SubAgentManager {
         f.debug_struct("SubAgentManager")
             .field("definitions_count", &self.definitions.len())
             .field("active_agents", &self.agents.len())
+            .field("ask_user_relays", &self.ask_user_questions.len())
             .field("max_concurrent", &self.max_concurrent)
             .field("reserved_slots", &self.reserved_slots)
             .field("stop_hooks_count", &self.stop_hooks.len())
@@ -789,6 +800,7 @@ impl SubAgentManager {
         Self {
             definitions: Vec::new(),
             agents: HashMap::new(),
+            ask_user_questions: HashMap::new(),
             max_concurrent,
             reserved_slots: 0,
             stop_hooks: Vec::new(),

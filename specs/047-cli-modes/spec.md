@@ -136,7 +136,7 @@ AND the command is available in the slash command registry and TUI autocomplete
 | FR-002 | WHEN `--json` is set THE SYSTEM SHALL construct a `JsonCliChannel` and route all log output to stderr before the channel is active | must |
 | FR-003 | WHEN `--json` is set THE SYSTEM SHALL emit only valid JSONL on stdout; each line is a `JsonEvent` with a stable schema | must |
 | FR-004 | `JsonCliChannel` SHALL NOT emit `response_end` unless at least one `response_chunk` has been emitted in the current turn (double-emission prevention) | must |
-| FR-005 | `JsonCliChannel.send_tool_start`, `send_tool_output`, and `send_usage` SHALL be no-ops; `JsonEventLayer` in `zeph-core` is the canonical emitter for those events | must |
+| FR-005 | `JsonCliChannel.send_tool_start` and `send_tool_output` SHALL be no-ops (`JsonEventLayer` in `zeph-core` is the canonical emitter for tool events); `send_usage` SHALL emit a `cost` event | must |
 | FR-006 | WHEN `-y` / `--auto` is set THE SYSTEM SHALL auto-approve all `confirm()` calls without reading stdin | must |
 | FR-007 | WHEN `/loop` is active THE SYSTEM SHALL present a continuation prompt after each turn and surface errors inline (not terminate) | must |
 | FR-008 | WHEN `/loop` receives an error from the agent THE SYSTEM SHALL display the error text and remain in the loop; exit only on explicit "n" or empty input | must |
@@ -160,7 +160,7 @@ AND the command is available in the slash command registry and TUI autocomplete
 | NFR-006 | Usability | JSONL schema is versioned (`"schema": 1` field on each event); consumers can version-check before parsing |
 | NFR-007 | Usability | `/loop` continuation prompt uses channel-native output (CLI: inline; TUI: status bar; JSON: `elicitation` event) |
 | NFR-008 | Security | `-y` / `--auto` applies only to agent-generated confirmation prompts; MCP elicitation with sensitive fields (password/token/key) still emits a warning even in auto mode |
-| NFR-009 | Observability | `--json` mode includes a `cost` event after each turn with token usage and estimated cost |
+| NFR-009 | Observability | `--json` emits a `cost` event after each LLM call: that call's token counts plus the session-cumulative estimated cost |
 
 ---
 
@@ -181,7 +181,8 @@ All events are single-line JSON objects:
 // Tool result
 {"type": "tool_result", "id": "...", "output": "...", "exit_code": 0, "schema": 1}
 
-// Token and cost summary
+// Emitted after each LLM call: tokens are for that call, estimated_usd is the
+// session-cumulative cost (typed Cents internally, converted to USD at serialization)
 {"type": "cost", "input_tokens": 1234, "output_tokens": 456,
  "cache_read_tokens": 789, "estimated_usd": 0.0042, "schema": 1}
 
@@ -193,9 +194,9 @@ All events are single-line JSON objects:
 ```
 
 > [!warning]
-> `send_tool_start`, `send_tool_output`, and `send_usage` in `JsonCliChannel` are
-> intentionally no-ops. Tool and cost events are emitted by `JsonEventLayer` in
-> `zeph-core`, which has direct access to all providers. This avoids double-emission.
+> `send_tool_start` and `send_tool_output` in `JsonCliChannel` are intentionally
+> no-ops. Tool events are emitted by `JsonEventLayer` in `zeph-core`, which avoids
+> double-emission. `cost` events come from `JsonCliChannel.send_usage`.
 
 ---
 

@@ -114,6 +114,7 @@ impl LlmProvider for RouterProvider {
         // Their success paths diverge (quality gate + CoE vs. plain stream-open), so a
         // shared loop helper would reduce clarity without removing significant duplication.
         let fut = Box::pin(async move {
+            let entered = tokio::time::Instant::now();
             // Increment turn counter once per top-level chat() call. All concurrent sub-calls
             // (tool schema fetches, embed probes) that re-enter chat() will see the same
             // turn_id via the shared Arc<AtomicU64>, enabling ASI debounce.
@@ -214,6 +215,7 @@ impl LlmProvider for RouterProvider {
                                     r,
                                     extras,
                                     CoePath::Chat,
+                                    coe_router.config.deadline_from(entered),
                                     coe_router.secondary.chat(&messages),
                                 )
                                 .await;
@@ -234,6 +236,7 @@ impl LlmProvider for RouterProvider {
                                 r,
                                 extras,
                                 CoePath::Chat,
+                                coe_router.config.deadline_from(entered),
                                 coe_router.secondary.chat(&messages),
                             )
                             .await;
@@ -711,6 +714,7 @@ impl LlmProvider for RouterProvider {
         let router = self.clone();
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
+            let entered = tokio::time::Instant::now();
             let mut status = StatusReporter::new(status_tx);
             // spec-072 C3: an Image part must never reach a provider whose own
             // `supports_vision()` is `false` — computed once, applied per-provider below
@@ -814,6 +818,7 @@ impl LlmProvider for RouterProvider {
                                 r,
                                 extras,
                                 CoePath::Tools,
+                                coe.config.deadline_from(entered),
                                 coe.secondary.chat_with_tools(secondary_messages, &tools),
                             )
                             .await;

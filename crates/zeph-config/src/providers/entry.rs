@@ -16,6 +16,50 @@ use super::{
     ThinkingConfig, default_true, is_true,
 };
 
+/// Case-insensitive identity of a provider name.
+///
+/// Provider names are matched ASCII-case-insensitively everywhere they are resolved against
+/// `[[llm.providers]]`. This newtype is the single place that rule lives, so every consumer
+/// (sub-agent provider resolution, the orchestration admission gate) agrees on which spellings
+/// denote the same pool entry.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::ProviderKey;
+///
+/// assert_eq!(ProviderKey::new("Quality"), ProviderKey::new("quality"));
+/// assert_ne!(ProviderKey::new("fast"), ProviderKey::new("quality"));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProviderKey(Box<str>);
+
+impl ProviderKey {
+    /// Build the key for `name` (ASCII-lowercased).
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self(name.to_ascii_lowercase().into_boxed_str())
+    }
+}
+
+/// Find the pool entry named `name`, ignoring ASCII case.
+///
+/// Returns the first match, mirroring pool order. This is the one resolver shared by sub-agent
+/// provider resolution and the admission gate's key normalization.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::{ProviderEntry, find_provider};
+///
+/// let pool: Vec<ProviderEntry> = Vec::new();
+/// assert!(find_provider(&pool, "quality").is_none());
+/// ```
+#[must_use]
+pub fn find_provider<'a>(pool: &'a [ProviderEntry], name: &str) -> Option<&'a ProviderEntry> {
+    pool.iter().find(|entry| entry.is_named(name))
+}
+
 /// A single Gonka network node endpoint.
 ///
 /// Used in `[[llm.providers]]` entries with `type = "gonka"` to declare
@@ -340,6 +384,12 @@ impl std::fmt::Debug for ProviderEntry {
 }
 
 impl ProviderEntry {
+    /// Whether this entry's effective name equals `name`, ignoring ASCII case.
+    #[must_use]
+    pub fn is_named(&self, name: &str) -> bool {
+        ProviderKey::new(&self.effective_name()) == ProviderKey::new(name)
+    }
+
     /// Resolve the effective name: explicit `name` field or type string.
     #[must_use]
     pub fn effective_name(&self) -> String {
@@ -669,13 +719,13 @@ impl ProviderOverrides {
 ///
 /// Returns `ConfigError` for fatal validation failures:
 /// - Empty pool
-/// - Duplicate names
+/// - Duplicate names, compared ASCII-case-insensitively
 /// - Multiple entries marked `default = true`
 /// - Individual entry validation errors
 #[must_use = "validation result must be checked"]
 pub fn validate_pool(entries: &[ProviderEntry]) -> Result<(), crate::error::ConfigError> {
     use crate::error::ConfigError;
-    use std::collections::HashSet;
+    use std::collections::HashMap;
 
     if entries.is_empty() {
         return Err(ConfigError::Validation(
@@ -690,12 +740,13 @@ pub fn validate_pool(entries: &[ProviderEntry]) -> Result<(), crate::error::Conf
         ));
     }
 
-    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut seen_names: HashMap<ProviderKey, String> = HashMap::new();
     for entry in entries {
         let name = entry.effective_name();
-        if !seen_names.insert(name.clone()) {
+        if let Some(first) = seen_names.insert(ProviderKey::new(&name), name.clone()) {
             return Err(ConfigError::Validation(format!(
-                "duplicate provider name \"{name}\" in [[llm.providers]]"
+                "duplicate provider name \"{name}\" in [[llm.providers]] \
+                 (names are case-insensitive; conflicts with \"{first}\")"
             )));
         }
         entry.validate()?;

@@ -29,6 +29,7 @@ fn cfg(sample_rate: f64) -> CoeConfig {
         inter_threshold: 0.2,
         shadow_sample_rate: sample_rate,
         shadow_budget: Duration::from_secs(5),
+        request_timeout: Duration::from_secs(600),
     }
 }
 

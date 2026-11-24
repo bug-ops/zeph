@@ -22,7 +22,7 @@ Every question starts with a fixed warning that the model cannot change: never s
 | Channel | How to answer |
 |---------|---------------|
 | CLI (terminal) | Type a number, an option text, or free text when allowed. |
-| TUI | A dialog titled "assistant question". Enter submits, Esc cancels only the question. |
+| TUI | A dialog titled "assistant question". Enter submits, Esc cancels only the question. A closed multi-choice question is a checklist: Up/Down move, Space marks, Enter submits (with nothing marked you are asked again). |
 | Telegram, Discord, Slack | Reply in the same chat. Numbers select options. |
 | ACP (IDE) | A form shown by the IDE, when it supports elicitation. |
 
@@ -34,7 +34,7 @@ Reply `cancel` (or `/cancel`) to cancel. Sending a slash command such as `/statu
 - `declined` when no user can answer at the moment of the call (for example piped stdin or an IDE without elicitation). This returns immediately.
 - `cancelled` when you cancel, and `timed out` after `timeout_secs`.
 
-The model is offered the tool only on user turns of an interactive channel. It is hidden on scheduler, `/loop`, autonomous goal and webhook turns, where nobody could answer. Sub-agents never see it. `[tools.permissions]` deny rules for `ask_user` apply at listing and dispatch, as they do for `compress_context`.
+The model is offered the tool only on user turns of an interactive channel. It is hidden on scheduler, `/loop`, autonomous goal and webhook turns, where nobody could answer. Sub-agents never see it unless their definition sets `permissions.ask_user: allow`; then only foreground `/agent spawn` and `/agent resume` runs can ask, through the parent's channel, and each slash command gets its own question counter. In `zeph serve` the question arrives as an `ask_user` event and is answered with `POST /sessions/:id/answer`. `[tools.permissions]` deny rules for `ask_user` apply at listing and dispatch, as they do for `compress_context`.
 
 On Discord and Slack only replies from the channel of the prompt count as an answer or confirmation. On ACP the question form works in new, loaded, forked and resumed sessions.
 

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use acp::v1::schema::{EnvVariable, McpServer, McpServerHttp, McpServerStdio};
 use parking_lot::Mutex as SyncMutex;
-use zeph_config::{AcpIdeMcpConfig, AcpIdeMcpGrant, AcpIdeMcpTarget};
+use zeph_config::{AcpIdeMcpConfig, AcpIdeMcpGrant, AcpIdeMcpGrantError, AcpIdeMcpTarget};
 
 use super::*;
 
@@ -243,20 +243,13 @@ fn scoped_entries_cap_zero_disables_ide_servers() {
     assert!(scoped_entries(&servers, SESSION, 120, &config(0, vec![])).is_empty());
 }
 
-#[tokio::test]
-async fn loopback_http_grant_never_connects_under_untrusted_ssrf_policy() {
-    let url = "http://127.0.0.1:9/mcp";
-    let cfg = config(10, vec![("local", http_grant(url, &["search"]))]);
-    let servers = [McpServer::Http(McpServerHttp::new("local", url))];
-    let entries = scoped_entries(&servers, SESSION, 120, &cfg);
-    assert_eq!(entries[0].tool_allowlist, Some(vec!["search".to_owned()]));
-
-    let manager = McpManager::new(vec![], vec![], zeph_mcp::PolicyEnforcer::new(vec![]));
-    let err = manager.add_server(&entries[0]).await.unwrap_err();
-    assert!(
-        matches!(err, McpError::SsrfBlocked { .. }),
-        "loopback grant must be blocked by SSRF policy, got {err:?}"
-    );
+#[test]
+fn loopback_http_grant_is_rejected_at_construction() {
+    let target = AcpIdeMcpTarget::Http {
+        url: "http://127.0.0.1:9/mcp".to_owned(),
+    };
+    let err = AcpIdeMcpGrant::new(target, vec!["search".to_owned()]).unwrap_err();
+    assert!(matches!(err, AcpIdeMcpGrantError::UnreachableUrl(_)));
 }
 
 #[derive(Default)]

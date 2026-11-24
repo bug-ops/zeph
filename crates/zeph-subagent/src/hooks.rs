@@ -226,7 +226,8 @@ pub fn hook_if_matches(condition: &str, tool_name: Option<&str>) -> bool {
                 );
                 return false;
             }
-            tool_name.is_some_and(|t| !t.is_empty() && token_matches(value, t))
+            tool_name
+                .is_some_and(|t| !t.is_empty() && token_matches(value, t, &ToolMatchKey::new(t)))
         }
         unknown => {
             tracing::warn!(
@@ -302,13 +303,14 @@ pub enum HookError {
 /// ```
 #[must_use]
 pub fn matching_hooks<'a>(matchers: &'a [HookMatcher], tool_name: &str) -> Vec<&'a HookDef> {
+    let key = ToolMatchKey::new(tool_name);
     let mut result = Vec::new();
     for m in matchers {
         let matched = m
             .matcher
             .split('|')
             .filter(|token| !token.is_empty())
-            .any(|token| token_matches(token, tool_name));
+            .any(|token| token_matches(token, tool_name, &key));
         if matched {
             result.extend(m.hooks.iter());
         }
@@ -320,8 +322,8 @@ pub fn matching_hooks<'a>(matchers: &'a [HookMatcher], tool_name: &str) -> Vec<&
 
 /// Additive hook-token rule: the legacy case-sensitive substring test OR canonical tool-id
 /// equality (case-insensitive, argument patterns stripped, shell aliases resolved).
-fn token_matches(token: &str, tool_name: &str) -> bool {
-    tool_name.contains(token) || ToolMatchKey::new(token) == ToolMatchKey::new(tool_name)
+fn token_matches(token: &str, tool_name: &str, tool_key: &ToolMatchKey) -> bool {
+    tool_name.contains(token) || tool_key.matches(token)
 }
 
 /// Maximum byte length of `ZEPH_TOOL_ARGS_JSON` to avoid `E2BIG` when spawning hook processes.

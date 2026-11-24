@@ -4,7 +4,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use zeph_core::channel::{ElicitationFieldType, ElicitationRequest};
 
@@ -24,6 +24,9 @@ pub struct ElicitationDialogState {
     pub bool_values: Vec<bool>,
     /// Scroll offset for long enum lists.
     pub enum_scroll: Vec<usize>,
+    /// Checked state of each entry of `MultiSelect` fields (empty for other fields). The cursor
+    /// of a `MultiSelect` field lives in `enum_selections`.
+    pub multi_marks: Vec<Vec<bool>>,
 }
 
 impl ElicitationDialogState {
@@ -33,6 +36,14 @@ impl ElicitationDialogState {
         let n = request.fields.len();
         // Initialize all boolean fields to false (unchecked by default)
         let bool_values = vec![false; n];
+        let multi_marks = request
+            .fields
+            .iter()
+            .map(|f| match &f.field_type {
+                ElicitationFieldType::MultiSelect(opts) => vec![false; opts.len()],
+                _ => Vec::new(),
+            })
+            .collect();
         Self {
             request,
             field_idx: 0,
@@ -40,6 +51,7 @@ impl ElicitationDialogState {
             enum_selections: vec![0; n],
             bool_values,
             enum_scroll: vec![0; n],
+            multi_marks,
         }
     }
 
@@ -85,10 +97,22 @@ impl ElicitationDialogState {
         }
     }
 
-    /// Toggle boolean for current field.
+    /// Toggle the current field: the boolean value, or the mark under the cursor of a
+    /// `MultiSelect` list.
     pub fn toggle_bool(&mut self) {
         let idx = self.field_idx;
-        if idx < self.bool_values.len() {
+        if idx >= self.request.fields.len() {
+            return;
+        }
+        if matches!(
+            self.request.fields[idx].field_type,
+            ElicitationFieldType::MultiSelect(_)
+        ) {
+            let cursor = self.enum_selections[idx];
+            if let Some(mark) = self.multi_marks[idx].get_mut(cursor) {
+                *mark = !*mark;
+            }
+        } else {
             self.bool_values[idx] = !self.bool_values[idx];
         }
     }
@@ -99,7 +123,8 @@ impl ElicitationDialogState {
         if idx >= self.request.fields.len() {
             return;
         }
-        if let ElicitationFieldType::Enum(ref opts) = self.request.fields[idx].field_type
+        if let ElicitationFieldType::Enum(opts) | ElicitationFieldType::MultiSelect(opts) =
+            &self.request.fields[idx].field_type
             && !opts.is_empty()
         {
             self.enum_selections[idx] = (self.enum_selections[idx] + 1) % opts.len();
@@ -112,7 +137,8 @@ impl ElicitationDialogState {
         if idx >= self.request.fields.len() {
             return;
         }
-        if let ElicitationFieldType::Enum(ref opts) = self.request.fields[idx].field_type
+        if let ElicitationFieldType::Enum(opts) | ElicitationFieldType::MultiSelect(opts) =
+            &self.request.fields[idx].field_type
             && !opts.is_empty()
         {
             let n = opts.len();
@@ -168,6 +194,15 @@ impl ElicitationDialogState {
                     }
                     serde_json::Value::String(sanitize_field_value(&opts[sel]))
                 }
+                // An empty array is submitted as is: the question owner rejects it and asks again,
+                // so Enter on an empty list never silently cancels the dialog.
+                ElicitationFieldType::MultiSelect(opts) => serde_json::Value::Array(
+                    opts.iter()
+                        .zip(&self.multi_marks[i])
+                        .filter(|(_, marked)| **marked)
+                        .map(|(opt, _)| serde_json::Value::String(sanitize_field_value(opt)))
+                        .collect(),
+                ),
                 _ => continue,
             };
             map.insert(sanitize_field_name(&field.name), value);
@@ -214,10 +249,26 @@ fn wrapped_rows(text: &str, width: u16) -> u16 {
     u16::try_from(rows).unwrap_or(u16::MAX)
 }
 
+/// Rows a field occupies: a checkbox list needs one row per entry, anything else two.
+fn field_height(field_type: &ElicitationFieldType) -> u16 {
+    match field_type {
+        ElicitationFieldType::MultiSelect(opts) => {
+            u16::try_from(opts.len()).unwrap_or(u16::MAX).max(2)
+        }
+        _ => 2,
+    }
+}
+
+fn fields_total_height(request: &ElicitationRequest) -> u16 {
+    request
+        .fields
+        .iter()
+        .map(|f| field_height(&f.field_type))
+        .fold(0u16, u16::saturating_add)
+}
+
 /// Render the elicitation modal dialog over the full screen area.
 pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, theme: &Theme) {
-    let n_fields = state.request.fields.len();
-
     // The message gets as many rows as its wrapped text needs (at least 2), so a long header
     // line cannot push the question and the option list out of view.
     let message = sanitize_field_value(&state.request.message);
@@ -226,11 +277,10 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, the
 
     // Height: 2 (borders) + 1 (title) + message + 1 (blank) + n*2 (fields) + 2 (buttons)
     let max_height = area.height.saturating_sub(2);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "height narrows a value whose domain-specific range is bounded at this conversion site"
-    )]
-    let height = ((6 + message_rows as usize + n_fields * 2) as u16).min(max_height);
+    let height = 6u16
+        .saturating_add(message_rows)
+        .saturating_add(fields_total_height(&state.request))
+        .min(max_height);
     let popup = centered_rect(70, height, area);
 
     frame.render_widget(Clear, popup);
@@ -249,11 +299,7 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, the
     frame.render_widget(outer_block, popup);
 
     // Split inner area: message, fields, buttons
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "field_rows narrows a value whose domain-specific range is bounded at this conversion site"
-    )]
-    let field_rows = (n_fields as u16).saturating_mul(2);
+    let field_rows = fields_total_height(&state.request);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -277,7 +323,21 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, the
     }
 
     // Key hint
-    let hint = Line::from(vec![
+    let has_checklist = state
+        .request
+        .fields
+        .iter()
+        .any(|f| matches!(f.field_type, ElicitationFieldType::MultiSelect(_)));
+    let mut hint_spans = Vec::new();
+    if has_checklist {
+        hint_spans.extend([
+            Span::styled("[Up/Down]", theme.highlight),
+            Span::raw(" move  "),
+            Span::styled("[Space]", theme.highlight),
+            Span::raw(" toggle  "),
+        ]);
+    }
+    hint_spans.extend([
         Span::styled("[Tab]", theme.highlight),
         Span::raw(" next  "),
         Span::styled("[Enter]", theme.highlight),
@@ -285,8 +345,46 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, the
         Span::styled("[Esc]", theme.highlight),
         Span::raw(" cancel"),
     ]);
+    let hint = Line::from(hint_spans);
     let hint_para = Paragraph::new(hint).alignment(Alignment::Center);
     frame.render_widget(hint_para, chunks[4]);
+}
+
+/// One line per checklist entry (`> [x] label`), cut with an ellipsis at `width` columns so a
+/// long label never wraps into the next entry's row. `cursor` is the entry under the cursor.
+fn checklist_lines(
+    opts: &[String],
+    marks: &[bool],
+    cursor: Option<usize>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    opts.iter()
+        .zip(marks)
+        .enumerate()
+        .map(|(j, (opt, marked))| {
+            let on_cursor = cursor == Some(j);
+            let text = format!(
+                "{} [{}] {}",
+                if on_cursor { '>' } else { ' ' },
+                if *marked { 'x' } else { ' ' },
+                sanitize_field_value(opt).replace(['\n', '\t'], " ")
+            );
+            let style = if on_cursor {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(truncate_with_ellipsis(&text, width), style))
+        })
+        .collect()
+}
+
+fn truncate_with_ellipsis(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}\u{2026}")
 }
 
 fn render_fields(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -295,8 +393,12 @@ fn render_fields(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, 
         return;
     }
 
-    // Allocate 2 rows per field
-    let constraints: Vec<Constraint> = vec![Constraint::Length(2); n];
+    let constraints: Vec<Constraint> = state
+        .request
+        .fields
+        .iter()
+        .map(|f| Constraint::Length(field_height(&f.field_type)))
+        .collect();
     let rows = Layout::vertical(constraints).split(area);
 
     for (i, field) in state.request.fields.iter().enumerate() {
@@ -343,6 +445,7 @@ fn render_fields(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, 
                     format!("▼ {opt}")
                 }
             }
+            // MultiSelect is drawn line by line below, not as one string.
             _ => String::new(),
         };
 
@@ -363,8 +466,16 @@ fn render_fields(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, 
         } else {
             Style::default()
         };
-        let value_para = Paragraph::new(Span::styled(value_str, value_style));
-        frame.render_widget(value_para, field_chunks[1]);
+        let value_text = match &field.field_type {
+            ElicitationFieldType::MultiSelect(opts) => Text::from(checklist_lines(
+                opts,
+                &state.multi_marks[i],
+                is_focused.then_some(state.enum_selections[i]),
+                usize::from(field_chunks[1].width),
+            )),
+            _ => Text::from(Span::styled(value_str, value_style)),
+        };
+        frame.render_widget(Paragraph::new(value_text), field_chunks[1]);
     }
 }
 
@@ -527,5 +638,102 @@ mod tests {
         for needle in ["Which color?", "1. red", "2. green"] {
             assert!(output.contains(needle), "{needle} not visible:\n{output}");
         }
+    }
+
+    fn multi_select_request(names: &[&str]) -> ElicitationRequest {
+        make_request(vec![ElicitationField {
+            name: "answer".to_owned(),
+            description: None,
+            field_type: ElicitationFieldType::MultiSelect(
+                names.iter().map(|s| (*s).to_owned()).collect(),
+            ),
+            required: true,
+        }])
+    }
+
+    #[test]
+    fn multi_select_toggles_the_mark_under_the_cursor() {
+        let mut state =
+            ElicitationDialogState::new(multi_select_request(&["1. a", "2. b", "3. c"]));
+        state.toggle_bool();
+        state.enum_next();
+        state.enum_next();
+        state.toggle_bool();
+        let val = state.build_submission().unwrap();
+        assert_eq!(val["answer"], serde_json::json!(["1. a", "3. c"]));
+        state.toggle_bool();
+        let val = state.build_submission().unwrap();
+        assert_eq!(val["answer"], serde_json::json!(["1. a"]));
+    }
+
+    #[test]
+    fn multi_select_cursor_wraps_and_text_input_is_ignored() {
+        let mut state = ElicitationDialogState::new(multi_select_request(&["1. a", "2. b"]));
+        state.enum_prev();
+        assert_eq!(state.enum_selections[0], 1);
+        state.enum_next();
+        assert_eq!(state.enum_selections[0], 0);
+        state.push_char('x');
+        assert_eq!(state.text_buffers[0], "");
+    }
+
+    #[test]
+    fn multi_select_with_nothing_marked_submits_an_empty_array() {
+        let state = ElicitationDialogState::new(multi_select_request(&["1. a", "2. b"]));
+        assert_eq!(
+            state.build_submission().unwrap()["answer"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn multi_select_renders_each_entry_on_its_own_row_with_a_cursor() {
+        use crate::test_utils::render_to_string;
+
+        let mut state =
+            ElicitationDialogState::new(multi_select_request(&["1. red", "2. green", "3. blue"]));
+        state.toggle_bool();
+        state.enum_next();
+        let theme = crate::theme::Theme::default();
+        let output = render_to_string(80, 24, |frame, area| {
+            super::render(&state, frame, area, &theme);
+        });
+        let rows: Vec<&str> = output.lines().collect();
+        let red = rows.iter().position(|l| l.contains("[x] 1. red")).unwrap();
+        assert!(rows[red].contains("  [x] 1. red"), "{output}");
+        assert!(rows[red + 1].contains("> [ ] 2. green"), "{output}");
+        assert!(rows[red + 2].contains("  [ ] 3. blue"), "{output}");
+        assert!(
+            !rows[red].contains("2. green"),
+            "entries share a row:\n{output}"
+        );
+        assert!(output.contains("[Space]"), "{output}");
+    }
+
+    #[test]
+    fn a_long_checklist_entry_is_cut_with_an_ellipsis_and_stays_on_its_row() {
+        use crate::test_utils::render_to_string;
+
+        let long = format!("1. {}", "x".repeat(200));
+        let state = ElicitationDialogState::new(multi_select_request(&[&long, "2. short"]));
+        let theme = crate::theme::Theme::default();
+        let output = render_to_string(80, 24, |frame, area| {
+            super::render(&state, frame, area, &theme);
+        });
+        let rows: Vec<&str> = output.lines().collect();
+        let first = rows.iter().position(|l| l.contains("[ ] 1. xxx")).unwrap();
+        assert!(rows[first].contains('\u{2026}'), "{output}");
+        assert!(rows[first + 1].contains("[ ] 2. short"), "{output}");
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_respects_width_and_chars() {
+        assert_eq!(truncate_with_ellipsis("abc", 3), "abc");
+        assert_eq!(truncate_with_ellipsis("abcd", 3), "ab\u{2026}");
+        assert_eq!(
+            truncate_with_ellipsis("\u{e9}\u{e9}\u{e9}\u{e9}", 2),
+            "\u{e9}\u{2026}"
+        );
+        assert_eq!(truncate_with_ellipsis("abc", 0), "\u{2026}");
     }
 }

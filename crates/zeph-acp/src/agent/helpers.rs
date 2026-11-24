@@ -635,3 +635,40 @@ mod status_wire_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "unstable-session-usage"))]
+mod usage_cost_wire_tests {
+    use super::*;
+    use zeph_common::money::Cents;
+    use zeph_core::channel::TokenUsage;
+
+    fn usage_update(cost_cents: Cents) -> UsageUpdate {
+        let usage = TokenUsage {
+            input: 100_000,
+            output: 50_000,
+            ..TokenUsage::default()
+        };
+        let updates = loopback_event_to_updates(LoopbackEvent::Usage {
+            usage,
+            context_window: 128_000,
+            cost_cents,
+        });
+        match updates.into_iter().next() {
+            Some(SessionUpdate::UsageUpdate(update)) => update,
+            other => panic!("expected UsageUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_update_carries_cost_when_nonzero() {
+        let update = usage_update(Cents::new(70.0));
+        let cost = update.cost.expect("cost must be forwarded");
+        assert!((cost.amount - 0.7).abs() < 1e-9);
+        assert_eq!(cost.currency, "USD");
+    }
+
+    #[test]
+    fn usage_update_omits_cost_when_zero() {
+        assert!(usage_update(Cents::ZERO).cost.is_none());
+    }
+}

@@ -16,6 +16,8 @@ ZEPH_A2A_ENABLED=true ZEPH_A2A_AUTH_TOKEN=secret ./target/release/zeph
 | `/a2a` | JSON-RPC endpoint (`message/send`, `tasks/get`, `tasks/cancel`) | Bearer token |
 | `/a2a/stream` | SSE streaming endpoint | Bearer token |
 
+The client side tries `/.well-known/agent-card.json` (A2A 1.0.0) first and falls back to `/.well-known/agent.json` on any 4xx or a 2xx body that is not an agent card. It never falls back on a trust-check failure, 5xx, timeout, transport error or oversized body, and it remembers the path that worked for each peer. The Zeph server itself serves only `agent.json`.
+
 > Set `ZEPH_A2A_AUTH_TOKEN` to secure the server with bearer token authentication. The agent card endpoint remains public per A2A spec.
 
 ### Agent Card

@@ -379,6 +379,88 @@ impl AskUserRequest {
         }
     }
 
+    /// Values for a dialog's checkbox list when the question is a closed multi-choice: each
+    /// label prefixed with its position (`"1. red"`), as in
+    /// [`closed_choice_values`](Self::closed_choice_values).
+    ///
+    /// `None` for every other kind of question, including a multi-choice that allows an
+    /// "other" answer (a selection and a free-text answer cannot travel together).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_core::channel::{AskUserRequest, ChoiceOptions, OtherAnswer};
+    ///
+    /// let options = ChoiceOptions::new(vec!["red".into(), "green".into()]).unwrap();
+    /// let request = AskUserRequest::multi_choice("Which?", options, OtherAnswer::Forbidden).unwrap();
+    /// assert_eq!(request.multi_select_values().unwrap(), ["1. red", "2. green"]);
+    /// ```
+    #[must_use]
+    pub fn multi_select_values(&self) -> Option<Vec<String>> {
+        match &self.kind {
+            AskUserKind::MultiChoice {
+                options,
+                other: OtherAnswer::Forbidden,
+            } => Some(
+                options
+                    .labels()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, label)| format!("{}. {label}", i + 1))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Text a dialog with a checkbox list shows: the fixed header and the question; the
+    /// options are the list itself.
+    #[must_use]
+    pub fn select_form_message(&self) -> String {
+        format!("{ASK_USER_HEADER}\n\n{}", self.question.0)
+    }
+
+    /// Map the entries a checkbox list returned onto this question.
+    ///
+    /// Each entry must be one of [`multi_select_values`](Self::multi_select_values); only the
+    /// leading position is used, so duplicates collapse and the indices come out ascending.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReplyParseError::NoMatch`] when nothing is selected, when an entry is not one
+    /// of the offered values, or when the question is not a closed multi-choice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_core::channel::{AskUserAnswer, AskUserRequest, ChoiceOptions, OtherAnswer};
+    ///
+    /// let options = ChoiceOptions::new(vec!["a".into(), "b".into(), "c".into()]).unwrap();
+    /// let request = AskUserRequest::multi_choice("Which?", options, OtherAnswer::Forbidden).unwrap();
+    /// assert_eq!(
+    ///     request.parse_dialog_selection(&["3. c", "1. a"]).unwrap(),
+    ///     AskUserAnswer::Selected { indices: vec![0, 2] }
+    /// );
+    /// assert!(request.parse_dialog_selection(&[]).is_err());
+    /// ```
+    pub fn parse_dialog_selection(
+        &self,
+        picked: &[&str],
+    ) -> Result<AskUserAnswer, ReplyParseError> {
+        let values = self.multi_select_values().ok_or(ReplyParseError::NoMatch)?;
+        let indices: std::collections::BTreeSet<usize> = picked
+            .iter()
+            .map(|p| values.iter().position(|v| v == p))
+            .collect::<Option<_>>()
+            .ok_or(ReplyParseError::NoMatch)?;
+        if indices.is_empty() {
+            return Err(ReplyParseError::NoMatch);
+        }
+        Ok(AskUserAnswer::Selected {
+            indices: indices.into_iter().collect(),
+        })
+    }
+
     /// How to fill the text field of a dialog for a multi-choice or open choice question;
     /// `None` when the question needs no instruction.
     #[must_use]
@@ -736,5 +818,79 @@ mod tests {
                 .contains("your own answer")
         );
         assert!(open.dialog_message().starts_with(ASK_USER_HEADER));
+    }
+
+    fn multi(other: OtherAnswer) -> AskUserRequest {
+        AskUserRequest::multi_choice("Which?", opts(&["a", "b", "c"]), other).unwrap()
+    }
+
+    #[test]
+    fn multi_select_values_exist_only_for_a_closed_multi_choice() {
+        assert_eq!(
+            multi(OtherAnswer::Forbidden).multi_select_values().unwrap(),
+            ["1. a", "2. b", "3. c"]
+        );
+        assert!(multi(OtherAnswer::Allowed).multi_select_values().is_none());
+        let single =
+            AskUserRequest::single_choice("Pick", opts(&["a", "b"]), OtherAnswer::Forbidden)
+                .unwrap();
+        assert!(single.multi_select_values().is_none());
+        assert!(
+            AskUserRequest::free_text("q")
+                .unwrap()
+                .multi_select_values()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn dialog_selection_is_ascending_and_deduplicated() {
+        let request = multi(OtherAnswer::Forbidden);
+        assert_eq!(
+            request
+                .parse_dialog_selection(&["3. c", "1. a", "3. c"])
+                .unwrap(),
+            AskUserAnswer::Selected {
+                indices: vec![0, 2]
+            }
+        );
+    }
+
+    #[test]
+    fn dialog_selection_rejects_empty_unknown_and_wrong_kind() {
+        let request = multi(OtherAnswer::Forbidden);
+        assert_eq!(
+            request.parse_dialog_selection(&[]),
+            Err(ReplyParseError::NoMatch)
+        );
+        assert_eq!(
+            request.parse_dialog_selection(&["1. a", "9. z"]),
+            Err(ReplyParseError::NoMatch)
+        );
+        assert_eq!(
+            request.parse_dialog_selection(&["1. A"]),
+            Err(ReplyParseError::NoMatch)
+        );
+        assert!(
+            multi(OtherAnswer::Allowed)
+                .parse_dialog_selection(&["1. a"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn select_form_message_has_header_and_question_but_no_options() {
+        let msg = multi(OtherAnswer::Forbidden).select_form_message();
+        assert!(msg.starts_with(ASK_USER_HEADER));
+        assert!(msg.contains("Which?"));
+        assert!(!msg.contains("1. a"));
+    }
+
+    #[test]
+    fn existing_dialog_helpers_are_unchanged_for_a_closed_multi_choice() {
+        let request = multi(OtherAnswer::Forbidden);
+        assert!(request.closed_choice_values().is_none());
+        assert!(request.dialog_message().contains("1. a"));
+        assert!(request.dialog_answer_hint().is_some());
     }
 }
