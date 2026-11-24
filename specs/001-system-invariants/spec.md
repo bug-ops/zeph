@@ -206,7 +206,7 @@ Feature flags (`Cargo.toml [features]`):
 
 ## 10. Concurrency & Safety Contract
 
-- `unsafe_code = "deny"` workspace-wide; the only exceptions are the `#[allow(unsafe_code)]` sites listed in the specs/010-security §unsafe registry, each with a `// SAFETY:` comment; a new site needs a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
+- `unsafe_code = "deny"` workspace-wide; the only exceptions are the `#[expect(unsafe_code, reason = "...")]` sites listed in the specs/010-security §unsafe registry, each with a `// SAFETY:` comment; a new site needs a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
 - Agent loop is **single-threaded async** — no parallel threads per session
 - Shared mutable state: `parking_lot::RwLock<T>` (readers-preferred) or `parking_lot::Mutex<T>` (exclusive access) — no poison handling needed
 - No blocking I/O inside async hot paths — use `tokio::task::spawn_blocking` if unavoidable
@@ -303,6 +303,8 @@ Every new feature MUST be wired at all applicable integration points:
 - Return `Result<Option<MessageId>>` from `remember()` — never `Result<MessageId>`
 
 - Keep `#![cfg_attr(not(test), warn(clippy::string_slice))]` in every workspace crate and the root binary (#6998, #7011, #7020): byte-index slicing of `str` uses `zeph_common::text::truncate_to_bytes_ref`, `.get(..)` with a named fallback, or a justified `#[expect(clippy::string_slice, reason = "...")]` when the index comes from a boundary-returning API on the same string
+- Lint suppressions use `#[expect(lint, reason = "...")]` with a short reason, never `#[allow(...)]`: the workspace sets `clippy::allow_attributes` and `clippy::allow_attributes_without_reason` to warn (denied by CI), and no `#[allow]` attribute remains in `src/` or `crates/`. A stale `#[expect]` is itself a warning, so a suppression that stops firing is removed rather than left behind; no module-level `dead_code` suppression (#7150, #7151, #7152). The workspace does not allow `unused_dependencies`: a dependency used only by feature-gated code is `optional` or dev-only (#7191)
+- Narrowing numeric casts use saturating or checked conversions instead of `as` plus a suppression (#7150)
 
 ### Ask First
 - Adding a new `MessagePart` variant (breaks serialization compatibility)

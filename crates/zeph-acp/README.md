@@ -9,20 +9,23 @@ ACP (Agent Client Protocol) server adapter for embedding Zeph in IDE environment
 
 ## Overview
 
-Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`. Built on the `agent-client-protocol` SDK v5.5.
+Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`. Built on the `agent-client-protocol` SDK `~5.5.1` (the direct `agent-client-protocol-schema` dependency is gone).
 
 ## Installation
 
 ```toml
 [dependencies]
-zeph-acp = "0.24"
+zeph-acp = "0.25"
 
 # With HTTP+SSE transport
-zeph-acp = { version = "0.24", features = ["acp-http"] }
+zeph-acp = { version = "0.25", features = ["acp-http"] }
 ```
 
 **Important:**
 > Requires Rust 1.100 or later.
+
+> [!WARNING]
+> An `[acp.ide_mcp.servers.*]` http `url` on a loopback, private, or link-local host is a config load error.
 
 ## Features
 

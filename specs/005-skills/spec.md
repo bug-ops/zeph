@@ -74,7 +74,7 @@ Constraints:
 - `disambiguation_threshold`: if top skill score < threshold, inject nothing. Default is **0.20** — avoids injecting near-irrelevant skills on almost every turn
 - `min_injection_score`: minimum score a skill must achieve to be injected even when it clears the disambiguation threshold. Default 0.20, acts as a secondary quality gate independent of disambiguation
 - `max_active_skills`: hard cap on skills injected into the system prompt per turn
-- Active skill names logged as `active_skill_names` for debugging
+- Active skill names logged as `active_skill_names` for debugging (a `Vec<SkillName>` in the agent state, not `Vec<String>`, #7172)
 
 ## Skill Injection
 
@@ -152,7 +152,7 @@ On-demand tool that fetches the full SKILL.md body for a named skill — allows 
 - `load_skill_resource` refuses anything that is not a regular file (checked before and after open), so a FIFO or device swapped in after discovery cannot block the read (security F4).
 - Only UTF-8 text resources up to 256 KiB can be loaded; binary assets are still listed (discovery does not read files) but `load_skill` refuses them, so the sub-agent hint and the tool description state "text files only" (reviewer S4).
 - The resource listing is split: `format_resource_paths` (skill-relative paths only) is used in the main-agent prompt, where the `load_skill` tool description already documents `path`; `format_resource_listing` adds the one-line `load_skill` hint and is used in sub-agent skill bodies only when `load_skill` is callable. Absolute paths never reach the prompt.
-- Sub-agents: an implicit, scoped `load_skill` is exposed only when `skills.include` is non-empty, `tools` is an allow list without `load_skill` and no deny, except or global-disallowed entry names it. The scope is the included skills; other names are Blocked. The resource listing is appended to sub-agent skill bodies only when `load_skill` is visible to the sub-agent.
+- Sub-agents: an implicit, scoped `load_skill` is exposed only when `skills.include` is non-empty, `tools` is an allow list without `load_skill` and no deny, except or global-disallowed entry names it. The scope is the included skills; other names are Blocked. The resource listing is appended to sub-agent skill bodies only when `load_skill` is visible to the sub-agent. A scoped `load_skill` call with a missing or non-string `skill_name` returns `ToolError::InvalidParams`, not a policy block (#7181).
 
 ## Key Invariants
 

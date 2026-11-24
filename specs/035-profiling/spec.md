@@ -211,7 +211,7 @@ Uses `tracking-allocator` 0.4.0 as a global allocator wrapper.
 - For accurate per-span allocation attribution, run with `--current-thread` executor.
 - Thread-local frame stack prevents race conditions.
 
-**Safety:** `unsafe_code` is permitted only in a single `#[allow(unsafe_code)]` block in `main.rs` for the global allocator initialization.
+**Safety:** `unsafe_code` is permitted only in a single `#[expect(unsafe_code, reason = "...")]` block in `main.rs` for the global allocator initialization.
 
 ### 3.6 System Metrics Emission
 

@@ -81,6 +81,8 @@ SO THAT I can pinpoint the expensive or slow turn instead of only seeing a daily
 
 - Token counters travel as one `zeph_llm::TokenUsage { input, output, cache_write, cache_read }`: `CostTracker::price_of` and `record_usage`, `Channel::send_usage`, `LoopbackEvent::Usage` and `zeph_memory::UsageRecord` take it, so a call site can no longer swap two positional counters. The single-pricing-source rule above is unchanged.
 
+- ACP (#7189): a session with `[cost] enabled` writes `usage_records` rows like other channels; its `usage_update` cost is display-only (see [[013-acp/spec]]).
+
 ## Keepalive Ping Usage (#6911, spec 091)
 
 - A keepalive ping is not a provider request and writes no per-message `usage_records` row. `CostTracker::record_keepalive_usage` adds its cost to the daily spend, and the service keeps `cache_keepalive_pings` and `cache_keepalive_cost_cents` in `MetricsSnapshot` (shown in `/keepalive status`, TUI `/cost` and the status bar).

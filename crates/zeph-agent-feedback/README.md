@@ -18,7 +18,7 @@ Detects when a user is implicitly correcting a previous agent response — witho
 
 ```toml
 [dependencies]
-zeph-agent-feedback = "0.24"
+zeph-agent-feedback = "0.25"
 ```
 
 Or with cargo-add:

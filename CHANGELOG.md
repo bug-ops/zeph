@@ -6,80 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- `zeph-a2a`: discovery tries the A2A 1.0.0 `/.well-known/agent-card.json` first and falls back to `agent.json` on a 4xx or non-card 2xx, remembering the working path per peer (#6932, #7205).
-- `zeph-acp`, `zeph-core`: ACP `usage_update` carries the session cost; display-only, `[cost] max_daily_cents` is not enforced for ACP; ACP sessions with `[cost] enabled` now also write usage rows to the database (#7189, #7205).
-- `zeph-subagent`: resuming a resumed sub-agent keeps the original task and earlier turns (#7180, #7205).
-- `zeph-subagent`: scoped `load_skill` without a usable `skill_name` returns an invalid-params error instead of a policy block (#7181, #7205).
-- `zeph-tools`, `zeph-subagent`: tool-list and hook matching no longer allocate a key per list entry or hook token (#7183, #7205).
-- `zeph-tools`: permissions reuse the shared `base_tool_id` instead of a private copy (#7186, #7205).
-- `zeph-config`, `zeph-orchestration`, `zeph-core`: admission gate and sub-agent provider resolution share one case-insensitive provider key, so differently spelled names share one `max_concurrent` limit (#7179, #7205).
-- `zeph-tui`: tools view lists all loaded MCP tools instead of the per-turn selection (#7178, #7205).
-- `zeph-common`: `sanitize_upstream_text` glues anchored secret shapes split across lines without spending the probe budget on unrelated lines, and handles wrapped Bearer/AWS values; glue can over-redact (#7184, #7185, #7205).
-- `zeph-llm`: chain-of-entropy shadow stage is clamped to the time left before the outer LLM timeout and skipped under 1 s, so a late primary answer is no longer lost (#7187, #7205).
-- `zeph-common`: `TaskSupervisor` ignores completions of a replaced same-name task, registers entries before any completion can be reported, and aborts a restarted instance whose entry was replaced (#7173).
-- `zeph-core`, `zeph-mcp`: MCP tools whose sanitized id equals a reserved agent built-in name are shadowed and reported, even while the built-in is disabled (#7173).
-- `zeph-skills`, `zeph-common`: skill miner scrubs and control-strips the GitHub error body via the new `sanitize_upstream_text`, which `zeph-llm` also adopts (#7173).
-- `zeph-llm`: provider error text now turns tabs and newlines into spaces and strips zero-width and bidi bypass codepoints around secret scrubbing (#7173).
-- `zeph-llm`: **Breaking** `AnyProvider::Gonka` now holds `Box<GonkaProvider>`, clearing `clippy::large_enum_variant` with the `gonka` feature (#7173).
-- `zeph-subagent`, `zeph-tools`: **Breaking** sub-agent tool lists and hook matchers match runtime tool IDs alias-aware and case-insensitively, and hook matching is now additive (#7154, #7188).
-- `zeph-subagent`, `zeph-orchestration`: sub-agent definition `model` selects a provider from the pool, **Breaking** an unknown name (neither a provider name nor `inherit`) fails the spawn, and `TranscriptMeta` gains `provider` (#7153, #7188).
-- `book`, `zeph-subagent`: sub-agent chapter examples match the parser and a test parses them (#7155, #7188).
-- `zeph-subagent`: history trimming keeps the task prompt (#7156, #7188).
-- `zeph-subagent`, `zeph-config`: sub-agents receive project instruction files, opt out with `instructions = none`; new `[agents] instructions` key with config migration step 120 (#7157, #7188).
-- `zeph-orchestration`: agent router normalizes tool names so keyword routing honors lowercase and pattern entries (#7158, #7188).
-- `zeph-skills`, `zeph-core`: `load_skill` takes an optional `path` argument that loads skill reference, script and asset files with traversal checks and a size cap, and its output carries the new audit claim value `skill_resource` (`ClaimSource::SkillResource`) (#7159, #7188).
-- `zeph-llm`: **Breaking** `record_quality_outcome` takes a `QualityTarget`, `coe_metrics()` returns `Option<CoeMetricsSnapshot>`, and `embed_failures` is replaced by `secondary_failures`/`shadow_timeouts` (#7163, #7166, #7188).
-- `zeph-llm`: chain-of-entropy escalation attributes provider, pricing and quality to the escalated provider on both the chat and tool paths (#7164, #7188).
-- `zeph-llm`: tool-path chain-of-entropy skips the shadow call when logprobs are unavailable (#7165, #7188).
-- `zeph-common`: `sanitize_upstream_text` strips ECMA-48 escapes and redacts secrets split by newlines (#7167, #7188).
-- `zeph-core`: scheduler-less lib tests build again (#7168, #7188).
-- `zeph-config`, `zeph-acp`: clippy passes on Rust 1.100 with and without `full` (#7169, #7188).
-- `zeph-llm`: Ollama requests send prior tool calls as structured `tool_calls` (#7171, #7188).
-- `zeph-core`, `zeph-tui`: `/mcp list` reports the connected MCP tools; **Breaking** `MetricsSnapshot.mcp_tool_count` field becomes a method derived from the new `mcp_tools` field (#7172, #7188).
-- `ci`: new `lint-clippy-full` job lints `--features full` and is required by `ci-status` (#7170, #7188).
-- `docker`: `Dockerfile.dev` builds on Rust 1.100 and caches dependencies with cargo-chef; a workspace test keeps the builder tag at or above `rust-version` (#7192)
+## [0.25.0] - 2026-11-24
 
 ### Added
 
-- `zeph-subagent`, `zeph-core`: sub-agent definitions can set `permissions.ask_user: allow` to ask the user through the parent's channel in foreground `/agent` runs (#7121, #7205).
-- `zeph serve`: `ask_user` questions stream as an `ask_user` SSE event and are answered with `POST /sessions/{id}/answer`; no connected client declines at once (#7124, #7205).
-- `zeph-core`, `zeph-tui`: multi-choice `ask_user` questions render as a checkbox list in the TUI via `ElicitationFieldType::MultiSelect` (#7127, #7205).
-- `zeph-llm`: chain-of-entropy escalation now covers `chat_with_tools` with a bounded shadow stage; **Breaking**: `run_coe`/`CoeOutcome` crate-private, `CoeConfig::shadow_budget` added, `LlmProviderDyn::chat_with_tools_extras` added (#7173).
-- `zeph-llm`: with `[llm.coe]` enabled, the masked main-turn conversation now also reaches `secondary_provider` and, on high-entropy or sampled turns, the embedding provider (#7173).
+- `zeph-subagent`, `zeph-core`, `zeph serve`, `zeph-tui`: `ask_user` for sub-agents (`permissions.ask_user: allow`, foreground `/agent` runs through the parent's channel), SSE `ask_user` event with `POST /sessions/{id}/answer` in `zeph serve`, and checkbox rendering of multi-choice questions in the TUI (#7121, #7124, #7127, #7205).
+- `zeph-llm`: chain-of-entropy escalation covers `chat_with_tools` with a bounded shadow stage, and with `[llm.coe]` enabled the masked main-turn conversation also reaches `secondary_provider` and, on high-entropy or sampled turns, the embedding provider (#7173).
+- `zeph-skills`, `zeph-core`: `load_skill` takes an optional `path` argument that loads skill reference, script and asset files with traversal checks and a size cap; output carries the new audit claim `skill_resource` (#7159, #7188).
+- `zeph-subagent`, `zeph-config`: sub-agents receive project instruction files, opt out with `instructions = none`; new `[agents] instructions` key with config migration step 120 (#7157, #7188).
+- `ci`: `lint-clippy-full` job lints `--features full` and is required by `ci-status` (#7170, #7188).
 
 ### Changed
 
-- **Breaking:** `zeph-config`: `[[llm.providers]]` names that differ only by case (`quality` vs `Quality`) are rejected as duplicates at config load, with an error naming both entries (#7179, #7205).
-- **Breaking:** `zeph-acp`: ACP SDK bumped to `agent-client-protocol` `~5.5.1` and the direct `agent-client-protocol-schema` dependency removed (#6905, #7205).
-- **Breaking:** `zeph-config`, `zeph-acp`: an `[acp.ide_mcp.servers.*]` http url on a loopback, private or link-local host is now a config load error (#7114, #7205).
-- **Breaking:** `zeph-core`, `zeph-channels`: `--json` emits a `cost` event after each LLM call with `input_tokens`, `output_tokens`, `cache_read_tokens` and session-cumulative `estimated_usd`; the never-emitted `total_usd` field is gone (#7190, #7205).
-- `zeph-core`: `MetricsSnapshot.mcp_tools` is a shared `Arc<[String]>` rebuilt only when the MCP tool set changes (#7182, #7205).
-- Workspace: `cargo::unused_dependencies` lint enabled workspace-wide; `zeph-db` and `zeph-a2a` dependencies made feature-gated or dev-only (#7191, #7205).
-- **Breaking:** minimum supported Rust version is now 1.100; CI stable pin 1.100 and nightly pin `nightly-2026-09-24`, workspace `cargo::unused_dependencies` set to `allow` (#7192)
-- `zeph-common`, `zeph-llm`, `zeph-memory`, `zeph-skills`, `zeph-core`: one shared `strip_code_fence` replaces eight divergent fence-stripping copies, accepting any language tag and removing exactly one fence (#7192)
-- **Breaking:** money amounts are typed `Cents`/`CentsPer1k` (`zeph-common`); `CostTracker::new` takes a `DailyBudget`, `Channel::send_usage` takes `Cents`; config, database and wire formats unchanged (#7192)
-- Adopt Rust 1.99/1.100 std APIs (`trim_prefix`, `DropGuard`, `Vec::from_fn`, `bool::toggle`, `fs::set_times`, `from_utf8_lossy_owned`) (#7192)
-- **Breaking:** `rust-agent-handoff` skill: handoff protocol v2 (spec 032) replaces nested `.yaml` files with Markdown files with flat YAML frontmatter; per-role output sections move from the skill's `references/` into the `.zeph/agents/` definitions (#7160).
-- **Breaking**: `McpManager::list_servers` and `McpCaller::list_servers` return `Vec<McpServerId>`; `active_skill_names` is `Vec<SkillName>`; tool-call attribution is built once per dispatch batch (#7173).
-- Workspace: fix the isolated `profiling-alloc` build and synchronize the debug dump redaction test with completion of the asynchronous file write.
-- Workspace: fix lint compatibility for isolated features and Rust 1.98, and compile the context budget doctest with its new input type.
-- `zeph-bench`: replace the tau2 tool schema module-wide dead-code suppression with item-level expectations that explain the schema-only fields.
-- Workspace: complete the #7150 reasoned suppression rollout, enforce `#[expect(..., reason = "...")]` via workspace Clippy gates, and replace unsafe narrowing casts in counters and durations.
-- `zeph-a2a`, `zeph-gateway`, `zeph-acp`, `zeph-mcp`, `zeph-channels`, `zeph-tools`: begin the #7150 rollout by warning on `#[allow]`, replacing active suppressions with reasoned `#[expect]` attributes, deleting stale expectations, and saturating block-count and duration conversions.
-- `zeph-core`, `zeph-bench`: remove the five module-level `dead_code` suppressions; delete an obsolete speculative JSON parser context enum that had no users.
-- `zeph-core`, `zeph-context`: group tool-failure and context-fetch scheduling inputs in context types, removing two `too_many_arguments` suppressions.
-- `zeph-context`, `zeph-memory`: saturate token-count and probe-count conversions instead of narrowing casts.
-- `zeph-agent-feedback`, `zeph-vault`, `zeph-durable`, `zeph-worktree`: extend the #7150 rollout with reasoned expectations and crate-level allow warnings; remove two stale pattern-builder expectations.
-- `zeph-agent-persistence`, `zeph-db`, `zeph-plugins`, `zeph-commands`: extend the reasoned expectation rollout; clamp oversized SQL limits and retain the range checks for thinking-token parsing.
-- `zeph-index`, `zeph-session`, `zeph-scheduler`, `zeph-sanitizer`: extend the reasoned expectation rollout; reject session counters that exceed signed database storage and remove casts for those values.
-- `zeph-mcp`, `zeph-acp`: remove stale expectations discovered by all-targets Clippy and reason the active large-future expectation.
-- `zeph-llm`: scope the large-enum expectation to Gonka builds where provider variants make it necessary.
-- `zeph-acp`, `zeph-sanitizer`: scope dead-code, large-futures, and excessive-bools expectations to the feature profiles that activate those conditions.
-- `zeph-index`, `zeph-orchestration`: move PostgreSQL testcontainers modules to dev-dependencies so test-utils builds do not report unused optional dependencies.
-- Dependencies: bump `url` to 2.5.9 for RUSTSEC-2026-0592 (#7160).
-- `.github/deny.toml`: document temporary exceptions for newly issued unmaintained advisories on `chrono` and `humantime`.
+- **Breaking:** minimum supported Rust version is 1.100; CI stable pin 1.100 and nightly pin `nightly-2026-09-24`; Rust 1.99/1.100 std APIs adopted (#7192).
+- **Breaking:** `zeph-acp`: ACP SDK bumped to `agent-client-protocol` `~5.5.1`, the direct `agent-client-protocol-schema` dependency removed (#6905, #7205).
+- **Breaking:** `zeph-config`, `zeph-acp`: an `[acp.ide_mcp.servers.*]` http url on a loopback, private or link-local host is a config load error (#7114, #7205).
+- **Breaking:** `zeph-config`: `[[llm.providers]]` names differing only by case are rejected as duplicates at config load (#7179, #7205).
+- **Breaking:** `zeph-core`, `zeph-channels`: `--json` emits a `cost` event after each LLM call (`input_tokens`, `output_tokens`, `cache_read_tokens`, session-cumulative `estimated_usd`); the never-emitted `total_usd` is gone (#7190, #7205).
+- **Breaking:** `zeph-common`, `zeph-core`: money amounts are typed `Cents`/`CentsPer1k`; `CostTracker::new` takes a `DailyBudget`, `Channel::send_usage` takes `Cents`; config, database and wire formats unchanged (#7192).
+- **Breaking:** `zeph-subagent`, `zeph-tools`: sub-agent tool lists and hook matchers match runtime tool IDs alias-aware and case-insensitively, and hook matching is additive (#7154, #7188).
+- **Breaking:** `zeph-subagent`, `zeph-orchestration`: sub-agent `model` selects a provider from the pool, an unknown name (neither a provider nor `inherit`) fails the spawn, and `TranscriptMeta` gains `provider` (#7153, #7188).
+- **Breaking:** `zeph-llm`: `AnyProvider::Gonka` holds `Box<GonkaProvider>`; `run_coe`/`CoeOutcome` are crate-private, `CoeConfig::shadow_budget` and `LlmProviderDyn::chat_with_tools_extras` added; `record_quality_outcome` takes a `QualityTarget`, `coe_metrics()` returns `Option<CoeMetricsSnapshot>`, `embed_failures` is replaced by `secondary_failures`/`shadow_timeouts` (#7163, #7166, #7173, #7188).
+- **Breaking:** `zeph-mcp`, `zeph-skills`, `zeph-core`, `zeph-tui`: `McpManager::list_servers` and `McpCaller::list_servers` return `Vec<McpServerId>`, `active_skill_names` is `Vec<SkillName>`, and `MetricsSnapshot.mcp_tool_count` becomes a method derived from the shared `Arc<[String]>` `mcp_tools` field (#7172, #7173, #7182, #7188, #7205).
+- **Breaking:** `rust-agent-handoff` skill: handoff protocol v2 (spec 032) replaces nested `.yaml` files with Markdown files with flat YAML frontmatter; per-role output sections move into the `.zeph/agents/` definitions (#7160).
+- `zeph-common`, `zeph-llm`, `zeph-memory`, `zeph-skills`, `zeph-core`: one shared `strip_code_fence` replaces eight divergent copies (#7192).
+- `docker`: `Dockerfile.dev` builds on Rust 1.100 with cargo-chef dependency caching; a workspace test keeps the builder tag at or above `rust-version` (#7192).
+- Workspace: reasoned-suppression rollout (#7150) enforces `#[expect(..., reason = "...")]` via Clippy gates across all crates, removes stale and module-level `dead_code` suppressions, replaces unsafe narrowing casts with saturating or checked conversions, and groups arguments to drop `too_many_arguments` expectations (#7151, #7152).
+- Workspace: `cargo::unused_dependencies` lint enabled; `zeph-db`, `zeph-a2a`, `zeph-index`, `zeph-orchestration` dependencies made feature-gated or dev-only (#7191, #7205).
+- Dependencies: `url` 2.5.9 for RUSTSEC-2026-0592; `.github/deny.toml` documents temporary exceptions for the `chrono` and `humantime` unmaintained advisories (#7160).
+
+### Fixed
+
+- `zeph-subagent`: resuming a resumed sub-agent keeps the original task and earlier turns; history trimming keeps the task prompt; scoped `load_skill` without `skill_name` returns invalid-params instead of a policy block (#7156, #7180, #7181, #7188, #7205).
+- `zeph-subagent`, `zeph-orchestration`, `zeph-tools`, `zeph-config`, `zeph-core`: agent router normalizes tool names for keyword routing, tool-list and hook matching no longer allocate per entry, permissions reuse the shared `base_tool_id`, and admission gate and provider resolution share one case-insensitive key so differently spelled names share one `max_concurrent` limit (#7158, #7179, #7183, #7186, #7188, #7205).
+- `zeph-a2a`: discovery tries `/.well-known/agent-card.json` first and falls back to `agent.json` on a 4xx or non-card 2xx, remembering the working path per peer (#6932, #7205).
+- `zeph-acp`, `zeph-core`: ACP `usage_update` carries the session cost (display-only, `max_daily_cents` not enforced for ACP) and sessions with `[cost] enabled` write usage rows to the database (#7189, #7205).
+- `zeph-tui`, `zeph-core`: tools view lists all loaded MCP tools; `/mcp list` reports the connected tools (#7172, #7178, #7188, #7205).
+- `zeph-common`, `zeph-llm`, `zeph-skills`: `sanitize_upstream_text` strips ECMA-48 escapes, tabs, newlines, zero-width and bidi codepoints, redacts secrets split across lines (including wrapped Bearer/AWS values; glue can over-redact), and is adopted by `zeph-llm` errors and the skill miner's GitHub error body (#7167, #7173, #7184, #7185, #7188, #7205).
+- `zeph-llm`: chain-of-entropy shadow stage is clamped to the time left before the outer timeout, escalation attributes provider, pricing and quality to the escalated provider on chat and tool paths, and the tool path skips the shadow call without logprobs (#7164, #7165, #7187, #7188, #7205).
+- `zeph-llm`: Ollama requests send prior tool calls as structured `tool_calls` (#7171, #7188).
+- `zeph-common`: `TaskSupervisor` ignores completions of a replaced same-name task, registers entries before completions can be reported, and aborts a restarted instance whose entry was replaced (#7173).
+- `zeph-core`, `zeph-mcp`: MCP tools whose sanitized id equals a reserved agent built-in name are shadowed and reported, even while the built-in is disabled (#7173).
+- Workspace: clippy passes on Rust 1.98 and 1.100 with and without `full`, scheduler-less lib tests and the isolated `profiling-alloc` build compile, the debug dump redaction test waits for the async write, and `book` sub-agent examples match the parser (#7155, #7168, #7169, #7188).
 
 ## [0.24.0] - 2026-11-16
 
@@ -18345,7 +18313,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 
 - Replace vulnerable `serde_yml`/`libyml` with manual frontmatter parser (GHSA high + medium)
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/bug-ops/zeph/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/bug-ops/zeph/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/bug-ops/zeph/compare/v0.22.5...v0.23.0
 [0.22.5]: https://github.com/bug-ops/zeph/compare/v0.22.4...v0.22.5

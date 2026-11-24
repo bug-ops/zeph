@@ -106,7 +106,7 @@ default = ["scheduler", "sqlite"]
 | `profiling` | `dep:tracing-chrome`, `dep:sysinfo` (+ per-crate `profiling` propagation) | Diagnostic tracing spans and system metrics; zero overhead when not actively tracing |
 | `sandbox` | `zeph-tools/sandbox` (`dep:landlock`, `dep:seccompiler` on Linux; macOS Seatbelt compiles unconditionally) | Runtime-disabled by default (`tools.sandbox.enabled = false`) |
 | `prometheus` | `gateway`, `dep:prometheus-client`, `zeph-gateway/prometheus` | OpenMetrics `/metrics` endpoint (spec #036); requires `gateway` |
-| `gonka` | `zeph-llm/gonka`, `zeph-core/gonka` | gonka.ai inference provider (specs #051, #052) |
+| `gonka` | `zeph-llm/gonka`, `zeph-core/gonka`, `zeph-acp?/gonka` | gonka.ai inference provider (specs #051, #052) |
 | `index` | `zeph-core/index` → `zeph-agent-context/index` (`dep:zeph-index`, +43 packages) | AST-based code indexing (spec #017); in the `desktop` bundle |
 | `testing` | `zeph-llm/testing` (marker) | Test-double harness; exempt from §5.1 per the test-double clause. Not in `full` — see §4 |
 | `bench` | `dep:zeph-bench` | Benchmark harness CLI (spec #034) |
@@ -171,7 +171,7 @@ Bundles are the **only** mechanism for enabling groups of features. Do not instr
 Bundle invariants:
 - `full` must activate every flag that is safe to combine (excluding `metal`, `cuda`, `postgres` — platform/exclusive), and excluding dev-only harness features (`bench`, `testing`) — `release.yml` ships `full` to users, so benchmark harnesses and test doubles must not be in it. Each has its own CI leg (`bundle-check (bench)`; `testing` in the curated pre-merge string).
 - `default` must remain minimal: only features that gate real optional deps AND have `Tested` coverage status. See §3.1 for the current list.
-- The `full` configuration must be exercised by CI on every PR; this is satisfied by four independent legs — coverage (`ci.yml:507`), `bundle-check (full)`, `release-build-full`, and `ci-non-linux.yml:42` — while the hot `clippy`/`nextest` path runs a curated feature string. Moving the hot path to `full` would add candle's ~541 packages to every PR for no new coverage.
+- The `full` configuration must be exercised by CI on every PR; this is satisfied by independent legs — the `lint-clippy-full` job (`cargo clippy --profile ci --workspace --all-targets --features full -- -D warnings`, required by `ci-status`, #7170), coverage, `bundle-check (full)`, `release-build-full`, and `ci-non-linux.yml` — while the hot `clippy`/`nextest` path runs a curated feature string. Moving the hot path to `full` would add candle's ~541 packages to every PR for no new coverage.
 - `--all-features` is **not a supported build mode**: `sqlite` and `postgres` are mutually exclusive and `--all-features` triggers a `compile_error!`.
 
 ---
@@ -188,11 +188,13 @@ Bundle invariants:
 
 5. **Mutual exclusion must be enforced at compile time.** The `sqlite` and `postgres` flags activate a `compile_error!` in `zeph-db` when both are set. This guard must never be removed.
 
-6. **The `full` configuration must be exercised by CI on every PR.** This is satisfied by four independent legs — coverage (`ci.yml:507`), `bundle-check (full)`, `release-build-full`, and `ci-non-linux.yml:42` — rather than requiring a literal `--features full` on the hot `clippy`/`nextest` path. Moving that path to `full` would add candle's ~541 packages to every PR for no new coverage.
+6. **The `full` configuration must be exercised by CI on every PR.** This is satisfied by independent legs — `lint-clippy-full` (clippy on `--features full`, #7170), coverage, `bundle-check (full)`, `release-build-full`, and `ci-non-linux.yml` — rather than requiring a literal `--features full` on the hot `clippy`/`nextest` path. Moving that path to `full` would add candle's ~541 packages to every PR for no new coverage.
 
 7. **Flag names use kebab-case.** No underscores, no camelCase.
 
 8. **Optional crate deps use `dep:` prefix.** Any crate that is optional must be declared as `dep:zeph-<name>` in the feature that enables it — never as an unconditional dep with an empty features list.
+
+9. **No unused dependencies.** The workspace no longer allows the `unused_dependencies` lint (on by default since Rust 1.100). A dependency used only by feature-gated code is declared `optional` and enabled through `dep:`, or is a dev-dependency (`zeph-db` `zeph-common` under `sqlite`, `zeph-a2a` `chrono` under `server`, `testcontainers-modules` dev-only, #7191).
 
 ---
 
@@ -226,7 +228,7 @@ Before opening a PR that adds a new feature flag:
 
 ### Always (without asking)
 - Default features must satisfy §2 Decision Rule AND `Tested` coverage — verify both before adding
-- Run the curated pre-merge feature string for `fmt`/`clippy`/`nextest`; ensure `full` stays covered by its four independent CI legs (§4, §5.6)
+- Run the curated pre-merge feature string for `fmt`/`clippy`/`nextest`; ensure `full` stays covered by its independent CI legs, including `lint-clippy-full` (§4, §5.6)
 - Use `dep:` prefix for all optional crate dependencies
 - Remove `#[cfg(feature = "...")]` gates for deleted flags
 

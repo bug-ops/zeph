@@ -12,7 +12,7 @@ Agent persistence service for Zeph: loads conversation history from and writes m
 
 ```toml
 [dependencies]
-zeph-agent-persistence = { version = "0.24", workspace = true }
+zeph-agent-persistence = { version = "0.25", workspace = true }
 ```
 
 ## Key types

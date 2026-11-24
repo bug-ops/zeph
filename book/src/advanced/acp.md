@@ -1022,6 +1022,7 @@ Use `resume_session` to continue a session after a Zeph process restart, or to o
 |-------|-------------|
 | `used` | Total tokens currently in context (input + output) |
 | `size` | Provider context window size in tokens |
+| `cost` | Session-cumulative estimated cost as `{ amount, currency: "USD" }`; omitted while the cost is zero |
 
 ```jsonc
 // Zeph → IDE (SessionUpdate notification)
@@ -1031,6 +1032,8 @@ Use `resume_session` to continue a session after a Zeph process restart, or to o
   "size": 144000
 }
 ```
+
+The cost is display-only: `[cost] max_daily_cents` is not enforced for ACP sessions. With `[cost] enabled`, ACP sessions also write usage rows to the database. A final cumulative `usage_update` is sent when the session closes.
 
 IDEs that handle `UsageUpdate` can render a context percentage badge (e.g. `4% · 5.6k / 144k`). Fields not supported by the active provider are omitted.
 
@@ -1516,4 +1519,4 @@ New read-only commands in TUI command palette:
 
 ## Protocol Version
 
-Zeph targets `agent-client-protocol` version 2.0.0 and supports all ACP 2.0 protocol features.
+Zeph builds on the `agent-client-protocol` SDK `~5.5.1` (patch updates only). The SDK's schema types are re-exported through it, so there is no separate `agent-client-protocol-schema` dependency.
