@@ -59,4 +59,7 @@ regexes = [
   '''sk-proj-abc123def456''',
   # #7139: dummy HS256 JWT in the Ollama auxiliary error-mapping acceptance test.
   '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.abcdefghijklmnop''',
+  # #6905 batch (#7184/#7185): dummy JWT and AWS secret fixtures in the split-secret glue tests.
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dBjftJeZ4CVP''',
+  '''wJalrXUtnFEMIbK7MDENG''',
 ]
