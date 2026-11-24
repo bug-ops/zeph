@@ -21,6 +21,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use tokio::time::Instant;
+use tracing::Instrument;
 use zeph_common::math::cosine_similarity;
 
 use crate::error::LlmError;
@@ -29,6 +31,18 @@ use crate::provider_dyn::LlmProviderDyn;
 
 /// Upper bound of the shadow stage, regardless of the configured LLM timeout.
 const MAX_SHADOW_BUDGET: Duration = Duration::from_secs(30);
+
+/// Time reserved after the shadow stage so the caller can still return before the outer deadline.
+const SHADOW_DEADLINE_MARGIN: Duration = Duration::from_secs(1);
+
+/// Smallest shadow window worth starting; below it the primary is kept without a secondary call.
+const MIN_SHADOW_WINDOW: Duration = Duration::from_secs(1);
+
+/// Request timeout assumed when the caller does not derive one from `timeouts.llm_seconds`.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Upper clamp of [`CoeConfig::request_timeout`] so deadline arithmetic cannot overflow.
+const MAX_REQUEST_TIMEOUT: Duration = Duration::from_hours(24);
 
 /// Shadow-stage budget for a given LLM timeout: `min(30 s, llm_timeout / 4)`.
 ///
@@ -63,6 +77,24 @@ pub struct CoeConfig {
     /// Runtime-derived from `timeouts.llm_seconds` (see [`shadow_budget_for`]), not a TOML key.
     /// A zero budget disables the shadow stage.
     pub shadow_budget: Duration,
+    /// Outer deadline of the whole router call (`timeouts.llm_seconds`).
+    ///
+    /// The shadow stage is clamped to the time left before it, minus a 1 s margin, and skipped
+    /// when under 1 s remains, so an already received primary answer is never lost to the outer
+    /// timeout. Runtime-derived, not a TOML key.
+    pub request_timeout: Duration,
+}
+
+impl CoeConfig {
+    /// Outer deadline of a call that entered the router at `entered`.
+    ///
+    /// The timeout is clamped to 24 h; on arithmetic overflow the deadline is `entered`, which
+    /// skips the shadow stage (fail-safe: the primary is kept).
+    pub(crate) fn deadline_from(&self, entered: Instant) -> Instant {
+        entered
+            .checked_add(self.request_timeout.min(MAX_REQUEST_TIMEOUT))
+            .unwrap_or(entered)
+    }
 }
 
 impl Default for CoeConfig {
@@ -72,6 +104,7 @@ impl Default for CoeConfig {
             inter_threshold: 0.20,
             shadow_sample_rate: 0.1,
             shadow_budget: MAX_SHADOW_BUDGET,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
 }
@@ -268,7 +301,8 @@ impl<R> CoeOutcome<R> {
 ///
 /// Takes the already-obtained primary response to avoid a redundant LLM call, and a lazy
 /// `secondary` future that is polled only when a shadow call is warranted. The shadow stage
-/// runs under [`CoeConfig::shadow_budget`]; a secondary error or a timeout keeps the primary
+/// runs under [`CoeConfig::shadow_budget`], clamped to the time left before `deadline` minus a
+/// 1 s margin (skipped when under 1 s remains); a secondary error or a timeout keeps the primary
 /// and counts toward `secondary_failures` or `shadow_timeouts` respectively (COE-02). A tool-call primary, or a zero budget, returns
 /// the primary immediately.
 #[tracing::instrument(name = "llm.router.coe.run_coe", skip_all)]
@@ -278,6 +312,7 @@ pub(crate) async fn run_coe<R, F>(
     mut primary: R,
     primary_extras: ChatExtras,
     path: CoePath,
+    deadline: Instant,
     secondary: F,
 ) -> CoeOutcome<R>
 where
@@ -294,15 +329,35 @@ where
         return CoeOutcome::kept(primary, primary_name, None);
     }
 
-    let shadow = tokio::time::timeout(coe.config.shadow_budget, async {
-        let secondary = secondary.await?;
-        let usage = coe.secondary.last_response_usage();
-        let divergence = match (primary.coe_text(), secondary.coe_text()) {
-            (Some(p), Some(s)) => inter_divergence(p, s, &*coe.embed).await,
-            _ => None,
-        };
-        Ok::<_, LlmError>((secondary, usage, divergence))
-    })
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .saturating_sub(SHADOW_DEADLINE_MARGIN);
+    let shadow_budget = coe.config.shadow_budget.min(remaining);
+    if shadow_budget < MIN_SHADOW_WINDOW {
+        tracing::debug!(
+            remaining_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX),
+            "coe: outer deadline too close, skipping shadow stage"
+        );
+        coe.metrics.kept_primary.fetch_add(1, Ordering::Relaxed);
+        return CoeOutcome::kept(primary, primary_name, None);
+    }
+
+    let shadow = tokio::time::timeout(
+        shadow_budget,
+        async {
+            let secondary = secondary.await?;
+            let usage = coe.secondary.last_response_usage();
+            let divergence = match (primary.coe_text(), secondary.coe_text()) {
+                (Some(p), Some(s)) => inter_divergence(p, s, &*coe.embed).await,
+                _ => None,
+            };
+            Ok::<_, LlmError>((secondary, usage, divergence))
+        }
+        .instrument(tracing::info_span!(
+            "llm.router.coe.shadow",
+            budget_ms = u64::try_from(shadow_budget.as_millis()).unwrap_or(u64::MAX)
+        )),
+    )
     .await;
     let (mut secondary, shadow_usage, divergence) = match shadow {
         Ok(Ok(done)) => done,
@@ -315,7 +370,7 @@ where
         }
         Err(_) => {
             tracing::warn!(
-                budget_ms = u64::try_from(coe.config.shadow_budget.as_millis()).unwrap_or(u64::MAX),
+                budget_ms = u64::try_from(shadow_budget.as_millis()).unwrap_or(u64::MAX),
                 "coe: shadow stage timed out, keeping primary"
             );
             coe.metrics.shadow_timeouts.fetch_add(1, Ordering::Relaxed);
@@ -406,6 +461,7 @@ mod tests {
                 inter_threshold: 0.20,
                 shadow_sample_rate: 0.0, // disable random shadow unless explicitly set
                 shadow_budget: Duration::from_secs(30),
+                request_timeout: Duration::from_secs(600),
             },
             secondary_kind: secondary.provider_kind_str(),
             secondary_model: crate::provider::LlmProvider::model_identifier(&secondary).to_owned(),
@@ -413,6 +469,18 @@ mod tests {
             embed: Arc::new(embed) as Arc<dyn LlmProviderDyn>,
             metrics: Arc::new(CoeMetrics::default()),
         }
+    }
+
+    #[test]
+    fn deadline_from_never_panics_on_huge_request_timeout() {
+        let cfg = CoeConfig {
+            request_timeout: Duration::MAX,
+            ..CoeConfig::default()
+        };
+        let entered = Instant::now();
+        let deadline = cfg.deadline_from(entered);
+        assert!(deadline >= entered);
+        assert!(deadline <= entered + MAX_REQUEST_TIMEOUT);
     }
 
     #[tokio::test]
@@ -437,6 +505,7 @@ mod tests {
             "primary response".into(),
             ChatExtras { entropy: Some(0.1) },
             CoePath::Chat,
+            Instant::now() + coe.config.request_timeout,
             coe.secondary.chat(&[]),
         )
         .await;
@@ -469,6 +538,7 @@ mod tests {
             "primary response".into(),
             ChatExtras { entropy: Some(1.0) },
             CoePath::Chat,
+            Instant::now() + coe.config.request_timeout,
             coe.secondary.chat(&[]),
         )
         .await;
@@ -499,6 +569,7 @@ mod tests {
             "primary response text long enough to matter".into(),
             ChatExtras { entropy: Some(1.0) }, // above intra_threshold=0.8
             CoePath::Chat,
+            Instant::now() + coe.config.request_timeout,
             coe.secondary.chat(&[]),
         )
         .await;

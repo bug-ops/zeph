@@ -29,8 +29,7 @@ impl SubAgentManager {
     #[tracing::instrument(name = "subagent.manager.collect", skip_all, fields(task_id = task_id))]
     pub async fn collect(&mut self, task_id: &str) -> Result<String, SubAgentError> {
         let mut handle = self
-            .agents
-            .remove(task_id)
+            .take_agent(task_id)
             .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
 
         if !self.stop_hooks.is_empty() {

@@ -254,7 +254,10 @@ Bandit returns earlier, and a Cascade router has no CoE.
   min(30 s, timeouts.llm_seconds / 4)`, a runtime value derived in bootstrap (no TOML key). On
   expiry the primary is kept and `shadow_timeouts` is incremented; on a secondary error it is kept and `secondary_failures` is incremented (#7166). A divergence-embedding failure leaves the divergence absent and is not counted. `RouterProvider::coe_metrics()` returns `Option<CoeMetricsSnapshot>` (named fields `kept_primary`, `intra_escalations`, `inter_escalations`, `secondary_failures`, `shadow_timeouts`). A primary that
   finishes within `llm_seconds - shadow_budget` is never lost to CoE; a zero budget keeps the
-  primary without polling the secondary.
+  primary without polling the secondary. The outer `llm_seconds` deadline is also respected (#7187):
+  `CoeConfig::request_timeout` (runtime-derived, default 120 s) bounds the whole call, the shadow
+  timeout is `min(shadow_budget, remaining - 1 s)`, and the shadow stage is skipped (primary kept,
+  `kept_primary` incremented) when under 1 s remains.
 - Escalation attribution (#7164, both `chat()` and the tool path, one `apply_coe_outcome`): after an
   escalation `last_active_provider` is the secondary, the served usage is the secondary's with the
   discarded primary's tokens as `auxiliary`, the primary gets a failed and the secondary a

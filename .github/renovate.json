@@ -130,9 +130,9 @@
       "allowedVersions": "<0.13"
     },
     {
-      "description": "ACP SDK and its exact-pinned schema must move together (SDK requires an exact schema version) - one manual-review group; drop once the direct schema dependency is removed (spec 086).",
+      "description": "ACP SDK: unstable_* APIs may break in 5.x minors - manual review.",
       "matchManagers": ["cargo"],
-      "matchPackageNames": ["agent-client-protocol", "agent-client-protocol-schema"],
+      "matchPackageNames": ["agent-client-protocol"],
       "groupName": "agent-client-protocol",
       "automerge": false
     },

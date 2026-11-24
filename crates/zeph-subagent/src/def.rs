@@ -291,6 +291,29 @@ impl SubAgentDef {
     }
 }
 
+/// Whether a sub-agent may use the model-callable `ask_user` tool (spec 090).
+///
+/// The grant is explicit and per definition: `permissions.ask_user: allow` in the frontmatter.
+/// Even when granted, the tool is offered only to foreground spawns whose parent can show the
+/// question; background and DAG-orchestrated spawns never get it.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::def::AskUserGrant;
+///
+/// assert_eq!(AskUserGrant::default(), AskUserGrant::Deny);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AskUserGrant {
+    /// The sub-agent never sees `ask_user` (default).
+    #[default]
+    Deny,
+    /// The sub-agent may ask the user through its parent's channel.
+    Allow,
+}
+
 /// Runtime permission settings for a sub-agent.
 ///
 /// All fields have defaults that apply when the `permissions` section is absent from
@@ -324,6 +347,8 @@ pub struct SubAgentPermissions {
     /// Per-definition override of `[agents] instructions`: whether the parent's instruction
     /// blocks are appended to this agent's system prompt. `None` follows the global setting.
     pub instructions: Option<SubagentInstructions>,
+    /// Explicit grant of the model-callable `ask_user` tool; see [`AskUserGrant`].
+    pub ask_user: AskUserGrant,
 }
 
 impl Default for SubAgentPermissions {
@@ -338,6 +363,7 @@ impl Default for SubAgentPermissions {
             max_history_messages: 200,
             worktree: false,
             instructions: None,
+            ask_user: AskUserGrant::Deny,
         }
     }
 }
@@ -401,6 +427,8 @@ struct RawPermissions {
     worktree: bool,
     #[serde(default)]
     instructions: Option<SubagentInstructions>,
+    #[serde(default)]
+    ask_user: AskUserGrant,
 }
 
 impl Default for RawPermissions {
@@ -415,6 +443,7 @@ impl Default for RawPermissions {
             max_history_messages: default_max_history_messages(),
             worktree: false,
             instructions: None,
+            ask_user: AskUserGrant::Deny,
         }
     }
 }
@@ -654,6 +683,7 @@ impl SubAgentDef {
                 max_history_messages: p.max_history_messages,
                 worktree: p.worktree,
                 instructions: p.instructions,
+                ask_user: p.ask_user,
             },
             skills: SkillFilter {
                 include: raw.skills.include,
@@ -957,6 +987,16 @@ struct WritablePermissions<'a> {
     worktree: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions: Option<SubagentInstructions>,
+    #[serde(skip_serializing_if = "is_ask_user_denied")]
+    ask_user: AskUserGrant,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde `skip_serializing_if` passes the field by reference"
+)]
+fn is_ask_user_denied(grant: &AskUserGrant) -> bool {
+    *grant == AskUserGrant::Deny
 }
 
 impl<'a> WritablePermissions<'a> {
@@ -970,6 +1010,7 @@ impl<'a> WritablePermissions<'a> {
             permission_mode: p.permission_mode,
             worktree: p.worktree,
             instructions: p.instructions,
+            ask_user: p.ask_user,
         }
     }
 
@@ -981,6 +1022,7 @@ impl<'a> WritablePermissions<'a> {
             && self.ttl_secs == default_ttl()
             && self.permission_mode == PermissionMode::Default
             && self.instructions.is_none()
+            && self.ask_user == AskUserGrant::Deny
     }
 }
 

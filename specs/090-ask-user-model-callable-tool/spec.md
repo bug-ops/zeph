@@ -33,7 +33,7 @@ When the model lacks a fact only the user has (a choice between valid options, a
 - MCP server-initiated elicitation (model-initiated here) and DAG human-in-the-loop gates (#6234).
 - Forms beyond one question with free text or single/multi choice.
 - Persisting answers as memory or auto-learned preferences.
-- Subagents: the tool is structurally absent from `zeph-subagent::run_agent_loop`; a grant is a follow-up.
+- Subagents: offered only through an explicit grant (`permissions.ask_user: allow`), foreground `/agent spawn` and `/agent resume` only; background and DAG sub-agents never get the tool.
 
 ## 3. Functional Requirements
 
@@ -44,7 +44,7 @@ When the model lacks a fact only the user has (a choice between valid options, a
 | FR-003 | The capability is two defaulted methods on the `Channel` trait: `ask_user`, whose default declines (`Declined(NonInteractive)`), and `ask_user_support() -> AskUserSupport { Interactive, Unavailable }`, whose default is `Unavailable`. |
 | FR-004 | A non-interactive channel (piped stdin, no responder, Telegram guest context) returns `Declined` at once without blocking. |
 | FR-005 | The user cancelling (`cancel`, `/cancel`, a slash command, Esc, Ctrl-C/Ctrl-D, dismissed dialog, turn cancel) returns `Cancelled`. |
-| FR-006 | Implemented on CLI (TTY), TUI, Telegram, Discord, Slack and ACP. |
+| FR-006 | Implemented on CLI (TTY), TUI, Telegram, Discord, Slack, ACP and `zeph serve` (`ask_user` SSE event, `POST /sessions/{id}/answer`). |
 | FR-007 | Off by default: `[tools.ask_user] enabled = false` removes the tool from the tool list. `--ask-user` enables it for a session. |
 | FR-008 | `timeout_secs` (default 300, at most 3600) bounds the wait; expiry returns `TimedOut`. The agent owns the deadline; channels apply none. |
 | FR-009 | `max_questions_per_turn` (default 3) caps questions; question and option text are sanitized and bounded. |
@@ -73,17 +73,23 @@ When the model lacks a fact only the user has (a choice between valid options, a
 
 **Channels**: bot adapters share one flow over `ConfirmLoop::run_reply` (no own deadline): header first, numbered options, an invalid reply re-prompts. Replies must come from the chat or channel of the question and never from a bot (Telegram `is_from_bot`). CLI TTY holds the stdin coordinator and reads with the yieldable line editor; the coordinator is released only when the blocking read has returned. TUI reuses the elicitation dialog (a closed single choice is an enum field of `"{n}. {label}"` values; everything else a text field); Esc returns `Cancelled` only; the dialog closes on the next tick when its requester dropped the answer channel. ACP shows the question through the session's elicitation bridge (`AcpAskUserResponder`, attached with `LoopbackChannel::with_ask_user_responder`); without the IDE capability it declines. The bridge applies no timeout (`[acp.timeouts].elicitation_secs` does not bound `ask_user`); when the agent deadline drops the question the bridge is freed for the next request, but the form already shown stays in the IDE until the user dismisses it (the protocol has no withdraw call).
 
+**Sub-agents**: a granted foreground sub-agent's call is forwarded to the parent over a per-agent channel and answered by the parent's `ask_user` choke point (cap shared within the current command's ask scope, deadline raced with the sub-agent cancel token, `redact_secrets`, channel sanitizing). Each slash command is its own ask scope (fresh counter, the input's origin; an Injected origin never offers the tool). The FR-012 deny rule is checked per call; a wholesale deny rule means the offer is not made. The sub-agent tool policy (allow list, `tools.except`) still applies. The sub-agent's `timeout_secs` keeps running while a question is open. Known limit: a foreground `/agent` right after a cancelled turn starts with an already-cancelled token, so its questions return `Cancelled`.
+
+**Serve**: `zeph serve` is an authenticated operator channel, so answers get no guardrail pre-screen; free-text answers are sanitized as a `ChannelMessage`, and the choke point applies `redact_secrets`. With no SSE subscriber at ask time the question is declined at once.
+
+**TUI multi-choice**: a closed multi-choice is a checklist (Space marks, Enter submits); submitting with nothing marked re-asks with the retry hint, because the dialog closes on every submit.
+
 ## 6. Security
 
 - The fixed header ("Question from the assistant - never share passwords, API keys or other secrets") is a constant rendered first by every channel; the model cannot alter it.
 - Question and option text: control, bidirectional and zero-width characters are stripped, blank runs collapse, at most 6 lines, options on one line; each adapter neutralizes its markup (Discord/Slack mentions, Slack `<url|text>`, Discord/Telegram markdown links).
 - Every answer is scrubbed with `redact_secrets` at the choke point, before it enters history, memory, the debug dump, the audit log or the model, then takes the incoming-channel-message path (`sanitize_channel_text_if_untrusted`), not the tool-output sanitizer. The raw answer is never logged. `redact_secrets` is pattern-based: the header is the primary control, the scrubber is defense in depth.
-- `ClaimSource::UserAnswer` maps to native provenance and the `LocalUntrusted` tier.
+- `ClaimSource::UserAnswer` maps to native provenance and the `LocalUntrusted` tier. Its only producers are the main handler and the crate-private sub-agent relay; the sub-agent loop sanitizes every output.
 - A label made only of digits is rejected, so a numeric reply is always a position.
 
 ## 7. Key Invariants
 
-1. Disabled by default; the tool is absent from the tool list while disabled, on a channel that cannot answer, and in an injected-origin turn.
+1. Disabled by default; the tool is absent from the tool list while disabled, on a channel that cannot answer, in an injected-origin turn, and in a sub-agent without the explicit grant.
 2. Every outcome, including cancel and timeout, leaves a paired tool result and the turn continues.
 3. A channel applies no deadline; dropping its future releases stdin, the dialog and receivers.
 4. Answers are scrubbed before any persistence or model exposure.
@@ -102,7 +108,7 @@ When the model lacks a fact only the user has (a choice between valid options, a
 - [ ] SC-001 round trip on CLI, TUI, bot channels and ACP (live checks per `playbooks/ask-user.md`); a real model-driven round trip is verified on 9df5f71b (live run G1), the remaining channels are not yet run live.
 - [x] SC-002 piped CLI returns `Declined` in under 100 ms.
 - [x] SC-003 tool-call/result pairing stays valid for all four outcomes.
-- [x] SC-004 disabled config removes the tool; subagents never see it.
+- [x] SC-004 disabled config removes the tool; without a grant, or for background/DAG sub-agents, the tool is absent.
 
 ## 10. Config and Operations
 

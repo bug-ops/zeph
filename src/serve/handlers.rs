@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use zeph_common::SessionId;
-use zeph_core::serve::{SessionActor, SessionActorHandle, SessionCommand, SessionOutput};
+use zeph_core::serve::{
+    AnswerError, AskUserReply, QuestionId, SessionActor, SessionActorHandle, SessionCommand,
+    SessionOutput,
+};
 
 use super::AppState;
 use super::agent_factory::build_agent_factory;
@@ -376,17 +379,77 @@ pub(super) async fn events_session_handler(
         let _ = handle.tx_out.send(SessionOutput::Token(banner.to_string()));
     }
 
-    let stream = BroadcastStream::new(rx).filter_map(|item| match item {
-        Ok(output) => match Event::default().json_data(&output) {
+    // Read after subscribing: a question asked in between reaches the client twice (same
+    // `question_id`), never zero times.
+    let replay = handle.ask_user.pending_event().map(SessionOutput::AskUser);
+    // A lagged subscriber may have lost the `ask_user` event while the agent waits on it, so a
+    // lag re-emits the still-pending question (clients dedupe by `question_id`).
+    let responder = std::sync::Arc::clone(&handle.ask_user);
+    let live = BroadcastStream::new(rx).filter_map(move |item| match item {
+        Ok(output) => Some(output),
+        Err(_lagged) => responder.pending_event().map(SessionOutput::AskUser),
+    });
+    let stream = tokio_stream::iter(replay)
+        .chain(live)
+        .filter_map(|output| match Event::default().json_data(&output) {
             Ok(event) => Some(Ok(event)),
             Err(e) => {
                 tracing::error!(error = %e, "serve-sessions: failed to serialize SessionOutput");
                 None
             }
-        },
-        Err(_lagged) => None,
-    });
+        });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// Request body for `POST /sessions/:id/answer`.
+#[derive(Debug, Deserialize)]
+pub(super) struct AnswerRequest {
+    question_id: QuestionId,
+    reply: AskUserReply,
+}
+
+/// Handler for `POST /sessions/:id/answer` (#7124): answers the session's pending `ask_user`
+/// question announced by an `ask_user` event on `GET /sessions/:id/events`.
+///
+/// A free-text answer is sanitized as `ContentSourceKind::ChannelMessage`, like a prompt; an
+/// answer that selects options carries no client text and is not rewritten. The agent's
+/// `ask_user` choke point still scrubs secrets and bounds the answer.
+///
+/// Returns `204 No Content` once the question is resolved, `400` for an invalid session id,
+/// `404` when the session is not live (it is never reactivated by this endpoint), `409` when `question_id` is not the pending question (stale,
+/// repeated, or none pending), `422` when the body is malformed or the reply does not fit the
+/// question (which then stays pending).
+#[tracing::instrument(name = "serve.handlers.answer_session", skip_all, level = "info", fields(session_id = %id))]
+pub(super) async fn answer_session_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AnswerRequest>,
+) -> StatusCode {
+    let Ok(session_id) = SessionId::try_new(id) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    // No reactivation: a pending question only exists in a live actor, so waking an idle or
+    // evicted session just to answer 409 would be wasted work.
+    let Some(handle) = state.registry.get(&session_id) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let sanitize = |text: &str| {
+        state
+            .sanitizer
+            .sanitize(
+                text,
+                zeph_core::ContentSource::new(zeph_core::ContentSourceKind::ChannelMessage),
+            )
+            .body
+    };
+    match handle
+        .ask_user
+        .answer(body.question_id, body.reply, sanitize)
+    {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(AnswerError::NotPending) => StatusCode::CONFLICT,
+        Err(AnswerError::Invalid) => StatusCode::UNPROCESSABLE_ENTITY,
+    }
 }
 
 /// Request body for `POST /sessions/:id/fork`.
@@ -664,6 +727,7 @@ mod tests {
     ) -> tokio::sync::mpsc::Receiver<SessionCommand> {
         let (tx, rx) = tokio::sync::mpsc::channel(4);
         let (tx_out, _sub) = tokio::sync::broadcast::channel(4);
+        let tx_out_for_responder = tx_out.clone();
         state.registry.insert(
             SessionId::new(id),
             SessionActorHandle {
@@ -673,6 +737,9 @@ mod tests {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 pending_resume_banner: banner.map(std::sync::Arc::from),
+                ask_user: std::sync::Arc::new(zeph_core::serve::ServeAskUserResponder::new(
+                    tx_out_for_responder,
+                )),
             },
         );
         rx
@@ -1196,6 +1263,127 @@ mod tests {
         ))
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    fn choice_request() -> zeph_core::channel::AskUserRequest {
+        use zeph_core::channel::{AskUserRequest, ChoiceOptions, OtherAnswer};
+        let options = ChoiceOptions::new(vec!["red".into(), "green".into()]).unwrap();
+        AskUserRequest::single_choice("Color?", options, OtherAnswer::Forbidden).unwrap()
+    }
+
+    async fn post_answer(state: &AppState, id: &str, body: serde_json::Value) -> StatusCode {
+        let body: AnswerRequest = serde_json::from_value(body).unwrap();
+        Box::pin(answer_session_handler(
+            State(state.clone()),
+            Path(id.to_owned()),
+            Json(body),
+        ))
+        .await
+    }
+
+    #[tokio::test]
+    async fn answer_session_handler_unknown_session_returns_not_found() {
+        let state = make_state().await;
+        let status = post_answer(
+            &state,
+            "nope",
+            serde_json::json!({"question_id": 1, "reply": {"type": "cancel"}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn answer_request_rejects_malformed_reply() {
+        let bad = serde_json::json!({"question_id": 1, "reply": {"type": "bogus"}});
+        assert!(serde_json::from_value::<AnswerRequest>(bad).is_err());
+    }
+
+    /// #7124: question reaches the SSE stream, a late subscriber gets it replayed, the answer
+    /// resolves it exactly once, and a non-matching reply leaves it pending.
+    #[tokio::test]
+    async fn ask_user_round_trip_over_sse_and_answer_endpoint() {
+        use zeph_core::channel::{AskUserAnswer, AskUserOutcome, AskUserResponder};
+
+        let state = make_state().await;
+        let _rx = insert_live_session(&state, "s1");
+        let first = Box::pin(events_session_handler(
+            State(state.clone()),
+            Path("s1".to_owned()),
+        ))
+        .await
+        .unwrap();
+        let handle = state.registry.get(&SessionId::new("s1")).unwrap();
+        let responder = std::sync::Arc::clone(&handle.ask_user);
+        let asked = tokio::spawn(async move { responder.ask(choice_request()).await.unwrap() });
+
+        let frame = first_sse_frame_text(first).await;
+        assert!(frame.contains("\"type\":\"ask_user\""), "{frame}");
+        assert!(frame.contains("\"question_id\":1"), "{frame}");
+        assert!(frame.contains("\"kind\":\"single_choice\""), "{frame}");
+
+        let late = Box::pin(events_session_handler(
+            State(state.clone()),
+            Path("s1".to_owned()),
+        ))
+        .await
+        .unwrap();
+        let replayed = first_sse_frame_text(late).await;
+        assert!(replayed.contains("\"question_id\":1"), "{replayed}");
+
+        let bad =
+            serde_json::json!({"question_id": 1, "reply": {"type": "selected", "indices": [9]}});
+        assert_eq!(
+            post_answer(&state, "s1", bad).await,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let wrong_id = serde_json::json!({"question_id": 7, "reply": {"type": "cancel"}});
+        assert_eq!(
+            post_answer(&state, "s1", wrong_id).await,
+            StatusCode::CONFLICT
+        );
+        let ok = serde_json::json!({"question_id": 1, "reply": {"type": "text", "text": "green"}});
+        assert_eq!(
+            post_answer(&state, "s1", ok.clone()).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            asked.await.unwrap(),
+            AskUserOutcome::Answered(AskUserAnswer::Selected { indices: vec![1] })
+        );
+        assert_eq!(post_answer(&state, "s1", ok).await, StatusCode::CONFLICT);
+    }
+
+    /// A subscriber whose buffer overflows around the `ask_user` event still receives the
+    /// pending question (the lag re-emits it).
+    #[tokio::test]
+    async fn lagged_subscriber_still_receives_pending_question() {
+        use zeph_core::channel::AskUserResponder;
+
+        let state = make_state().await;
+        let _rx = insert_live_session(&state, "s1");
+        let sse = Box::pin(events_session_handler(
+            State(state.clone()),
+            Path("s1".to_owned()),
+        ))
+        .await
+        .unwrap();
+        let handle = state.registry.get(&SessionId::new("s1")).unwrap();
+        let responder = std::sync::Arc::clone(&handle.ask_user);
+        let _asked = tokio::spawn(async move { responder.ask(choice_request()).await });
+        while handle.ask_user.pending_event().is_none() {
+            tokio::task::yield_now().await;
+        }
+        // The test channel holds 4 items: this evicts the ask_user event from the buffer.
+        for i in 0..10 {
+            handle
+                .tx_out
+                .send(SessionOutput::Token(format!("t{i}")))
+                .unwrap();
+        }
+
+        let frame = first_sse_frame_text(sse).await;
+        assert!(frame.contains("\"type\":\"ask_user\""), "{frame}");
     }
 
     #[tokio::test]

@@ -108,6 +108,18 @@ fn validate_pool_duplicate_names_errors() {
 }
 
 #[test]
+fn validate_pool_case_colliding_names_errors() {
+    let mut upper = ollama_entry();
+    upper.name = Some("Ollama".into());
+    let err = validate_pool(&[ollama_entry(), upper]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("\"Ollama\"") && msg.contains("\"ollama\""),
+        "{msg}"
+    );
+}
+
+#[test]
 fn validate_pool_multiple_defaults_errors() {
     let mut a = ollama_entry();
     let mut b = claude_entry();
@@ -997,4 +1009,23 @@ fn provider_kind_display_respects_width() {
         format!("{:>12}", ProviderKind::Compatible),
         format!("{:>12}", "compatible")
     );
+}
+
+#[test]
+fn find_provider_matches_ascii_case_insensitively_and_returns_first() {
+    let pool = vec![ollama_entry(), claude_entry()];
+    assert_eq!(
+        find_provider(&pool, "OLLAMA").map(ProviderEntry::effective_name),
+        Some("ollama".to_owned())
+    );
+    assert!(find_provider(&pool, "missing").is_none());
+}
+
+#[test]
+fn is_named_uses_type_string_when_name_is_unset() {
+    let entry = ProviderEntry {
+        provider_type: ProviderKind::Ollama,
+        ..Default::default()
+    };
+    assert!(entry.is_named("Ollama"));
 }

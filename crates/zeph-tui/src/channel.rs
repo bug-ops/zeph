@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use zeph_core::channel::{
-    ASK_USER_ANSWER_FIELD, ASK_USER_RETRY_HINT, AskUserOutcome, AskUserRequest, Channel,
-    ChannelError, ChannelMessage, ElicitationField, ElicitationFieldType, ElicitationRequest,
-    ElicitationResponse, SkillCatalogItem, StatusText, ToolOutputEvent, ToolStartEvent,
+    ASK_USER_ANSWER_FIELD, ASK_USER_RETRY_HINT, AskUserAnswer, AskUserOutcome, AskUserRequest,
+    Channel, ChannelError, ChannelMessage, ElicitationField, ElicitationFieldType,
+    ElicitationRequest, ElicitationResponse, ReplyParseError, SkillCatalogItem, StatusText,
+    ToolOutputEvent, ToolStartEvent,
 };
 
 use crate::command::TuiCommand;
@@ -18,19 +19,28 @@ const ASK_USER_SOURCE: &str = "assistant question";
 
 /// Map an `ask_user` question onto the elicitation dialog the TUI already renders.
 ///
-/// A closed single choice becomes an enum field; every other kind becomes a text field, because
-/// the dialog has no multi-select. Esc on the dialog cancels the question.
+/// A closed single choice becomes an enum field and a closed multi-choice a checkbox list; every
+/// other kind (free text, a choice that also allows "other") becomes a text field. Esc on the
+/// dialog cancels the question.
 fn ask_user_form(request: &AskUserRequest, hint: Option<&str>) -> ElicitationRequest {
     let mut message = String::new();
     if let Some(hint) = hint {
         message.push_str(hint);
         message.push_str("\n\n");
     }
-    message.push_str(&request.dialog_message());
-    let (field_type, description) = match request.closed_choice_values() {
-        Some(values) => (ElicitationFieldType::Enum(values), None),
-        None => (ElicitationFieldType::String, request.dialog_answer_hint()),
+    let (field_type, description) = match (
+        request.closed_choice_values(),
+        request.multi_select_values(),
+    ) {
+        (Some(values), _) => (ElicitationFieldType::Enum(values), None),
+        (None, Some(values)) => (ElicitationFieldType::MultiSelect(values), None),
+        (None, None) => (ElicitationFieldType::String, request.dialog_answer_hint()),
     };
+    if matches!(field_type, ElicitationFieldType::MultiSelect(_)) {
+        message.push_str(&request.select_form_message());
+    } else {
+        message.push_str(&request.dialog_message());
+    }
     ElicitationRequest {
         server_name: ASK_USER_SOURCE.to_owned(),
         message,
@@ -43,11 +53,21 @@ fn ask_user_form(request: &AskUserRequest, hint: Option<&str>) -> ElicitationReq
     }
 }
 
-/// The text the user submitted in the dialog, if the submission carries one.
-fn submitted_answer(value: &serde_json::Value) -> Option<&str> {
-    value
-        .get(ASK_USER_ANSWER_FIELD)
-        .and_then(serde_json::Value::as_str)
+/// Map the submitted dialog value onto the question; `None` when it carries no answer at all
+/// (the question is cancelled).
+fn parse_submission(
+    request: &AskUserRequest,
+    value: &serde_json::Value,
+) -> Option<Result<AskUserAnswer, ReplyParseError>> {
+    let field = value.get(ASK_USER_ANSWER_FIELD)?;
+    if let Some(items) = field.as_array() {
+        let picked: Option<Vec<&str>> = items.iter().map(serde_json::Value::as_str).collect();
+        return Some(match picked {
+            Some(picked) => request.parse_dialog_selection(&picked),
+            None => Err(ReplyParseError::NoMatch),
+        });
+    }
+    Some(request.parse_dialog_answer(field.as_str()?))
 }
 
 /// The [`zeph_core::channel::Channel`] implementation for the TUI.
@@ -470,10 +490,10 @@ impl Channel for TuiChannel {
             let ElicitationResponse::Accepted(value) = response else {
                 return Ok(AskUserOutcome::Cancelled);
             };
-            let Some(text) = submitted_answer(&value) else {
+            let Some(parsed) = parse_submission(&request, &value) else {
                 return Ok(AskUserOutcome::Cancelled);
             };
-            match request.parse_dialog_answer(text) {
+            match parsed {
                 Ok(answer) => return Ok(AskUserOutcome::Answered(answer)),
                 Err(error) => {
                     tracing::debug!(%error, "ask_user: dialog answer did not match the question");
@@ -1114,5 +1134,123 @@ mod tests {
         };
         let _ = response_tx.send(ElicitationResponse::Cancelled);
         assert_eq!(asker.await.unwrap().unwrap(), AskUserOutcome::Cancelled);
+    }
+
+    fn multi_choice(other: OtherAnswer) -> AskUserRequest {
+        let options =
+            ChoiceOptions::new(vec!["red".into(), "green".into(), "blue".into()]).unwrap();
+        AskUserRequest::multi_choice("Pick some", options, other).unwrap()
+    }
+
+    #[test]
+    fn closed_multi_choice_is_a_checkbox_list_without_numbered_message_options() {
+        let form = ask_user_form(&multi_choice(OtherAnswer::Forbidden), None);
+        assert!(matches!(
+            &form.fields[0].field_type,
+            ElicitationFieldType::MultiSelect(v) if v == &["1. red", "2. green", "3. blue"]
+        ));
+        assert!(form.message.starts_with(ASK_USER_HEADER));
+        assert!(form.message.contains("Pick some"));
+        assert!(!form.message.contains("1. red"));
+    }
+
+    #[test]
+    fn multi_choice_with_other_allowed_stays_a_text_field() {
+        let form = ask_user_form(&multi_choice(OtherAnswer::Allowed), None);
+        assert!(matches!(
+            form.fields[0].field_type,
+            ElicitationFieldType::String
+        ));
+        assert!(form.message.contains("1. red"));
+    }
+
+    async fn answer_multi(replies: Vec<serde_json::Value>) -> (AskUserOutcome, usize) {
+        let (_user_tx, user_rx) = mpsc::channel(4);
+        let (agent_tx, mut agent_rx) = mpsc::channel(4);
+        let mut ch = TuiChannel::new(user_rx, agent_tx);
+        let asker =
+            tokio::spawn(async move { ch.ask_user(multi_choice(OtherAnswer::Forbidden)).await });
+        let mut dialogs = 0;
+        for reply in replies {
+            let Some(AgentEvent::ElicitationRequest { response_tx, .. }) = agent_rx.recv().await
+            else {
+                panic!("expected an elicitation request");
+            };
+            dialogs += 1;
+            let _ = response_tx.send(ElicitationResponse::Accepted(reply));
+        }
+        (asker.await.unwrap().unwrap(), dialogs)
+    }
+
+    #[tokio::test]
+    async fn ask_user_returns_the_marked_options() {
+        let (outcome, _) =
+            answer_multi(vec![serde_json::json!({ "answer": ["1. red", "3. blue"] })]).await;
+        assert_eq!(
+            outcome,
+            AskUserOutcome::Answered(zeph_core::channel::AskUserAnswer::Selected {
+                indices: vec![0, 2]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_selection_asks_again() {
+        let (outcome, dialogs) = answer_multi(vec![
+            serde_json::json!({ "answer": [] }),
+            serde_json::json!({ "answer": ["2. green"] }),
+        ])
+        .await;
+        assert_eq!(dialogs, 2);
+        assert_eq!(
+            outcome,
+            AskUserOutcome::Answered(zeph_core::channel::AskUserAnswer::Selected {
+                indices: vec![1]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_checklist_submission_re_asks_with_the_retry_hint_and_no_outcome() {
+        let (_user_tx, user_rx) = mpsc::channel(4);
+        let (agent_tx, mut agent_rx) = mpsc::channel(4);
+        let mut ch = TuiChannel::new(user_rx, agent_tx);
+        let asker =
+            tokio::spawn(async move { ch.ask_user(multi_choice(OtherAnswer::Forbidden)).await });
+
+        let Some(AgentEvent::ElicitationRequest {
+            request: first,
+            response_tx,
+        }) = agent_rx.recv().await
+        else {
+            panic!("expected an elicitation request");
+        };
+        assert!(!first.message.contains(ASK_USER_RETRY_HINT));
+        let _ = response_tx.send(ElicitationResponse::Accepted(
+            serde_json::json!({ "answer": [] }),
+        ));
+
+        let Some(AgentEvent::ElicitationRequest {
+            request: second,
+            response_tx,
+        }) = agent_rx.recv().await
+        else {
+            panic!("expected the question to be asked again");
+        };
+        assert!(second.message.starts_with(ASK_USER_RETRY_HINT));
+        assert!(
+            !asker.is_finished(),
+            "an empty submission must not resolve the question"
+        );
+
+        let _ = response_tx.send(ElicitationResponse::Accepted(
+            serde_json::json!({ "answer": ["2. green", "3. blue"] }),
+        ));
+        assert_eq!(
+            asker.await.unwrap().unwrap(),
+            AskUserOutcome::Answered(zeph_core::channel::AskUserAnswer::Selected {
+                indices: vec![1, 2]
+            })
+        );
     }
 }

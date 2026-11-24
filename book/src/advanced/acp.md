@@ -239,7 +239,7 @@ Each grant sets exactly one of `command` or `url`; `args` and `env_keys` are onl
 
 > **Warning:** environment *values* are not pinned. Never list interpreter or package-manager control keys such as `NODE_OPTIONS`, `JAVA_TOOL_OPTIONS`, `PERL5OPT` or `npm_config_*` in `env_keys`: an IDE could use them to change what the pinned command executes.
 
-> **Note:** IDE servers go through the same SSRF policy as other untrusted servers, so an HTTP grant for a loopback or private address (for example `http://localhost:...`) is accepted by the config but can never connect.
+> **Note:** IDE servers go through the same SSRF policy as other untrusted servers, so an HTTP grant for a loopback, private or link-local address (an IP literal or `localhost`, for example `http://localhost:...`) can never connect and is rejected when the config loads. Hostnames that need DNS are not checked at load time.
 
 The per-session cap keeps the first `max_servers_per_session` servers of a request (after removing duplicate names) and logs a `WARN` with the number ignored. `zeph --init` asks for the cap; grants are hand-authored. `--migrate-config` adds a commented `[acp.ide_mcp]` block.
 

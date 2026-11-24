@@ -138,7 +138,7 @@ async fn test_scoped_load_skill_forwards_included_skill_and_blocks_others() {
     let missing = call("load_skill");
     assert!(matches!(
         exec.execute_tool_call_erased(&missing).await,
-        Err(ToolError::Blocked { .. })
+        Err(ToolError::InvalidParams { .. })
     ));
 }
 

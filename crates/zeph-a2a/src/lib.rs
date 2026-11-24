@@ -10,7 +10,7 @@
 //! - **Server** (`A2aServer`, feature `server`): exposes an HTTP endpoint that accepts
 //!   A2A JSON-RPC requests and streams Server-Sent Events (SSE) for real-time output.
 //! - **Discovery** ([`AgentRegistry`]): fetches and caches agent capability cards from
-//!   `/.well-known/agent.json` with configurable TTL.
+//!   `/.well-known/agent-card.json` (legacy `agent.json` fallback) with configurable TTL.
 //! - **Capability cards** ([`AgentCardBuilder`]): builds [`AgentCard`] metadata describing
 //!   the agent's skills, I/O modes, and protocol version.
 //! - **IBCT** ([`Ibct`], feature `ibct`): Invocation-Bound Capability Tokens for scoped
@@ -92,7 +92,8 @@ mod testing;
 /// would over-claim conformance the Key Invariant "`AgentCard` must accurately reflect
 /// supported capabilities" forbids. Deferred 1.0.0 items, tracked as follow-ups to #5928:
 ///
-/// - Well-known path rename to `/.well-known/agent-card.json` (see `discovery.rs`).
+/// - Serving our own card at `/.well-known/agent-card.json` (client discovery already tries it
+///   first and falls back to `agent.json`, see `discovery.rs`).
 /// - gRPC / HTTP-REST transport bindings (JSON-RPC only today).
 /// - Signing our own served card (`server`/`card.rs` emitting `signatures`).
 /// - `jku`/JWKS key retrieval and `x5c` certificate-chain trust anchoring.

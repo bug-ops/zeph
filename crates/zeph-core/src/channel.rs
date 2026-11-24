@@ -80,6 +80,9 @@ pub enum ElicitationFieldType {
     Boolean,
     /// Enum with allowed values (sanitized before display).
     Enum(Vec<String>),
+    /// Checkbox list: zero or more of the given values (sanitized before display); the
+    /// submitted value is a JSON array of the marked entries.
+    MultiSelect(Vec<String>),
 }
 
 /// An elicitation request from an MCP server.

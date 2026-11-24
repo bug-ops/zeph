@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use zeph_config::ProviderKey;
 
 /// Per-provider concurrency limiter for sub-agent dispatch.
 ///
@@ -41,7 +42,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// released when it is dropped (i.e., when the `RunningTask` entry is removed).
 #[derive(Debug)]
 pub struct AdmissionGate {
-    semaphores: HashMap<String, Arc<Semaphore>>,
+    semaphores: HashMap<ProviderKey, Arc<Semaphore>>,
 }
 
 impl AdmissionGate {
@@ -63,7 +64,7 @@ impl AdmissionGate {
         let semaphores = providers
             .iter()
             .filter(|(_, limit)| *limit > 0)
-            .map(|(name, limit)| (name.clone(), Arc::new(Semaphore::new(*limit))))
+            .map(|(name, limit)| (ProviderKey::new(name), Arc::new(Semaphore::new(*limit))))
             .collect();
         Self { semaphores }
     }
@@ -98,14 +99,14 @@ impl AdmissionGate {
     /// ```
     #[must_use]
     pub fn try_acquire(&self, provider: &str) -> Option<OwnedSemaphorePermit> {
-        let sem = self.semaphores.get(provider)?;
+        let sem = self.semaphores.get(&ProviderKey::new(provider))?;
         Arc::clone(sem).try_acquire_owned().ok()
     }
 
     /// Returns `true` when this gate has a concurrency limit configured for `provider`.
     #[must_use]
     pub fn has_gate(&self, provider: &str) -> bool {
-        self.semaphores.contains_key(provider)
+        self.semaphores.contains_key(&ProviderKey::new(provider))
     }
 }
 

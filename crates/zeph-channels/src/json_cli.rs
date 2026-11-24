@@ -304,13 +304,20 @@ impl Channel for JsonCliChannel {
         Ok(())
     }
 
-    /// No-op: `JsonEventLayer` emits `cost` from its `after_chat` hook.
+    /// Emits one `cost` event per LLM call: that call's token counts and the
+    /// session-cumulative estimated cost (`cost_cents` is already cumulative).
     fn send_usage(
         &mut self,
-        _usage: TokenUsage,
+        usage: TokenUsage,
         _context_window: u64,
-        _cost_cents: Cents,
+        cost_cents: Cents,
     ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        self.sink.emit(&JsonEvent::Cost {
+            input_tokens: usage.input,
+            output_tokens: usage.output,
+            cache_read_tokens: usage.cache_read,
+            cost: cost_cents,
+        });
         std::future::ready(Ok(()))
     }
 
@@ -367,6 +374,35 @@ mod tests {
             let rest = &line[i + needle.len()..];
             &rest[..rest.find('"').unwrap_or(rest.len())]
         })
+    }
+
+    #[tokio::test]
+    async fn send_usage_emits_cost_event_per_call_with_cumulative_usd() {
+        let (sink, read) = make_test_sink();
+        let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
+        let usage = |input, output, cache_read| TokenUsage {
+            input,
+            output,
+            cache_write: 0,
+            cache_read,
+        };
+        ch.send_usage(usage(100, 20, 7), 8000, Cents::new(50.0))
+            .await
+            .unwrap();
+        ch.send_usage(usage(40, 10, 0), 8000, Cents::new(75.0))
+            .await
+            .unwrap();
+        let lines = read();
+        assert_eq!(lines.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(first["event"], "cost");
+        assert_eq!(first["input_tokens"], 100);
+        assert_eq!(first["output_tokens"], 20);
+        assert_eq!(first["cache_read_tokens"], 7);
+        assert_eq!(first["estimated_usd"], 0.5);
+        assert_eq!(second["input_tokens"], 40);
+        assert_eq!(second["estimated_usd"], 0.75);
     }
 
     #[tokio::test]

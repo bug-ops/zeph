@@ -17,8 +17,8 @@ publish = true
 
 [workspace.dependencies]
 age = { version = "0.12.1", default-features = false }
-agent-client-protocol = "5.3.0"
-agent-client-protocol-schema = "=1.18.0"
+# unstable_* may break in 5.x minors; zeph-acp exposes them in the `acp` bundle, so stay on one minor.
+agent-client-protocol = "~5.5.1"
 anyhow = "1.0.104"
 arboard = "3.7.0"
 arc-swap = "1.9.5"
@@ -212,10 +212,6 @@ unsafe_code = "deny"
 # either a manual `ci-non-linux.yml` workflow_dispatch run or the next tagged
 # `release.yml` build. See #5961.
 linker_messages = "allow"
-
-# cargo 1.100 warns by default; build.warnings = "deny" makes it fatal on trimmed-feature CI builds. Enabling it deliberately is a follow-up.
-[workspace.lints.cargo]
-unused_dependencies = "allow"
 
 [workspace.lints.clippy]
 all = "warn"

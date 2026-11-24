@@ -45,6 +45,7 @@
 //! ```
 
 mod agent_loop;
+pub mod ask_user;
 pub mod budget;
 pub mod command;
 pub mod cwd_guard;
@@ -69,12 +70,13 @@ pub mod testing {
     pub use crate::agent_loop::{HistoryPins, trim_message_history_pinned as trim_message_history};
 }
 
+pub use ask_user::{AskUserQuestion, AskUserReply, SubagentAskUser};
 pub use budget::SessionSpawnBudget;
 pub use command::{AgentCommand, AgentsCommand};
 pub use cwd_guard::CwdLock;
 pub use def::{
-    DefinitionWarning, HookEvent, MemoryScope, ModelSpec, PermissionMode, SkillFilter, SubAgentDef,
-    SubAgentPermissions, ToolListKind, ToolPolicy, is_valid_agent_name,
+    AskUserGrant, DefinitionWarning, HookEvent, MemoryScope, ModelSpec, PermissionMode,
+    SkillFilter, SubAgentDef, SubAgentPermissions, ToolListKind, ToolPolicy, is_valid_agent_name,
 };
 pub use durable::{
     DurableResolverSeat, SubagentResult, await_durable_subagent, make_durable_promise,

@@ -919,15 +919,12 @@ pub(crate) fn apply_response_cache<C: Channel>(
     (agent.with_response_cache(cache), Some(handle))
 }
 
-pub(crate) fn apply_cost_tracker<C: Channel>(
-    agent: Agent<C>,
-    config: &zeph_core::config::Config,
-) -> Agent<C> {
-    if !config.cost.enabled {
-        return agent;
-    }
-    let mut tracker = CostTracker::new(DailyBudget::from_config(config.cost.max_daily_cents));
-    for entry in &config.llm.providers {
+fn build_cost_tracker(
+    providers: &[zeph_config::ProviderEntry],
+    budget: DailyBudget,
+) -> CostTracker {
+    let mut tracker = CostTracker::new(budget);
+    for entry in providers {
         if entry.provider_type == zeph_config::ProviderKind::Cocoon
             && let (Some(pricing), Some(model)) = (&entry.cocoon_pricing, &entry.model)
         {
@@ -943,7 +940,33 @@ pub(crate) fn apply_cost_tracker<C: Channel>(
             );
         }
     }
-    agent.with_cost_tracker(tracker)
+    tracker
+}
+
+pub(crate) fn apply_cost_tracker<C: Channel>(
+    agent: Agent<C>,
+    config: &zeph_core::config::Config,
+) -> Agent<C> {
+    if !config.cost.enabled {
+        return agent;
+    }
+    let budget = DailyBudget::from_config(config.cost.max_daily_cents);
+    agent.with_cost_tracker(build_cost_tracker(&config.llm.providers, budget))
+}
+
+/// Attaches a tracker that records cost for display only: `check_budget` always passes, so
+/// `[cost] max_daily_cents` is not enforced (used for ACP sessions).
+#[cfg(feature = "acp")]
+pub(crate) fn apply_display_cost_tracker<C: Channel>(
+    agent: Agent<C>,
+    providers: Option<&[zeph_config::ProviderEntry]>,
+) -> Agent<C> {
+    match providers {
+        Some(providers) => {
+            agent.with_cost_tracker(build_cost_tracker(providers, DailyBudget::Unlimited))
+        }
+        None => agent,
+    }
 }
 
 pub(crate) fn apply_summary_provider<C: Channel>(
@@ -3605,6 +3628,25 @@ mod tests {
         config.cost.max_daily_cents = 500;
         let result = apply_cost_tracker(agent, &config);
         drop(result);
+    }
+
+    #[test]
+    fn display_cost_tracker_never_exhausts_budget() {
+        use zeph_llm::provider::TokenUsage;
+        let tracker = build_cost_tracker(&[], DailyBudget::Unlimited);
+        let usage = TokenUsage {
+            input: 10_000_000,
+            ..TokenUsage::default()
+        };
+        tracker.record_usage(
+            "p",
+            "cloud",
+            "claude-opus-4-6",
+            usage,
+            zeph_config::ServiceSpeed::Standard,
+        );
+        assert!(tracker.session_spend() > zeph_common::money::Cents::ZERO);
+        assert!(tracker.check_budget().is_ok());
     }
 
     #[tokio::test]

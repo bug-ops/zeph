@@ -453,6 +453,242 @@ pub const PEM_PRIVATE_KEY_UNTERMINATED_PATTERN: &str = r"(?:-----BEGIN (?:[A-Z]+
 /// marker and quoting while redacting only the secret value.
 pub const AWS_SECRET_KEY_PATTERN: &str = r#"(?i)((?:aws[_\-. ]?secret[_\-. ]?access[_\-. ]?key|aws[_\-. ]?secret[_\-. ]?key|secret[_\-. ]?access[_\-. ]?key|aws[_\-. ]?session[_\-. ]?token|session[_\-. ]?token)['"]?(?:\x1b\[[0-?]*[ -/]*[@-~])*\s*[:=]\s*['"]?(?:\x1b\[[0-?]*[ -/]*[@-~])*)[A-Za-z0-9+/]{40,}={0,2}(['"]?)"#;
 
+/// A redaction shape applied by [`crate::secret_redact::scrub_secret_shapes`].
+///
+/// Each variant owns the literal anchor that every match of its shape contains. The line-break
+/// glue pass probes a break only when the joined text holds an anchor, so unrelated token-like
+/// lines never spend the probe budget. The `anchor` match is exhaustive, so a new variant cannot
+/// compile without one.
+///
+/// Adding a regex to `scrub_secret_shapes` requires adding a variant here.
+#[derive(Debug, Clone, Copy)]
+enum SecretShape {
+    Prefix,
+    GithubFineGrainedPat,
+    GithubApp,
+    Telegram,
+    AwsSts,
+    Bearer,
+    Jwt,
+    AwsSecret,
+    Pem,
+}
+
+impl SecretShape {
+    const ALL: [Self; 9] = [
+        Self::Prefix,
+        Self::GithubFineGrainedPat,
+        Self::GithubApp,
+        Self::Telegram,
+        Self::AwsSts,
+        Self::Bearer,
+        Self::Jwt,
+        Self::AwsSecret,
+        Self::Pem,
+    ];
+
+    /// Regex source of the literal prefix or marker every match of the shape contains, without
+    /// boundary assertions. Case-insensitive anchors scope their flag with `(?i:...)`.
+    fn anchor(self) -> String {
+        match self {
+            Self::Prefix => SECRET_PREFIXES
+                .iter()
+                .chain(DISTINCTIVE_SECRET_PREFIXES)
+                .chain(AMBIGUOUS_SECRET_PREFIXES)
+                .map(|p| regex::escape(p))
+                .collect::<Vec<_>>()
+                .join("|"),
+            Self::GithubFineGrainedPat => "github_pat_".to_owned(),
+            Self::GithubApp => "gh[sur]_".to_owned(),
+            Self::Telegram => "[0-9]{8,10}:AA".to_owned(),
+            Self::AwsSts => "ASIA".to_owned(),
+            Self::Bearer => r"(?i:authorization:\s*bearer)".to_owned(),
+            Self::Jwt => "eyJ".to_owned(),
+            Self::AwsSecret => {
+                r"(?i:secret[_\-. ]?(?:access[_\-. ]?)?key|session[_\-. ]?token)".to_owned()
+            }
+            Self::Pem => "---- BEGIN SSH2".to_owned(),
+        }
+    }
+}
+
+/// Regex source matching the anchor of any [`SecretShape`], for gating line-break glue probes.
+///
+/// Every entry is wrapped in its own non-capturing group, so an inline flag in one entry never
+/// leaks into the others.
+pub(crate) fn glue_anchor_pattern() -> String {
+    SecretShape::ALL
+        .iter()
+        .map(|shape| format!("(?:{})", shape.anchor()))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use regex::Regex;
+
+    use super::*;
+    use crate::secret_redact::sanitize_upstream_text;
+
+    struct Sample {
+        before: &'static str,
+        head: &'static str,
+        tail: &'static str,
+        after: &'static str,
+        body: &'static str,
+    }
+
+    impl SecretShape {
+        fn sample(self) -> Sample {
+            match self {
+                Self::Prefix => Sample {
+                    before: "key ",
+                    head: "sk-proj-AbCdEfGhIjKl",
+                    tail: "MnOpQrStUvWxYz0123456789",
+                    after: " end",
+                    body: "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+                },
+                Self::GithubFineGrainedPat => Sample {
+                    before: "pat ",
+                    head: "github_pat_11ABCDEFG0aBcDeFgHiJkL_mNoPqRsTuVwXyZ0123",
+                    tail: "456789aBcDeFgHiJkLmNoPqRsTuVwXyZ01234567",
+                    after: " end",
+                    body: "mNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ01234567",
+                },
+                Self::GithubApp => Sample {
+                    before: "app ",
+                    head: "ghs_aB3dE6gH9jK2mN5pQ8sT",
+                    tail: "1vW4yZ7aB0cD3eF6gH9iJ2kL5mN8",
+                    after: " end",
+                    body: "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7aB0cD3eF6gH9iJ2kL5mN8",
+                },
+                Self::Telegram => Sample {
+                    before: "GET https://api.telegram.org/",
+                    head: "bot123456789:AAEhBP0av28KJ",
+                    tail: "GwtnjnABCDEFGHIJKLMNOPqrstuvwxyz01",
+                    after: "/getMe failed",
+                    body: "EhBP0av28KJGwtnjnABCDEFGHIJKLMNOPqrstuvwxyz01",
+                },
+                Self::AwsSts => Sample {
+                    before: "id ",
+                    head: "ASIAIOSFOD",
+                    tail: "NN7EXAMPLE",
+                    after: " end",
+                    body: "IOSFODNN7EXAMPLE",
+                },
+                Self::Bearer => Sample {
+                    before: "",
+                    head: "Authorization: Bearer abcdefghijklmnop",
+                    tail: "qrstuvwxyz0123456789",
+                    after: "",
+                    body: "abcdefghijklmnopqrstuvwxyz0123456789",
+                },
+                Self::Jwt => Sample {
+                    before: "jwt ",
+                    head: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP",
+                    tail: "mB92K27uhbUJU1p1rXyZ",
+                    after: " end",
+                    body: "dBjftJeZ4CVPmB92K27uhbUJU1p1rXyZ",
+                },
+                Self::AwsSecret => Sample {
+                    before: "",
+                    head: "aws_secret_access_key = wJalrXUtnFEMIbK7MDENG",
+                    tail: "bPxRfiCYEXAMPLEKEY1234567",
+                    after: " end",
+                    body: "wJalrXUtnFEMIbK7MDENGbPxRfiCYEXAMPLEKEY1234567",
+                },
+                Self::Pem => Sample {
+                    before: "",
+                    head: "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0B",
+                    tail: "AQEFAASCAT8wggE7AgEAAkEA\n-----END PRIVATE KEY-----",
+                    after: "",
+                    body: "MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA",
+                },
+            }
+        }
+    }
+
+    fn anchor_regex() -> Regex {
+        Regex::new(&glue_anchor_pattern()).expect("anchor pattern is valid")
+    }
+
+    fn leaked(out: &str, body: &str) -> Option<String> {
+        (0..=body.len() - 6)
+            .map(|i| &body[i..i + 6])
+            .find(|w| out.contains(w))
+            .map(str::to_owned)
+    }
+
+    fn preamble() -> String {
+        (0..300)
+            .map(|i| format!("{:032x}\n", i * 7919 + 123_456_789))
+            .collect::<Vec<_>>()
+            .concat()
+    }
+
+    #[test]
+    fn anchor_matches_every_shape_sample() {
+        let re = anchor_regex();
+        for shape in SecretShape::ALL {
+            let s = shape.sample();
+            let text = format!("{}{}{}{}", s.before, s.head, s.tail, s.after);
+            assert!(re.is_match(&text), "{shape:?}: no anchor in {text:?}");
+        }
+    }
+
+    #[test]
+    fn anchor_ignores_unanchored_token_lines() {
+        assert!(!anchor_regex().is_match(&preamble()));
+    }
+
+    #[test]
+    fn case_insensitive_flag_does_not_leak_across_alternatives() {
+        let re = anchor_regex();
+        for text in ["Asian markets", "asia pacific", "EYJ", "GHS_x"] {
+            assert!(!re.is_match(text), "{text}");
+        }
+        assert!(re.is_match("AUTHORIZATION: bearer"));
+        assert!(re.is_match("SessionToken"));
+    }
+
+    #[test]
+    fn every_shape_is_redacted_when_split_with_and_without_preamble() {
+        let pre = preamble();
+        for shape in SecretShape::ALL {
+            let s = shape.sample();
+            let split = format!("{}{}\n{}{}", s.before, s.head, s.tail, s.after);
+            for text in [split.clone(), format!("{pre}{split}")] {
+                let out = sanitize_upstream_text(&text, 1_000_000);
+                assert_eq!(leaked(&out, s.body), None, "{shape:?}: {out:?}");
+            }
+            let joined = format!("{}{}{}{}", s.before, s.head, s.tail, s.after);
+            let out = sanitize_upstream_text(&joined, 1_000_000);
+            assert_eq!(leaked(&out, s.body), None, "{shape:?} unsplit: {out:?}");
+        }
+    }
+
+    #[test]
+    fn marker_with_value_wrapped_onto_following_lines_is_redacted() {
+        let bearer = sanitize_upstream_text(
+            "Authorization: Bearer\nabcdefghijklmnop\nqrstuvwxyz0123456789",
+            1000,
+        );
+        assert_eq!(
+            leaked(&bearer, "abcdefghijklmnopqrstuvwxyz0123456789"),
+            None
+        );
+        let aws = sanitize_upstream_text(
+            "aws_secret_access_key =\nwJalrXUtnFEMIbK7MDENG\nbPxRfiCYEXAMPLEKEY1234567",
+            1000,
+        );
+        assert_eq!(
+            leaked(&aws, "wJalrXUtnFEMIbK7MDENGbPxRfiCYEXAMPLEKEY1234567"),
+            None
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use regex::Regex;

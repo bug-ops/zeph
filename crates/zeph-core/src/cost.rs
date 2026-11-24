@@ -113,6 +113,7 @@ pub struct ModelPricing {
 
 struct CostState {
     spent_cents: Cents,
+    session_cents: Cents,
     day: u32,
     providers: HashMap<String, ProviderUsage>,
     successful_tasks: u64,
@@ -282,6 +283,7 @@ impl CostTracker {
             fast_unpriced_warned: Mutex::new(HashSet::new()),
             state: Arc::new(Mutex::new(CostState {
                 spent_cents: Cents::ZERO,
+                session_cents: Cents::ZERO,
                 day: current_day(),
                 providers: HashMap::new(),
                 successful_tasks: 0,
@@ -437,6 +439,7 @@ impl CostTracker {
         let mut state = self.state.lock();
         reset_if_new_day(&mut state);
         state.spent_cents += cost;
+        state.session_cents += cost;
 
         let entry = state.providers.entry(provider_name.to_owned()).or_default();
         entry.input_tokens += usage.input;
@@ -475,6 +478,15 @@ impl CostTracker {
     #[must_use]
     pub fn current_spend(&self) -> Cents {
         self.state.lock().spent_cents
+    }
+
+    /// Returns the total cost recorded since the tracker was created.
+    ///
+    /// Unlike [`Self::current_spend`] this never resets at a day boundary and is not tied to the
+    /// budget, so it is the value to show as the session's cumulative cost.
+    #[must_use]
+    pub fn session_spend(&self) -> Cents {
+        self.state.lock().session_cents
     }
 
     /// Increment the successful-task counter.
@@ -1143,6 +1155,19 @@ mod tests {
         assert_eq!(tracker.successful_tasks(), 0);
         assert!(tracker.cps().is_none());
     }
+
+    #[test]
+    fn session_spend_survives_day_rollover() {
+        let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(100.0)));
+        record(&tracker, "openai", "gpt-4o", 1000, 1000);
+        let before = tracker.session_spend();
+        assert!(before > Cents::ZERO);
+        tracker.state.lock().day = 0;
+        assert!(tracker.check_budget().is_ok());
+        assert_eq!(tracker.current_spend(), Cents::ZERO);
+        assert_eq!(tracker.session_spend(), before);
+    }
+
     #[test]
     fn dated_mythos_snapshot_prices_like_base() {
         let tracker = CostTracker::new(DailyBudget::Limited(Cents::new(1000.0)));

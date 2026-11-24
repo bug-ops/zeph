@@ -14,7 +14,7 @@
 //! frees the bridge for the next one.
 
 use agent_client_protocol as acp;
-use agent_client_protocol_schema::v1 as schema;
+use agent_client_protocol::v1::schema;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 

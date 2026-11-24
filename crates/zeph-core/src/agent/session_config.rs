@@ -37,12 +37,14 @@ pub const CONTEXT_BUDGET_RESERVE_RATIO: f32 = 0.20;
 /// - **`mcp_config`** — passed alongside runtime MCP objects in `with_mcp()`; separating it
 ///   from `mcp_tools` / `mcp_manager` would make the call site awkward.
 /// - **Runner-only fields** (`compression`, `routing`, `autosave`, `hybrid_search`,
-///   `logging_config`, `subagent`, `experiment`, `instruction`, `lsp_hooks`, `response_cache`,
-///   `cost_tracker`) — not used in ACP sessions; keeping them out avoids unused-field noise and
+///   `logging_config`, `subagent`, `experiment`, `instruction`, `lsp_hooks`, `response_cache`) —
+///   not used in ACP sessions; keeping them out avoids unused-field noise and
 ///   prevents inadvertent ACP behavior changes. Neither `disambiguation_threshold` nor
 ///   `trust_config` (#5920) belong in this category — both ARE used in ACP sessions, just wired
 ///   via their own standalone builder call (`with_skill_matching_config` /
-///   `with_trust_config`) rather than through this bundle.
+///   `with_trust_config`) rather than through this bundle. `cost_tracker` is likewise not part
+///   of the bundle: ACP attaches a display-only tracker (no daily budget) via
+///   `apply_display_cost_tracker` (#7189).
 /// - **Scheduler runtime objects** (`scheduler_executor`, broadcast senders) — runtime state,
 ///   not config-derived values.
 #[derive(Clone)]

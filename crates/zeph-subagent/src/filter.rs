@@ -52,7 +52,7 @@ pub fn normalize_tool_id(s: &str) -> String {
 }
 
 fn lists_tool(list: &[String], key: &ToolMatchKey) -> bool {
-    list.iter().any(|t| ToolMatchKey::new(t) == *key)
+    list.iter().any(|t| key.matches(t))
 }
 
 /// Decide whether `tool_id` may run under `policy` and the extra `disallowed` list.
@@ -264,11 +264,15 @@ impl FilteredToolExecutor {
     }
 
     /// Whether a `load_skill` call reaches only skills inside the scope.
-    fn scoped_call_in_scope(&self, call: &ToolCall) -> bool {
-        call.params
+    fn scoped_call_in_scope(&self, call: &ToolCall) -> Result<bool, ToolError> {
+        let name = call
+            .params
             .get("skill_name")
             .and_then(|v| v.as_str())
-            .is_some_and(|name| self.skill_scope.contains(name))
+            .ok_or_else(|| ToolError::InvalidParams {
+                message: "missing or non-string parameter `skill_name`".into(),
+            })?;
+        Ok(self.skill_scope.contains(name))
     }
 }
 
@@ -345,8 +349,14 @@ impl ErasedToolExecutor for FilteredToolExecutor {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
     {
         let open = policy_allows(&self.policy, &self.disallowed, call.tool_id.as_str());
-        let scoped_ok =
-            !open && self.is_scoped_grant(call.tool_id.as_str()) && self.scoped_call_in_scope(call);
+        let scoped_ok = if !open && self.is_scoped_grant(call.tool_id.as_str()) {
+            match self.scoped_call_in_scope(call) {
+                Ok(in_scope) => in_scope,
+                Err(e) => return Box::pin(std::future::ready(Err(e))),
+            }
+        } else {
+            false
+        };
         if !open && !scoped_ok {
             tracing::warn!(
                 tool_id = %call.tool_id,

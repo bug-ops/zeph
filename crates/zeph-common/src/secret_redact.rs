@@ -24,7 +24,7 @@ use crate::secrets::{
     AWS_SECRET_KEY_PATTERN, AWS_STS_ACCESS_KEY_ID_PATTERN, BEARER_TOKEN_PATTERN,
     GITHUB_APP_TOKEN_PATTERN, GITHUB_FINE_GRAINED_PAT_PATTERN, GluedTier, JWT_PATTERN,
     PATH_PREFIXES, PEM_PRIVATE_KEY_PATTERN, PEM_PRIVATE_KEY_UNTERMINATED_PATTERN, SECRET_PREFIXES,
-    SECRET_TOKEN_PATTERN, TELEGRAM_BOT_TOKEN_PATTERN, redact_glued_matches,
+    SECRET_TOKEN_PATTERN, TELEGRAM_BOT_TOKEN_PATTERN, glue_anchor_pattern, redact_glued_matches,
 };
 
 static GITHUB_PAT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -60,6 +60,9 @@ static AWS_SECRET_REGEX: LazyLock<Regex> =
 static AWS_STS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(AWS_STS_ACCESS_KEY_ID_PATTERN).expect("aws sts shape regex is valid")
 });
+
+static GLUE_ANCHOR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&glue_anchor_pattern()).expect("glue anchor regex is valid"));
 
 static TOKEN_SHAPE_REGEXES: LazyLock<[Regex; 2]> = LazyLock::new(|| {
     [GITHUB_APP_TOKEN_PATTERN, TELEGRAM_BOT_TOKEN_PATTERN]
@@ -232,6 +235,9 @@ pub fn redact_prefixed_secrets(text: &str) -> Cow<'_, str> {
 /// assert!(!result.contains("sk-test-abc123def456"));
 /// assert!(result.contains("[REDACTED]"));
 /// ```
+///
+/// Every regex run here needs a `SecretShape` variant in [`crate::secrets`], whose anchor gates
+/// the line-break glue probes of [`sanitize_upstream_text`].
 #[must_use]
 pub fn scrub_secret_shapes(text: &str) -> Cow<'_, str> {
     let current = PEM_REGEX.replace_all(text, "[REDACTED_PEM_KEY]");
@@ -420,6 +426,10 @@ fn break_splits_shape(before: &str, after: &[&str]) -> bool {
 /// `MAX_GLUE_SEGMENTS + 1` lines, keep the others.
 fn glue_split_shapes(marked: &str) -> String {
     let segments: Vec<&str> = marked.split(LINE_BREAK).collect();
+    let gate = AnchorGate::new(&segments);
+    if gate.is_empty() {
+        return marked.to_owned();
+    }
     let mut out = String::with_capacity(marked.len());
     let mut probes = 0;
     let mut i = 0;
@@ -435,7 +445,15 @@ fn glue_split_shapes(marked: &str) -> String {
         };
         let before = last_word(&out);
         let glued_to = if is_token_like(before) && probes < MAX_GLUE_PROBES {
-            find_glue_end(&segments, start, before, &mut probes)
+            let before_len = before.len();
+            find_glue_end(
+                &segments,
+                (i + 1, start),
+                &gate,
+                &out,
+                before_len,
+                &mut probes,
+            )
         } else {
             None
         };
@@ -453,14 +471,77 @@ fn glue_split_shapes(marked: &str) -> String {
     out
 }
 
-/// Index of the last segment to glue onto `before` so that the joined word forms a shape.
+/// Positions of every shape anchor in the text with line breaks and escape separators removed.
+///
+/// Built once per text so that deciding whether a line break can sit inside a shape is a binary
+/// search instead of a regex scan over the surrounding words. Working on the joined text also
+/// finds an anchor that a break itself cuts in two.
+struct AnchorGate {
+    /// Offset in the joined text at which each segment starts, plus its total length.
+    starts: Vec<usize>,
+    /// Anchor matches in the joined text, sorted and non-overlapping.
+    spans: Vec<std::ops::Range<usize>>,
+}
+
+impl AnchorGate {
+    /// Bytes before a break in which an anchor still counts as nearby: `GLUE_PROBE_CHARS`
+    /// characters of at most 4 bytes each, so the window is never narrower than the probe's.
+    const LOOKBACK: usize = GLUE_PROBE_CHARS * 4;
+
+    fn new(segments: &[&str]) -> Self {
+        let mut starts = Vec::with_capacity(segments.len() + 1);
+        let mut joined = String::new();
+        for segment in segments {
+            starts.push(joined.len());
+            for part in segment.split(SPLITTER) {
+                joined.push_str(part);
+            }
+        }
+        starts.push(joined.len());
+        let spans = GLUE_ANCHOR_REGEX
+            .find_iter(&joined)
+            .map(|m| m.range())
+            .collect();
+        Self { starts, spans }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    /// Whether an anchor lies within the lookback window before the break that precedes segment
+    /// `after_break` or inside segments `after_break..=last`.
+    fn is_open(&self, after_break: usize, last: usize) -> bool {
+        let (Some(&break_at), Some(&end)) =
+            (self.starts.get(after_break), self.starts.get(last + 1))
+        else {
+            return false;
+        };
+        let from = break_at.saturating_sub(Self::LOOKBACK);
+        let idx = self.spans.partition_point(|r| r.end <= from);
+        self.spans.get(idx).is_some_and(|r| r.start < end)
+    }
+}
+
+/// Index of the last segment to glue onto the text before the break so that the joined word forms
+/// a shape.
+///
+/// `(boundary, start)` are the index of the segment right after the break (where the break sits
+/// in the joined text) and the index of the first segment to join. `out` is the
+/// text emitted so far; its tail (up to `GLUE_PROBE_CHARS` characters, earlier line breaks
+/// included) is the probe context so marker-anchored shapes see their marker. A piece is probed,
+/// and spends budget, only when `gate` finds an anchor near it; unrelated token-like lines cost
+/// one binary search.
 fn find_glue_end(
     segments: &[&str],
-    start: usize,
-    before: &str,
+    (boundary, start): (usize, usize),
+    gate: &AnchorGate,
+    out: &str,
+    before_len: usize,
     probes: &mut usize,
 ) -> Option<usize> {
     let mut pieces: Vec<&str> = Vec::new();
+    let mut context: Option<String> = None;
     let window = segments
         .iter()
         .enumerate()
@@ -472,10 +553,13 @@ fn find_glue_end(
             return None;
         }
         pieces.push(word);
-        *probes += 1;
-        let total = before.len() + pieces.iter().map(|p| p.len()).sum::<usize>();
-        if total >= MIN_GLUE_CHARS && break_splits_shape(before, &pieces) {
-            return Some(j);
+        let total = before_len + pieces.iter().map(|p| p.len()).sum::<usize>();
+        if total >= MIN_GLUE_CHARS && gate.is_open(boundary, j) {
+            *probes += 1;
+            let context = context.get_or_insert_with(|| tail_chars(out, GLUE_PROBE_CHARS));
+            if break_splits_shape(context, &pieces) {
+                return Some(j);
+            }
         }
         if word.len() != segment.len() {
             return None;
@@ -546,6 +630,12 @@ fn escape_replacement(text: &str, matched: &regex::Match<'_>, probes: &mut usize
 /// A line break is deleted instead of rendered as a space only where the words on both sides
 /// form a secret shape once glued and the glue keeps every redaction the words get alone, so a
 /// secret split across lines does not survive and a shape ending at the break stays redacted.
+/// Probing is gated on shape anchors (literal prefixes and markers such as `sk-` or
+/// `Authorization: Bearer`), searched once in the text with line breaks removed, so an anchor cut
+/// by a break is found too; this can open a few more probes, still within the 256 budget.
+/// Text without any anchor is never glued. Anchor-dense text can still exhaust the budget, an
+/// anchor farther than 512 characters before the break is not seen, and glue can over-redact
+/// the lines after a complete `Authorization: Bearer` value.
 /// The cap runs last so a secret is never cut before it is scrubbed.
 ///
 /// # Examples
@@ -590,6 +680,65 @@ pub fn sanitize_upstream_text(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use std::assert_matches;
+
+    fn hex_lines(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("{:032x}\n", i * 7919 + 123_456_789))
+            .collect::<Vec<_>>()
+            .concat()
+    }
+
+    #[test]
+    fn anchor_gate_is_empty_for_unanchored_lines_so_glue_does_no_per_break_work() {
+        let marked = hex_lines(300_000).replace('\n', &LINE_BREAK.to_string());
+        let segments: Vec<&str> = marked.split(LINE_BREAK).collect();
+        assert!(AnchorGate::new(&segments).is_empty());
+        assert_eq!(glue_split_shapes(&marked), marked);
+    }
+
+    #[test]
+    fn secret_whose_anchor_is_cut_by_the_break_is_redacted_with_and_without_preamble() {
+        let tail = "k-proj-AbCdEfGhIjKlMnOpQrStUvWx";
+        for pre in [String::new(), hex_lines(300)] {
+            let out = sanitize_upstream_text(&format!("{pre}key s\n{tail} end"), 1_000_000);
+            assert!(!out.contains("AbCdEfGhIjKl"), "{out:?}");
+            assert!(!out.contains("MnOpQrStUvWx"), "{out:?}");
+            assert!(out.ends_with("end"), "{out:?}");
+        }
+    }
+
+    #[test]
+    fn anchor_gate_opens_only_near_an_anchor() {
+        let text = format!(
+            "{}sk-proj-AbCd{LINE_BREAK}{}",
+            hex_lines(2000),
+            "x".repeat(8)
+        );
+        let marked = text.replace('\n', &LINE_BREAK.to_string());
+        let segments: Vec<&str> = marked.split(LINE_BREAK).collect();
+        let gate = AnchorGate::new(&segments);
+        assert!(!gate.is_open(1, 2));
+        assert!(gate.is_open(2000, 2001));
+    }
+
+    #[test]
+    fn three_megabytes_of_unanchored_lines_sanitize_within_a_generous_bound() {
+        let text = hex_lines(100_000);
+        let started = std::time::Instant::now();
+        let out = sanitize_upstream_text(&text, usize::MAX);
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        assert_eq!(out.lines().count(), 1);
+    }
+
+    #[test]
+    fn bearer_glue_over_redacts_following_token_like_lines() {
+        let lines = hex_lines(6);
+        let text = format!("Authorization: Bearer\n{lines}end");
+        assert_eq!(
+            sanitize_upstream_text(&text, 10_000),
+            "Authorization: Bearer [REDACTED]"
+        );
+    }
 
     const GITHUB_TAIL: &str = "mNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ01234567";
 

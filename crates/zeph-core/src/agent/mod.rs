@@ -673,6 +673,10 @@ impl<C: Channel> Agent<C> {
                 }
             }
 
+            // A slash command is its own ask scope: a fresh question counter and this input's
+            // origin, so a foreground sub-agent's ask_user is not governed by the previous turn.
+            self.ask_user_on_turn_start(origin);
+
             // Agent-command registry: handlers access Agent<C> directly.
             // Null sentinels declared here so they outlive ctx regardless of whether the `if`
             // block is entered. `ctx` borrows both `self` and the sentinels; it must drop before

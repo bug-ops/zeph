@@ -731,12 +731,21 @@ async fn handle_no_tool_response(
 /// Initialise per-loop state: send the initial Working status, build the
 /// message list from history + task prompt, write the task message to the
 /// transcript, and collect tool definitions.
+///
+/// A [`TaskLayout::Resumed`] run first copies the loaded transcript into its own transcript so
+/// that resuming this run again still starts from the original task (#7180). A fresh spawn
+/// writes only the task prompt: its history is the parent's, not part of this agent's record.
 #[tracing::instrument(name = "subagent.agent_loop.init_loop_state", skip_all)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "init inputs are distinct and each caller passes them once; no shared context type exists"
+)]
 async fn init_loop_state(
     status_tx: &watch::Sender<SubAgentStatus>,
     started_at: Instant,
     effective_system_prompt: String,
     initial_messages: Vec<Message>,
+    task_layout: TaskLayout,
     task_prompt: String,
     executor: &FilteredToolExecutor,
     transcript_writer: Option<&TranscriptWriter>,
@@ -758,6 +767,21 @@ async fn init_loop_state(
         reason = "seq narrows a value whose domain-specific range is bounded at this conversion site"
     )]
     let mut seq: u32 = history_len as u32;
+
+    if let Some(writer) = transcript_writer
+        && task_layout == TaskLayout::Resumed
+    {
+        for (i, msg) in messages[1..=history_len].iter().enumerate() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "index is bounded by the transcript length, far below u32::MAX"
+            )]
+            let history_seq = i as u32;
+            if let Err(e) = writer.append(history_seq, msg).await {
+                tracing::warn!(error = %e, "failed to write transcript entry");
+            }
+        }
+    }
 
     if let Some(writer) = transcript_writer
         && let Some(task_msg) = messages.last()
@@ -1552,6 +1576,7 @@ pub(super) async fn run_agent_loop(
         started_at,
         effective_system_prompt,
         initial_messages,
+        task_layout,
         task_prompt,
         &executor,
         transcript_writer.as_ref(),
@@ -4616,5 +4641,23 @@ mod token_streaming_tests {
             ChatResponse::Text { text: t, .. } => assert_eq!(t, "no forward"),
             other => panic!("expected ChatResponse::Text, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod task_layout_pin_tests {
+    use super::*;
+
+    #[test]
+    fn resumed_layout_pins_original_task_at_first_message_after_system() {
+        let messages = vec![
+            make_message(Role::System, "sys".to_owned()),
+            make_message(Role::User, "original task".to_owned()),
+            make_message(Role::Assistant, "done".to_owned()),
+            make_message(Role::User, "resume prompt".to_owned()),
+        ];
+        let pins = TaskLayout::Resumed.pins(&messages);
+        assert_eq!(pins.original_task, Some(1));
+        assert_eq!(pins.current_task, 3);
     }
 }

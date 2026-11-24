@@ -347,9 +347,12 @@ pub enum ClaimSource {
     /// The user's answer to a model-asked `ask_user` question. It is typed by a person on the
     /// local channel, so it is untrusted content but not third-party content.
     ///
-    /// Invariant: the agent skips the tool-output sanitizer for this variant because the answer
-    /// already took the channel-message path. That is safe only while no [`ToolExecutor`] sets
-    /// it: `ToolOutput` is not `Deserialize`, and only the agent's `ask_user` handler builds it.
+    /// Invariant: the main agent's sanitizer skips this variant because the answer already took
+    /// the channel-message path. That is safe only while no executor reachable from the main
+    /// agent's dispatch sets it: `ToolOutput` is not `Deserialize`, and the main agent's
+    /// `ask_user` handler is the only producer there. The one other producer is `zeph-subagent`'s
+    /// crate-private `ask_user` relay, used only in sub-agent executor chains, whose loop
+    /// sanitizes every tool output regardless of its claim.
     UserAnswer,
     /// A skill-local resource file read by `load_skill` with a `path`. The file is outside the
     /// SKILL.md integrity hash, so the agent must not apply the first-party scan exemptions

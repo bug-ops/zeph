@@ -12,6 +12,22 @@ pub const SHELL_TOOL_ALIASES: [&str; 3] = ["bash", "sh", "shell"];
 
 const SHELL_RUNTIME_ID: &str = "bash";
 
+/// Alias-free base id of a tool name: whitespace trimmed, argument pattern (everything from the
+/// first `(`) dropped, lowercased.
+pub(crate) fn base_tool_id(raw: &str) -> String {
+    raw.split('(').next().unwrap_or(raw).trim().to_lowercase()
+}
+
+fn base_segment(raw: &str) -> &str {
+    raw.split('(').next().unwrap_or(raw).trim()
+}
+
+fn is_shell_alias_ignore_case(base: &str) -> bool {
+    SHELL_TOOL_ALIASES
+        .iter()
+        .any(|alias| alias.eq_ignore_ascii_case(base))
+}
+
 /// Canonical, comparison-only form of a tool name.
 ///
 /// Construction trims whitespace, drops an argument pattern (everything from the first `(`),
@@ -33,11 +49,39 @@ impl ToolMatchKey {
     /// Builds the canonical key for `raw`. Total and idempotent.
     #[must_use]
     pub fn new(raw: &str) -> Self {
-        let base = raw.split('(').next().unwrap_or(raw).trim().to_lowercase();
+        let base = base_tool_id(raw);
         if SHELL_TOOL_ALIASES.contains(&base.as_str()) {
             Self(SHELL_RUNTIME_ID.into())
         } else {
             Self(base.into_boxed_str())
+        }
+    }
+
+    /// Whether `raw` canonicalizes to this key; always equal to `ToolMatchKey::new(raw) == *self`.
+    ///
+    /// Allocation-free for ASCII input, so list scans on every tool call do not build a key per
+    /// entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_tools::tool_id::ToolMatchKey;
+    ///
+    /// let bash = ToolMatchKey::new("bash");
+    /// assert!(bash.matches("Shell"));
+    /// assert!(bash.matches("Bash(cargo *)"));
+    /// assert!(!bash.matches("read"));
+    /// ```
+    #[must_use]
+    pub fn matches(&self, raw: &str) -> bool {
+        let base = base_segment(raw);
+        if !base.is_ascii() {
+            return Self::new(raw) == *self;
+        }
+        if is_shell_alias_ignore_case(base) {
+            &*self.0 == SHELL_RUNTIME_ID
+        } else {
+            self.0.eq_ignore_ascii_case(base)
         }
     }
 

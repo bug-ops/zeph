@@ -168,3 +168,28 @@ fn mcp_server_config_id_is_a_typed_server_id_and_round_trips_through_toml() {
     let again: McpServerConfig = toml::from_str(&rendered).expect("re-parses");
     assert_eq!(again.id, cfg.id);
 }
+
+#[test]
+fn acp_config_ide_mcp_http_grant_to_unreachable_host_is_rejected() {
+    for url in [
+        "http://127.0.0.1:8080/mcp",
+        "http://localhost:8080/mcp",
+        "http://[::1]:8080/mcp",
+        "http://10.0.0.5/mcp",
+        "http://192.168.1.10/mcp",
+        "http://169.254.169.254/mcp",
+    ] {
+        let src = format!("[ide_mcp.servers.docs]\nurl = \"{url}\"\ntools = [\"search\"]\n");
+        let err = parse(&src).expect_err(url);
+        assert!(
+            err.to_string().contains("loopback or private"),
+            "{url}: {err}"
+        );
+    }
+}
+
+#[test]
+fn acp_config_ide_mcp_http_grant_to_public_host_is_accepted() {
+    parse("[ide_mcp.servers.docs]\nurl = \"https://mcp.example.com/mcp\"\ntools = [\"search\"]\n")
+        .expect("public host");
+}

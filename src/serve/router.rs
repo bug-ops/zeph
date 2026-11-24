@@ -8,8 +8,9 @@ use zeph_common::http_middleware::{AuthConfig, auth_middleware};
 
 use super::AppState;
 use super::handlers::{
-    create_session_handler, delete_session_handler, events_session_handler, fork_session_handler,
-    get_session_handler, health_handler, list_sessions_handler, prompt_session_handler,
+    answer_session_handler, create_session_handler, delete_session_handler, events_session_handler,
+    fork_session_handler, get_session_handler, health_handler, list_sessions_handler,
+    prompt_session_handler,
 };
 
 /// Build the `zeph serve-sessions` axum [`Router`] (spec §9.4).
@@ -23,6 +24,8 @@ use super::handlers::{
 /// - `POST /sessions/:id/prompt` — submit a prompt ([`prompt_session_handler`])
 /// - `GET /sessions/:id/events` — SSE stream of [`zeph_core::serve::SessionOutput`]
 ///   ([`events_session_handler`])
+/// - `POST /sessions/:id/answer` — answer the pending `ask_user` question
+///   ([`answer_session_handler`])
 /// - `POST /sessions/:id/fork` — eager-copy fork into a fresh live session
 ///   ([`fork_session_handler`])
 ///
@@ -49,6 +52,7 @@ pub(super) fn build_router(
             get(get_session_handler).delete(delete_session_handler),
         )
         .route("/sessions/{id}/prompt", post(prompt_session_handler))
+        .route("/sessions/{id}/answer", post(answer_session_handler))
         .route("/sessions/{id}/events", get(events_session_handler))
         .route("/sessions/{id}/fork", post(fork_session_handler))
         .layer(middleware::from_fn_with_state(auth_cfg, auth_middleware));

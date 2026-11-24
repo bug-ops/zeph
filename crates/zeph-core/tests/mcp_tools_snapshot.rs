@@ -9,9 +9,9 @@ use zeph_core::metrics::MetricsSnapshot;
 #[test]
 fn test_mcp_tool_count_is_derived_from_mcp_tools() {
     let mut snapshot = MetricsSnapshot::default();
-    assert_eq!(snapshot.mcp_tools, [] as [String; 0]);
+    assert!(snapshot.mcp_tools.is_empty());
     assert_eq!(snapshot.mcp_tool_count(), 0);
 
-    snapshot.mcp_tools = vec!["github_issues".to_owned(), "github_prs".to_owned()];
+    snapshot.mcp_tools = vec!["github_issues".to_owned(), "github_prs".to_owned()].into();
     assert_eq!(snapshot.mcp_tool_count(), 2);
 }

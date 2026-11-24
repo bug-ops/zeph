@@ -19,7 +19,7 @@ fn app() -> App {
 fn format_mcp_list_lists_exactly_the_loaded_tools() {
     let mut app = app();
     app.metrics.mcp_server_count = 1;
-    app.metrics.mcp_tools = vec!["gh_issues".to_owned(), "gh_prs".to_owned()];
+    app.metrics.mcp_tools = vec!["gh_issues".to_owned(), "gh_prs".to_owned()].into();
     let out = app.format_mcp_list();
     assert!(out.contains("gh_issues") && out.contains("gh_prs"), "{out}");
     assert!(out.contains("Tools (2)"), "{out}");

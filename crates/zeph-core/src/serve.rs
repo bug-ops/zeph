@@ -43,6 +43,12 @@ use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
 use crate::agent::Agent;
 use crate::channel::{ChannelMessage, LoopbackChannel, LoopbackEvent, LoopbackHandle};
 
+mod ask_user;
+
+pub use ask_user::{
+    AnswerError, AskUserEvent, AskUserReply, QuestionId, ServeAskUserResponder, WireQuestionKind,
+};
+
 /// Stack size for the dedicated per-session thread — mirrors `zeph-acp`'s
 /// `ACP_AGENT_STACK_SIZE` (Agent futures are deeply nested, ~512 KiB measured on overflow with
 /// the default 2 MiB worker-thread stack).
@@ -96,6 +102,8 @@ pub enum SessionOutput {
     },
     /// The current turn finished.
     TurnComplete,
+    /// The agent asks the user a question; answer with `POST /sessions/:id/answer`.
+    AskUser(AskUserEvent),
     /// The agent loop ended with an error.
     Error(String),
 }
@@ -157,6 +165,8 @@ impl SessionActor {
         let (cmd_tx, cmd_rx) = mpsc::channel(mailbox_capacity.max(1));
         let (tx_out, _first_subscriber) = broadcast::channel(OUTPUT_CHANNEL_CAPACITY);
         let tx_out_for_actor = tx_out.clone();
+        let ask_user = Arc::new(ServeAskUserResponder::new(tx_out.clone()));
+        let ask_user_for_thread = Arc::clone(&ask_user);
         let id_str = session_id.as_str().to_owned();
 
         // Per-session cancellation, distinct from the supervisor's process-wide token, so idle
@@ -189,6 +199,7 @@ impl SessionActor {
                     }
                 };
                 let (channel, handle) = LoopbackChannel::pair(LOOPBACK_CHANNEL_CAPACITY);
+                let channel = channel.with_ask_user_responder(ask_user_for_thread);
                 let agent = build_agent(channel);
                 let local = tokio::task::LocalSet::new();
                 rt.block_on(local.run_until(Self::drive(
@@ -229,6 +240,7 @@ impl SessionActor {
                 cancel: session_cancel,
                 resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 pending_resume_banner: resume_banner.map(Arc::from),
+                ask_user,
             },
             blocking_handle,
         )
@@ -408,6 +420,9 @@ pub struct SessionActorHandle {
     /// attach path, gated by [`Self::claim_resume_banner`] — see `GET /sessions/:id/events`
     /// (`events_session_handler`, `src/serve/handlers.rs`) for the sole production consumer.
     pub pending_resume_banner: Option<std::sync::Arc<str>>,
+    /// Carries the session's `ask_user` questions to the SSE client and takes the answer from
+    /// `POST /sessions/:id/answer` (#7124).
+    pub ask_user: Arc<ServeAskUserResponder>,
 }
 
 impl SessionActorHandle {
@@ -595,6 +610,7 @@ mod tests {
             cancel: CancellationToken::new(),
             resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_resume_banner: None,
+            ask_user: Arc::new(ServeAskUserResponder::new(broadcast::channel(1).0)),
         }
     }
 

@@ -478,10 +478,13 @@ Bearer authentication via BLAKE3 + `subtle::ConstantTimeEq` (reuse `zeph-gateway
 | GET | `/sessions/:id` | Get session metadata |
 | POST | `/sessions/:id/prompt` | Send prompt; streaming SSE response |
 | GET | `/sessions/:id/events` | Stream all events SSE (for TUI/CLI attach) |
+| POST | `/sessions/:id/answer` | Answer the pending `ask_user` question: `{ question_id, reply }` where `reply` is `{type:"text",text}`, `{type:"selected",indices:[0-based]}` or `{type:"cancel"}`; 204 resolved, 404 unknown session, 409 stale/not pending, 422 malformed or non-matching reply |
 | POST | `/sessions/:id/fork` | Fork at optional `seq`; returns `{ new_session_id }` |
 | DELETE | `/sessions/:id` | Archive/delete session |
 
-Prompt response uses SSE with event types: `token`, `tool_call`, `tool_result`, `turn_complete`, `error`.
+Prompt response uses SSE with event types: `token`, `tool_call`, `tool_result`, `turn_complete`, `ask_user`, `error`.
+
+`ask_user` (#7124, spec 090 FR-006) carries `{question_id, header, question, kind: free_text|single_choice|multi_choice, options, allow_other}`. At most one question is pending per session. With no SSE subscriber at ask time the question is declined (`NonInteractive`); a pending question is re-sent first to every client that subscribes later (dedupe by `question_id`). The question is not written to the durable log. Free-text answers pass the same `ChannelMessage` sanitizer as prompts; serve is an authenticated operator channel, so there is no guardrail pre-screen (spec 090).
 
 ### 9.5 Feature Gate
 

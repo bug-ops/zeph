@@ -479,7 +479,7 @@ pub struct ZephAcpAgentState {
     /// Used by `providers/list` to build the response without exposing vault keys.
     /// Each entry pairs the provider name with its protocol type.
     #[cfg(feature = "unstable-llm-providers")]
-    pub(crate) provider_names: Vec<(String, agent_client_protocol_schema::v1::LlmProtocol)>,
+    pub(crate) provider_names: Vec<(String, agent_client_protocol::v1::schema::LlmProtocol)>,
     /// Connection-scoped disabled providers (no `session_id` in ACP schema).
     #[cfg(feature = "unstable-llm-providers")]
     pub(crate) global_disabled_providers: Mutex<HashSet<String>>,

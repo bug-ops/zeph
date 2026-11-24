@@ -253,6 +253,7 @@ Report findings as a structured list with severity (critical/warning/info).
 | `permissions.max_turns` | u32 | `20` | Maximum LLM turns before the agent is stopped |
 | `permissions.max_history_messages` | usize | `200` | In-memory history cap; `0` disables eviction. Keep it at least `2 * max_turns + 2` or older turns are evicted before the agent finishes (a load warning is logged otherwise) |
 | `permissions.worktree` | bool | `false` | Run in a dedicated git worktree when the worktree subsystem is enabled |
+| `permissions.ask_user` | enum | `deny` | `allow` lets a foreground `/agent spawn` or `/agent resume` run ask you questions through the `ask_user` tool (needs `[tools.ask_user] enabled`); background and DAG runs never get it |
 | `permissions.instructions` | enum | follows `[agents] instructions` | `none` opts this agent out of inheriting the parent's instruction files (see [Instruction Inheritance](#instruction-inheritance)); cannot opt in over a global `none` |
 | `permissions.timeout_secs` | u64 | `600` | Hard kill deadline |
 | `permissions.ttl_secs` | u64 | `300` | TTL for granted permissions |

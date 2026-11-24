@@ -28,6 +28,21 @@ pub(super) struct SubagentSkills {
     pub(super) scope: zeph_subagent::SkillScope,
 }
 
+/// Offer `ask_user` to a foreground sub-agent.
+///
+/// The inherited allowlist is built from the parent's executor definitions, which never list
+/// built-ins such as `ask_user`, so an offered tool must be added to it or the constraint
+/// propagation would filter it out silently. A `None` set stays `None`.
+fn grant_ask_user(
+    spawn_ctx: &mut zeph_subagent::SpawnContext,
+    ask: zeph_subagent::SubagentAskUser,
+) {
+    if let Some(allowlist) = spawn_ctx.inherited_tool_allowlist.as_mut() {
+        allowlist.insert(super::ask_user::ASK_USER_TOOL.to_owned());
+    }
+    spawn_ctx.ask_user = Some(Box::new(ask));
+}
+
 /// Skill body for a sub-agent prompt, followed by the skill's resource listing when the
 /// sub-agent can call `load_skill` to read those resources.
 fn render_subagent_skill_body(
@@ -259,6 +274,25 @@ impl<C: Channel> Agent<C> {
         );
         format!("[peer message from {}] {}", msg.sender_name, msg.body)
     }
+    /// Answer every `ask_user` question the foreground sub-agent `task_id` has forwarded.
+    ///
+    /// Each question is bounded by a child of the sub-agent's cancel token, so cancelling or
+    /// timing out the sub-agent cancels a question that is still being shown (spec 090).
+    async fn relay_subagent_questions(&mut self, task_id: &str) {
+        loop {
+            let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() else {
+                return;
+            };
+            let Some(question) = mgr.try_recv_ask_user_question_for(task_id) else {
+                return;
+            };
+            let Some(cancel) = mgr.cancel_child_token(task_id) else {
+                return;
+            };
+            self.answer_subagent_question(question, &cancel).await;
+        }
+    }
+
     /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the
     /// channel. Returns a human-readable status string and success flag suitable for
     /// sending to the user and emitting lifecycle events.
@@ -315,6 +349,8 @@ impl<C: Channel> Agent<C> {
                     let _ = mgr.deny_secret(&req_task_id);
                 }
             }
+
+            self.relay_subagent_questions(task_id).await;
 
             let mgr = self.services.orchestration.subagent_manager.as_ref()?;
             let statuses = mgr.statuses();
@@ -773,6 +809,9 @@ impl<C: Channel> Agent<C> {
         let cfg = self.services.orchestration.subagent_config.clone();
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         spawn_ctx.skill_scope = skills.scope;
+        if let Some(ask) = self.subagent_ask_user_offer() {
+            grant_ask_user(&mut spawn_ctx, ask);
+        }
         // Wire the durable resolver seat so the child can resolve its promise on exit. On a
         // fresh run the promise (await side) is dropped here; foreground result is collected
         // via poll_subagent_until_done which reads the join-handle output directly. On a
@@ -884,6 +923,9 @@ impl<C: Channel> Agent<C> {
         // the verifiers carry a grounding-URL snapshot taken now, at resume time.
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         spawn_ctx.skill_scope = skills.scope;
+        if let Some(ask) = self.subagent_ask_user_offer() {
+            grant_ask_user(&mut spawn_ctx, ask);
+        }
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let (task_id, _) = match mgr
             .resume(
@@ -3546,5 +3588,53 @@ mod tests {
                 || b.contains("BLOCKED_BODY_MARKER")),
             "Quarantined and Blocked skill bodies must never be injected, got: {bodies:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod grant_ask_user_tests {
+    use std::collections::HashSet;
+    use std::time::Duration;
+
+    use zeph_subagent::{SpawnContext, SubagentAskUser};
+    use zeph_tools::registry::{InvocationHint, ToolDef};
+
+    use super::grant_ask_user;
+    use crate::agent::ask_user::ASK_USER_TOOL;
+
+    fn offer() -> SubagentAskUser {
+        SubagentAskUser {
+            tool: ToolDef {
+                id: ASK_USER_TOOL.into(),
+                description: "ask".into(),
+                schema: schemars::Schema::default(),
+                invocation: InvocationHint::ToolCall,
+                output_schema: None,
+                server_id: None,
+            },
+            timeout: Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn grant_adds_the_tool_to_an_inherited_allowlist() {
+        let mut ctx = SpawnContext {
+            inherited_tool_allowlist: Some(HashSet::from(["read".to_owned()])),
+            ..SpawnContext::default()
+        };
+        grant_ask_user(&mut ctx, offer());
+        assert!(ctx.ask_user.is_some());
+        assert_eq!(
+            ctx.inherited_tool_allowlist,
+            Some(HashSet::from(["read".to_owned(), ASK_USER_TOOL.to_owned()]))
+        );
+    }
+
+    #[test]
+    fn grant_leaves_an_absent_allowlist_absent() {
+        let mut ctx = SpawnContext::default();
+        grant_ask_user(&mut ctx, offer());
+        assert!(ctx.ask_user.is_some());
+        assert!(ctx.inherited_tool_allowlist.is_none());
     }
 }

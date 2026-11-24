@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Agent discovery via `/.well-known/agent.json` with TTL-based caching, plus optional
+//! Agent discovery via `/.well-known/agent-card.json` (legacy `agent.json` fallback) with TTL-based caching, plus optional
 //! card-signature and URL-origin trust checks (A2A 1.0.0 §8.4, #5928).
 
 use std::collections::HashMap;
@@ -15,9 +15,40 @@ use crate::error::A2aError;
 use crate::types::AgentCard;
 use zeph_common::http::read_capped;
 
-// TODO(#6932): 1.0.0 serves /.well-known/agent-card.json — needs version-aware
-// fetch/fallback before pure-1.0.0 peers are discoverable (#5928 follow-up).
-const WELL_KNOWN_PATH: &str = "/.well-known/agent.json";
+/// Well-known card location a peer was found at: A2A 1.0.0 `agent-card.json` is tried first,
+/// the legacy 0.2.x `agent.json` is the fallback (#6932).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WellKnownPath {
+    AgentCard,
+    Legacy,
+}
+
+impl WellKnownPath {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentCard => "/.well-known/agent-card.json",
+            Self::Legacy => "/.well-known/agent.json",
+        }
+    }
+
+    const fn other(self) -> Self {
+        match self {
+            Self::AgentCard => Self::Legacy,
+            Self::Legacy => Self::AgentCard,
+        }
+    }
+}
+
+/// Outcome of one well-known fetch: a parsed card, or a miss where no card was evaluated
+/// (4xx, or a 2xx body that is not JSON / not an `AgentCard`) and the other path may be tried.
+enum Fetched {
+    Card(Box<(AgentCard, serde_json::Value)>),
+    Miss { reason: String },
+}
+
+fn well_known_url(base_url: &str, path: WellKnownPath) -> String {
+    format!("{}{}", base_url.trim_end_matches('/'), path.as_str())
+}
 
 /// Trust policy for peer [`AgentCard`] verification during [`AgentRegistry::discover`]
 /// (A2A 1.0.0 §8.4).
@@ -158,7 +189,8 @@ struct CachedCard {
 
 /// In-memory registry of peer agent capability cards with TTL-based cache invalidation.
 ///
-/// `AgentRegistry` fetches [`AgentCard`] documents from `{base_url}/.well-known/agent.json`
+/// `AgentRegistry` fetches [`AgentCard`] documents from `{base_url}/.well-known/agent-card.json`
+/// (falling back to `agent.json`)
 /// and caches them for up to `ttl`. It supports three usage patterns:
 ///
 /// 1. **Auto-discovery** via [`discover`](Self::discover): always fetches from the network.
@@ -188,6 +220,8 @@ struct CachedCard {
 pub struct AgentRegistry {
     client: reqwest::Client,
     cache: RwLock<HashMap<String, CachedCard>>,
+    /// Which well-known path last yielded a card, per `base_url`.
+    paths: RwLock<HashMap<String, WellKnownPath>>,
     ttl: Duration,
     /// Timeout for each network request in [`discover`](Self::discover).
     request_timeout: Duration,
@@ -207,6 +241,7 @@ impl AgentRegistry {
         Self {
             client,
             cache: RwLock::new(HashMap::new()),
+            paths: RwLock::new(HashMap::new()),
             ttl,
             request_timeout: Duration::from_secs(10),
             trust: TrustConfig::default(),
@@ -256,7 +291,13 @@ impl AgentRegistry {
         self
     }
 
-    /// Fetch the [`AgentCard`] from `{base_url}/.well-known/agent.json` and update the cache.
+    /// Fetch the [`AgentCard`] from `{base_url}/.well-known/agent-card.json`, falling back to
+    /// the legacy `{base_url}/.well-known/agent.json`, and update the cache.
+    ///
+    /// The fallback happens only when no card was evaluated: a 4xx status, or a 2xx body that
+    /// is not JSON or not an `AgentCard`. Trust failures, 5xx, timeouts, transport errors and
+    /// oversized bodies are returned as-is. The path that worked is remembered per peer and
+    /// tried first next time.
     ///
     /// Always performs a network request regardless of the current cache state. The result
     /// is stored under `base_url` so subsequent [`get_or_discover`](Self::get_or_discover)
@@ -268,48 +309,37 @@ impl AgentRegistry {
     /// variant on non-2xx HTTP status or JSON parse failure.
     #[tracing::instrument(name = "a2a.discovery.discover", skip_all, err)]
     pub async fn discover(&self, base_url: &str) -> Result<AgentCard, A2aError> {
-        let url = format!("{}{WELL_KNOWN_PATH}", base_url.trim_end_matches('/'));
-        let (card, raw_value): (AgentCard, serde_json::Value) =
-            tokio::time::timeout(self.request_timeout, async {
-                let resp = self.client.get(&url).send().await?;
-
-                if !resp.status().is_success() {
-                    return Err(A2aError::Discovery {
-                        url: url.clone(),
-                        reason: format!("HTTP {}", resp.status()),
-                    });
-                }
-
-                let bytes =
-                    read_capped(resp, AGENT_CARD)
-                        .await
-                        .map_err(|e| match A2aError::from(e) {
-                            e @ A2aError::BodyTooLarge { .. } => e,
-                            e => A2aError::Discovery {
-                                url: url.clone(),
-                                reason: e.to_string(),
-                            },
-                        })?;
-                // Keep the raw JSON `Value` around (not just the typed `AgentCard`):
-                // signature verification must canonicalize the bytes as received, never a
-                // re-serialization of the typed struct — see `card_signing` module docs (S1).
-                let raw_value: serde_json::Value =
-                    serde_json::from_slice(&bytes).map_err(|e| A2aError::Discovery {
-                        url: url.clone(),
-                        reason: e.to_string(),
-                    })?;
-                let card: AgentCard =
-                    serde_json::from_value(raw_value.clone()).map_err(|e| A2aError::Discovery {
-                        url: url.clone(),
-                        reason: e.to_string(),
-                    })?;
-                Ok((card, raw_value))
-            })
+        let first = self
+            .paths
+            .read()
             .await
-            .map_err(|_| A2aError::Timeout(self.request_timeout))??;
+            .get(base_url)
+            .copied()
+            .unwrap_or(WellKnownPath::AgentCard);
+        let (path, (card, raw_value)) = tokio::time::timeout(self.request_timeout, async {
+            let url = well_known_url(base_url, first);
+            match self.fetch_card(&url).await? {
+                Fetched::Card(found) => Ok((first, *found)),
+                Fetched::Miss { reason } => {
+                    tracing::debug!(%url, %reason, "a2a discovery: no card, trying fallback path");
+                    let second = first.other();
+                    let fallback_url = well_known_url(base_url, second);
+                    match self.fetch_card(&fallback_url).await? {
+                        Fetched::Card(found) => Ok((second, *found)),
+                        Fetched::Miss { reason } => Err(A2aError::Discovery {
+                            url: fallback_url,
+                            reason,
+                        }),
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| A2aError::Timeout(self.request_timeout))??;
 
         self.check_trust(base_url, &card, &raw_value)?;
 
+        self.paths.write().await.insert(base_url.to_owned(), path);
         let mut cache = self.cache.write().await;
         cache.insert(
             base_url.to_owned(),
@@ -320,6 +350,49 @@ impl AgentRegistry {
         );
 
         Ok(card)
+    }
+
+    async fn fetch_card(&self, url: &str) -> Result<Fetched, A2aError> {
+        let resp = self.client.get(url).send().await?;
+        let status = resp.status();
+        if status.is_client_error() {
+            return Ok(Fetched::Miss {
+                reason: format!("HTTP {status}"),
+            });
+        }
+        if !status.is_success() {
+            return Err(A2aError::Discovery {
+                url: url.to_owned(),
+                reason: format!("HTTP {status}"),
+            });
+        }
+
+        let bytes = read_capped(resp, AGENT_CARD)
+            .await
+            .map_err(|e| match A2aError::from(e) {
+                e @ A2aError::BodyTooLarge { .. } => e,
+                e => A2aError::Discovery {
+                    url: url.to_owned(),
+                    reason: e.to_string(),
+                },
+            })?;
+        // Keep the raw JSON `Value` around (not just the typed `AgentCard`):
+        // signature verification must canonicalize the bytes as received, never a
+        // re-serialization of the typed struct — see `card_signing` module docs (S1).
+        let raw_value: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(Fetched::Miss {
+                    reason: e.to_string(),
+                });
+            }
+        };
+        match serde_json::from_value::<AgentCard>(raw_value.clone()) {
+            Ok(card) => Ok(Fetched::Card(Box::new((card, raw_value)))),
+            Err(e) => Ok(Fetched::Miss {
+                reason: e.to_string(),
+            }),
+        }
     }
 
     /// Apply the URL-origin and signature trust checks (S2: combine both axes, most
@@ -801,6 +874,37 @@ mod wiremock_tests {
     use crate::discovery::AgentRegistry;
     use crate::error::A2aError;
     use crate::testing::agent_card_response;
+
+    #[tokio::test]
+    async fn discover_remembers_the_working_path_per_peer() {
+        let server = MockServer::start().await;
+        let base_url = server.uri();
+        Mock::given(method("GET"))
+            .and(path("/.well-known/agent.json"))
+            .respond_with(agent_card_response("legacy-agent", &base_url))
+            .mount(&server)
+            .await;
+
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1));
+        registry.discover(&base_url).await.unwrap();
+        registry.discover(&base_url).await.unwrap();
+
+        let paths: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.url.path().to_owned())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/.well-known/agent-card.json",
+                "/.well-known/agent.json",
+                "/.well-known/agent.json"
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn discover_success() {
