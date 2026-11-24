@@ -103,9 +103,13 @@ fn leaks(output: &str, body: &str) -> Option<String> {
 }
 
 fn preamble() -> String {
-    (0..300)
-        .map(|i| format!("{:032x}\n", i * 7919 + 123_456_789))
-        .collect()
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    for i in 0..300 {
+        writeln!(out, "{:032x}", i * 7919 + 123_456_789).expect("writing to a String");
+    }
+    out
 }
 
 fn failures(build: impl Fn(&Sample) -> String) -> Vec<String> {
