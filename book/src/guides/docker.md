@@ -119,6 +119,8 @@ trivy image --severity HIGH,CRITICAL --exit-code 1 ghcr.io/bug-ops/zeph:latest
 
 Full stack with debug tracing (builds from source via `docker/Dockerfile.dev`, uses host Ollama via `host.docker.internal`):
 
+`Dockerfile.dev` builds on Rust 1.100 (the workspace MSRV) and caches dependency compilation with cargo-chef, so rebuilds after a source-only change skip recompiling dependencies. A workspace test fails if the builder image tag drops below `rust-version`.
+
 ```bash
 # Build and start Qdrant + Zeph with debug logging
 docker compose -f docker/docker-compose.dev.yml up --build

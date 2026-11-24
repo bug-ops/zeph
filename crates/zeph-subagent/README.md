@@ -152,6 +152,12 @@ forward_transcript = false   # default: false; also settable via --forward-subag
 
 Forwarding is structurally non-blocking on the sub-agent's own turn loop: `agent_loop.rs` does a non-blocking `try_send` of a `RawChunk` into a bounded per-task `mpsc` (capacity 128, tail-drop on full), and a manager-owned drain performs the one sanitize step before dispatching to whichever consumer surfaces (`ForwardSurfaces`) are active for the session.
 
+## Project instructions and `ask_user`
+
+Sub-agents receive the parent's project instruction files (`CLAUDE.md`, `AGENTS.md`, `zeph.md`, ...) after their definition body. Set `instructions = "none"` under `[agents]` to opt out globally, or `permissions.instructions: none` in a definition to opt out per agent; `--migrate-config` adds the key.
+
+With `permissions.ask_user: allow`, a sub-agent can ask the user a question; foreground `/agent` runs route it through the parent's channel. Background sub-agents never get `ask_user`.
+
 ## Delegation mode
 
 Tri-state control over whether the main agent may spawn sub-agents, and who may trigger it (spec `042-subagent-delegation-mode-parity`, issue #5857):

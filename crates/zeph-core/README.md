@@ -26,7 +26,7 @@ persistence, experiments — are implemented in dedicated sibling crates and *wi
 | `config::migrate` | Re-export of `zeph_config::migrate` — `ConfigMigrator` performs lossless TOML migration using `toml_edit`: compares user config against the embedded canonical `default.toml`, appends missing sections as commented-out documented blocks, reorders top-level sections by canonical group order, and deduplicates on re-run (idempotent). `MigrationResult` carries `output`, `changed_count`, and `sections_changed`. Exposed via `zeph migrate-config [--in-place] [--diff]` |
 | `config_watcher` | Filesystem watcher (`notify-debouncer-mini`) that reloads `config.toml` in place without an agent restart |
 | `context` | Agent-side context assembly glue over `zeph-context`: re-exports `ContextBudget` / `BudgetAllocation` and layers instruction blocks on top. The stateless budget, assembler, and typed-page machinery live in `zeph-context`; the assembly service itself lives in `zeph-agent-context` |
-| `cost` | Token cost tracking and budgeting |
+| `cost` | Token cost tracking and budgeting; `CostTracker::new` takes a typed `DailyBudget` and amounts are `Cents` from `zeph-common` |
 | `daemon` | Background daemon mode with PID file lifecycle |
 | `debug_dump` | `DebugDumper` — writes numbered `{id:04}-request.json`, `{id:04}-response.txt`, and `{id:04}-tool-{name}.txt` files to a timestamped session directory; request dumps include model, token limit, tools, temperature, cache metadata, and message payloads. Enabled via `--debug-dump [PATH]` CLI flag, `[debug] enabled = true`, or the `/debug-dump [path]` slash command; hooks into both streaming and non-streaming LLM paths |
 | `durable` | Concrete cryptographic backing (key material resolution) for the `zeph-durable` execution layer |
@@ -49,9 +49,9 @@ persistence, experiments — are implemented in dedicated sibling crates and *wi
 | `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
 | `runtime_context` | `RuntimeContext` — `Copy` struct of startup mode flags passed by value to subsystem initializers |
 | `runtime_layer` | `RuntimeLayer` trait — observe-only middleware hooks around LLM calls and tool dispatch |
-| `serve` | `SessionActor` and `LiveSessionRegistry` backing `zeph serve` |
+| `serve` | `SessionActor` and `LiveSessionRegistry` backing `zeph serve`; an `ask_user` SSE event carries the agent's question, answered with `POST /sessions/{id}/answer` |
 | `session_resume` | Resume-visibility presentation primitive (resume banner content) |
-| `skill_loader` | `SkillLoaderExecutor` — `ToolExecutor` exposing the `load_skill` tool; looks a skill name up in the shared `Arc<RwLock<SkillRegistry>>` and returns the SKILL.md body (truncated to `MAX_TOOL_OUTPUT_CHARS`); name capped at 128 characters; unknown names return a human-readable error rather than a hard failure |
+| `skill_loader` | `SkillLoaderExecutor` — `ToolExecutor` exposing the `load_skill` tool; looks a skill name up in the shared `Arc<RwLock<SkillRegistry>>` and returns the SKILL.md body (truncated to `MAX_TOOL_OUTPUT_CHARS`); name capped at 128 characters; unknown names return a human-readable error rather than a hard failure; an optional `path` argument loads a skill's reference, script, and asset files with traversal checks and a size cap, and the output carries the `skill_resource` audit claim |
 | `skill_invoker` | `SkillInvokeExecutor` — `ToolExecutor` exposing the `invoke_skill` tool with trust-aware sanitization; `Blocked` skills are refused, non-`Trusted` bodies pass through `sanitize_skill_text`, `Quarantined` bodies are additionally wrapped with `wrap_quarantined`; exempt from adversarial policy, VIGIL gate, and tool-schema filter |
 | `skill_trust_gate` | `SkillTrustGate` / `SkillBodyResolution` — the shared trust-gating pipeline both skill-body executors above run through, so a quarantined or blocked skill is resolved identically on either path |
 | `system_metrics` | Periodic system-metrics background task (feature `sysinfo`) |

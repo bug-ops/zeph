@@ -280,6 +280,7 @@ LLM responses are scanned for secret patterns using compiled regexes before disp
 - Regex-based matching replaces detected secrets with `[REDACTED]`, preserving original whitespace formatting
 - A prefix glued to a letter or digit (after ANSI, quoted-printable or double-encoded text) is redacted only when the text after it is key-shaped, so identifiers such as `disk-usage` or `task-runner-for-k8s-clusters` are left intact
 - Enabled by default (`security.redact_secrets = true`), applied to both streaming and non-streaming responses
+- Error text that comes back from an upstream service (LLM provider errors, the skill miner's GitHub error body) goes through `sanitize_upstream_text` before it is logged or shown. It strips ECMA-48 escape sequences, tabs, newlines, zero-width and bidirectional-control codepoints, redacts secrets, including ones split across lines, and caps the length. Line-break gluing can over-redact the lines that follow a complete `Authorization: Bearer` value.
 
 ## Credential Scrubbing in Context
 

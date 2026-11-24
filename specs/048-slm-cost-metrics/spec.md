@@ -70,6 +70,12 @@ unlimited; existing configs with an explicit `max_daily_cents` value (including 
 `0`) are preserved — migration step 101 only appends an advisory comment, it never rewrites an
 active value.
 
+## Typed Money and Budget (#7176, #7192)
+
+- Amounts are `zeph_common::money::Cents` and per-1000-token rates are `CentsPer1k` (spec 043 FR-018). `ModelPricing` carries four `CentsPer1k` rates; `CostTracker::price_of`, `current_spend`, `session_spend`, `cps` and `MetricsSnapshot.cost_spent_cents` / `cost_cps_cents` are `Cents`. `Channel::send_usage` takes `Cents` (the cumulative session cost). Config (`max_daily_cents` stays an integer), database and wire encodings are unchanged because the newtypes serialize transparently.
+- `CostTracker::new(DailyBudget)` replaces the former enabled flag plus bare amount. `DailyBudget` is `Unlimited | Limited(Cents)` and `DailyBudget::from_config(max_daily_cents)` maps `0` to `Unlimited` at the config boundary. `is_exhausted(spent)` is true once spend reaches the limit and fails closed: a NaN or non-positive limit is always exhausted. `check_budget` returns `BudgetExhausted { spent_cents, budget_cents }` only for a `Limited` budget.
+- NEVER compare a budget against `0.0` as an "unlimited" sentinel; use `DailyBudget` (#7176)
+
 ## SLM Provider Configuration
 
 Add to `[[llm.providers]]` in config when Ollama is available locally:

@@ -57,6 +57,8 @@ cargo +nightly fmt --check
 cargo clippy --all-targets
 ```
 
+CI also lints `--features full` (the required `lint-clippy-full` job) and builds on the MSRV, Rust 1.100. Run `cargo clippy --profile ci --workspace --all-targets --features full -- -D warnings` before pushing changes that touch feature-gated code.
+
 ### Coverage
 
 ```bash
@@ -77,6 +79,14 @@ cargo llvm-cov --all-features --workspace
 
 All external contributors must sign the [CLA](CLA.md) before their pull request can be merged. The CLA bot will automatically comment on your PR with instructions. Signatures are stored in the protected `cla-signatures` branch.
 
+## Development Sub-Agents
+
+The repository ships Rust development sub-agents in `.zeph/agents/` (architect, developer, testing, performance, security, reviewer, CI/CD, debugger, critic). They pass results to each other through handoff files, defined by the `rust-agent-handoff` skill (`.zeph/skills/rust-agent-handoff/SKILL.md`, protocol v2).
+
+- Each agent writes one Markdown file, `.local/handoff/{TS}-{suffix}.md`, with flat YAML frontmatter, and starts its final message with the same frontmatter.
+- Per-role `## Output` sections live in the agent's own definition under `.zeph/agents/`, not in the skill.
+- Protocol v2 replaces the nested `.yaml` handoff files of v1.
+
 ## Pull Requests
 
 1. Create a feature branch: `feat/<scope>/<description>` or `fix/<scope>/<description>`
@@ -94,6 +104,9 @@ All external contributors must sign the [CLA](CLA.md) before their pull request 
 ## Code Style
 
 - Follow workspace clippy lints (pedantic enabled)
+- Suppress a lint with `#[expect(lint, reason = "...")]`, never a bare `#[allow]`: `clippy::allow_attributes` and `clippy::allow_attributes_without_reason` are enabled workspace-wide, so a suppression needs a one-line reason and a stale one fails the build
+- Model money with `zeph_common::money::Cents` (amounts) and `CentsPer1k` (per-1000-token rates) instead of raw `f64`; the daily spend cap is a `zeph_core::cost::DailyBudget` (`Unlimited` or `Limited(Cents)`)
+- Strip Markdown code fences from LLM output with `zeph_common::llm_response::strip_code_fence`; do not add a local copy
 - Use `cargo +nightly fmt` for formatting
 - Avoid unnecessary comments -- code should be self-explanatory
 - Comments are only for cognitively complex blocks

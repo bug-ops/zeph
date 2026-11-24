@@ -37,6 +37,8 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 
 While a turn is running, the input separator row carries a `ctrl+c to interrupt` hint. `q` (normal mode) and the `app:quit` palette entry remain the direct exit paths; `Esc` no longer quits, and is reserved for dismissing overlays and leaving insert mode.
 
+`ask_user` questions render in the TUI as a prompt; closed single-choice questions render as a selection and multi-choice questions as a checkbox list.
+
 ## Inline `@` mention picker
 
 Typing `@` in the input opens a non-modal popup above the input row. It never steals keystrokes: every character still lands in the input buffer, and the picker derives its query from the buffer, so cursor movement, paste, and backspace all behave normally. On an empty query, results are ordered by recency (uncommitted changes first, then mtime descending) from the background-built `FileIndex`.

@@ -190,7 +190,7 @@ The `Channel` trait defined 16 methods at the time this section was written (see
 Previously dropped (CHAN-01 fix):
 - `send_thinking_chunk` — streams extended thinking tokens
 - `send_stop_hint` — signals LLM stop reason to channel
-- `send_usage` — delivers token usage stats to channel
+- `send_usage` — delivers token usage stats (`TokenUsage`) and the cumulative session cost (`Cents`, #7192) to channel
 - `send_tool_start` — notifies channel of tool execution start
 
 These four now have explicit dispatch in `AnyChannel` and `TuiChannel`, matching the existing dispatch for `send`, `send_chunk`, `send_typing`, `send_status`, `send_tool_output`, `recv`, `supports_exit`, and others.

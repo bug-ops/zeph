@@ -38,7 +38,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `provider` | `LlmProvider` trait plus `TokenUsage` — the single named usage type (`input`, `output`, `cache_write`, `cache_read`) shared by pricing, cost tracking, channels, and ACP |
 
 > [!NOTE]
-> Claude `usage.speed` is parsed and shown in `/provider status`; OpenAI, compatible, and Ollama providers expose logprobs for chain-of-entropy intra escalation.
+> Claude `usage.speed` is parsed and shown in `/provider status`; OpenAI, compatible, and Ollama providers expose logprobs for chain-of-entropy intra escalation. Chain-of-entropy escalation also covers `chat_with_tools` with a bounded shadow stage, and upstream error bodies pass through `sanitize_upstream_text` from `zeph-common`.
 
 **Re-exports:** `LlmProvider`, `LlmProviderDyn`, `LlmError`, `Extractor`, `ChatStream`, `StreamChunk`, `CompatibleConfig`, `OpenAiConfig`, `MaskedProvider`, `SpeechToText`
 

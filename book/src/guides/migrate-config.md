@@ -2,7 +2,7 @@
 
 As Zeph gains new features, the configuration file grows. When you upgrade from an older version, your existing `config.toml` may be missing entire sections. The `migrate-config` command closes that gap: it reads your config, adds every missing parameter as a commented-out block with documentation, and reformats the result.
 
-Existing values are never changed, with one exception: a Claude `[[llm.providers]]` entry whose `model` is the retired `claude-sonnet-4-5-20250929` is rewritten to its replacement `claude-sonnet-5-5`. The command is safe to run multiple times — the output is identical on each run (idempotent).
+Existing values are never changed, with one exception: a Claude `[[llm.providers]]` entry whose `model` is the retired `claude-sonnet-4-5-20250929` is rewritten to its replacement `claude-sonnet-5-5`. When the config has an active `[agents]` table, the command also adds an `instructions = "inherit"` line to it (migration step 120); see [Instruction Inheritance](../advanced/sub-agents.md#instruction-inheritance). The command is safe to run multiple times — the output is identical on each run (idempotent).
 
 ## Quick Start
 

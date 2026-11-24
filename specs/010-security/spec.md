@@ -187,10 +187,10 @@ follow-up issue filed with the #3077 PR.
 ## `unsafe_code = "deny"` Workspace-Wide
 
 - `unsafe_code = "deny"` is set workspace-wide and enforced by the compiler
-- The only exceptions are the scoped `#[allow(unsafe_code)]` sites listed in the registry below, each with a `// SAFETY:` comment on every `unsafe` block
+- The only exceptions are the scoped `#[expect(unsafe_code, reason = "...")]` sites listed in the registry below (since the reasoned-suppression rollout, #7150, no `#[allow(...)]` attribute remains in the workspace), each with a `// SAFETY:` comment on every `unsafe` block
 - Every new unsafe site requires a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
 - Categories (a)-(d) are descriptive labels of the registered sites, not blanket permissions; a site not named in the registry is non-compliant
-- Inventory: `rg -n 'allow\(unsafe_code\)' src crates`
+- Inventory: `rg -n -U 'expect\(\s*unsafe_code' src crates`
 - Channel::send_diff was removed (#6973); no sanctioned Channel signature changes remain from #6964.
 
 ### Unsafe registry

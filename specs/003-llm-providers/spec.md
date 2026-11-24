@@ -81,7 +81,7 @@ Runtime dispatch — no `Box<dyn LlmProvider>` in hot paths:
 ```
 AnyProvider { Ollama, Claude, OpenAi, Gemini, Candle (feature "candle"),
               Compatible, Router(Box<RouterProvider>), Triage(Box<TriageRouter>),
-              Gonka (feature "gonka"), Cocoon (feature "cocoon") }
+              Gonka(Box<GonkaProvider>) (feature "gonka"), Cocoon (feature "cocoon") }
 ```
 
 ## Implementations
@@ -209,6 +209,14 @@ detail and a context-length 400 becomes `ContextLengthExceeded`. No `ollama-rs` 
 `LlmError::Other`. `warmup` is a chat request: it goes through `send_chat_request` (and so
 `send_with_retry`) with the same mapping. `wrap_transport_error` keeps the typed `LlmError::Http` (with `is_timeout()` /
 `is_connect()` and the source chain) and only logs the Ollama context (#7131).
+
+### Ollama Tool History (#7171)
+
+`chat_with_tools` converts history through `convert_message_structured`: an assistant message holding `ToolUse` parts is sent as one assistant `ChatMessage` whose `tool_calls` carry each call's `name` and `input` (as `arguments`) plus the joined text parts as content and the joined `ThinkingBlock` text as `thinking`; tool results are `tool`-role messages. Prior tool calls therefore no longer reach Ollama as flattened prose. Ollama has no tool-call ids on the wire, so response calls are given synthetic `call_{i}` ids.
+
+### Upstream Error Text (#7167, #7173)
+
+`zeph-llm` error text goes through `sanitize_provider_text`, an alias of `zeph_common::secret_redact::sanitize_upstream_text` (spec 043 FR-017): ECMA-48 escapes, tabs, newlines and zero-width/bidi codepoints are removed or replaced and secrets split across lines are redacted before the text is stored in `LlmError`.
 
 ### Response Body Caps and Error Bodies (#7131)
 

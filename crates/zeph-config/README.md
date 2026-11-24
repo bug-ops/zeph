@@ -48,6 +48,8 @@ embedding_model = "qwen3-embedding"
 | `VaultConfig` | `[vault]` | Vault backend selection (`env` or `age`; defaults to `age`) |
 
 > [!NOTE]
+> `[agents] instructions` (`inherit` or `none`, `SubagentInstructions`) controls whether sub-agents receive the parent's project instruction files; `--migrate-config` step 120 adds it. `[[llm.providers]]` names that differ only by case are rejected as duplicates at config load.
+
 > Range-checked newtypes (`KeepalivePingCap`, `AskUserTimeout`, `NonNegativeF64`) make out-of-range `max_consecutive_pings`, `timeout_secs`, and `llm.coe.intra_threshold` values fail config load. Shipped defaults select `claude-sonnet-5-5`; `--migrate-config` rewrites the retired `claude-sonnet-4-5-20250929` and adds the `[tools.ask_user]` and `[llm.cache_keepalive]` sections.
 
 ## Usage

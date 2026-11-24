@@ -53,7 +53,7 @@ related:
 - Error handling: `thiserror` in library crates, `anyhow` in application code
 - Config: TOML with `ZEPH_*` env overrides; secrets via VaultProvider
 - TLS: rustls everywhere; openssl-sys is banned
-- Unsafe: `unsafe_code = "deny"` workspace-wide; the only exceptions are the `#[allow(unsafe_code)]` sites listed in the specs/010-security §unsafe registry, each with a `// SAFETY:` comment; a new site needs a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
+- Unsafe: `unsafe_code = "deny"` workspace-wide; the only exceptions are the `#[expect(unsafe_code, reason = "...")]` sites listed in the specs/010-security §unsafe registry, each with a `// SAFETY:` comment; a new site needs a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
 
 ## III. Testing (NON-NEGOTIABLE)
 
@@ -74,6 +74,7 @@ related:
 
 - `cargo +nightly fmt` for formatting; clippy pedantic + all = warn, -D warnings
 - No `unwrap()` / `expect()` in production code — use `?` and proper error types
+- Lint suppressions are `#[expect(lint, reason = "...")]` only; `#[allow(...)]` is warned by `clippy::allow_attributes` and a stale `#[expect]` is a warning (#7150)
 - Builders: fluent API with `#[must_use]`, accept `impl Into<String>` for string params
 - Public APIs must have doc comments; internal logic comments only where non-obvious
 - No emoji in code, comments, commit messages, or PR descriptions

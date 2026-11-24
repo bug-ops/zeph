@@ -957,7 +957,7 @@ Each `[[llm.providers]]` entry supports:
 | Field | Type | Description |
 |-------|------|-------------|
 | `type` | string | Provider backend (`ollama`, `claude`, `openai`, `gemini`, `candle`, `compatible`) |
-| `name` | string? | Identifier for routing; required for `compatible` type |
+| `name` | string? | Identifier for routing; required for `compatible` type. Names are case-insensitive: `Fast` and `fast` in one pool are rejected as duplicates when the config loads |
 | `model` | string? | Chat model |
 | `base_url` | string? | API endpoint (Ollama / Compatible) |
 | `embedding_model` | string? | Embedding model |

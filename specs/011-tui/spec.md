@@ -208,6 +208,7 @@ MetricsCollector (Arc<RwLock<>>)
 - Token usage, latency, cost per turn — updated after every LLM response
 - Source labels: which provider/model handled each turn
 - Graph metrics (if `graph-memory`): entity count, edge count, community count
+- MCP tools (#7172, #7178, #7182): `MetricsSnapshot.mcp_tools` is a sorted `Arc<[String]>` of the qualified names of every loaded MCP tool (cheap to clone per snapshot); `mcp_tool_count()` is a method derived from it, not a stored field. The TUI tools view and its MCP list read `mcp_tools`, so they list all loaded tools, not only those used in the current turn (`active_mcp_tools`)
 
 ## Commands
 
