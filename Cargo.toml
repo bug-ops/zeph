@@ -19,7 +19,7 @@ publish = true
 age = { version = "0.12.1", default-features = false }
 # unstable_* may break in 5.x minors; zeph-acp exposes them in the `acp` bundle, so stay on one minor.
 agent-client-protocol = "~5.5.1"
-anyhow = "1.0.104"
+anyhow = "1.0.105"
 arboard = "3.7.0"
 arc-swap = "1.9.5"
 async-stream = "0.3.6"
@@ -29,13 +29,13 @@ axum = "0.8.9"
 base64 = "0.23.1"
 bech32 = "0.12.0"
 blake3 = "1.8.7"
-bytes = "1.12.1"
+bytes = "1.12.2"
 candle-core = { version = "0.11.1", default-features = false }
 candle-nn = { version = "0.11.1", default-features = false }
 candle-transformers = { version = "0.11.1", default-features = false }
 chacha20poly1305 = "0.11.0"
 chrono = { version = "0.4.45", default-features = false }
-clap = "4.6.7"
+clap = "4.6.10"
 cpu-time = "1.0"
 criterion = "0.8.2"
 cron = "0.17.0"
@@ -49,26 +49,26 @@ flate2 = "1.1.11"
 futures = "0.3.34"
 futures-core = "0.3.34"
 glob = "0.3.4"
-globset = "0.4.21"
+globset = "0.4.22"
 hex = "0.4.3"
 hf-hub = { version = "1.0.0", default-features = false }
 hmac = "0.13"
 http = "1.5.0"
 http-body-util = "0.1.5"
-ignore = "0.4.34"
+ignore = "0.4.35"
 image = { version = "0.25.10", default-features = false }
 include_dir = "0.7.4"
 indexmap = "2.14.2"
 indoc = "2.0.8"
 insta = "1.49.0"
 k256 = { version = "0.14.0", default-features = false }
-landlock = "0.4.7"
-lru = "0.19.0"
+landlock = "0.4.8"
+lru = "0.19.2"
 metrics = "0.24.6"
 metrics-util = "0.20.4"
 nix = { version = "0.32.0", default-features = false }
 notify = "8.2.2"
-notify-debouncer-mini = "0.7"
+notify-debouncer-mini = "0.8.0"
 nucleo-matcher = "0.3.1"
 ollama-rs = { version = "0.3.6", default-features = false }
 open = "5.4.5"
@@ -88,10 +88,10 @@ qdrant-client = { version = "1.20.0", default-features = false }
 rand = "0.10.4"
 rand_distr = "0.6"
 ratatui = "0.30.2"
-regex = "1.13.1"
+regex = "1.13.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["query"] }
 ripemd = "0.2"
-rmcp = "3.10.0"
+rmcp = "3.11.0"
 rubato = "5.1.0"
 rustix = { version = "1.1.6", default-features = false }
 schemars = "1.2.3"
@@ -107,13 +107,13 @@ sha2 = "0.11.1"
 shell-words = "1.1.1"
 signal-hook = "0.4.6"
 similar = "3.2.1"
-sqlx = { version = "0.9.0", default-features = false }
+sqlx = { version = "0.9.1", default-features = false }
 subtle = "2.6"
 symphonia = { version = "0.6.1", default-features = false }
 sysinfo = { version = "0.40.4", default-features = false }
 teloxide = { version = "0.17", default-features = false }
 tempfile = "3.27"
-testcontainers = "0.27.3"
+testcontainers = "0.28.0"
 tar = "0.4.46"
 testcontainers-modules = { version = "0.15", default-features = false }
 thiserror = "2.0.21"
@@ -124,8 +124,8 @@ tokio = "1.54.1"
 tokio-stream = "0.1.19"
 tokio-tungstenite = { version = "0.30.0", default-features = false }
 tokio-util = "0.7.20"
-toml = "1.2.1"
-toml_edit = "0.25.19"
+toml = "1.2.3"
+toml_edit = "0.25.21"
 tower = "0.5.3"
 tower-http = { version = "0.7.1", default-features = false }
 tracing = "0.1.44"
@@ -149,9 +149,9 @@ tree-sitter-yaml = "0.7.2"
 tree-sitter-sequel = "0.3.13"
 unicode-normalization = "0.1.26"
 unicode-width = "0.2.3"
-url = "2.5.8"
-uuid = "1.29.2"
-walkdir = "2.5"
+url = "2.5.9"
+uuid = "1.29.3"
+walkdir = "2.5.1"
 windows-sys = "0.61.2"
 wiremock = "0.6.5"
 zeph-a2a = { path = "crates/zeph-a2a", version = "0.25.0" }
@@ -186,7 +186,7 @@ zeph-tools = { path = "crates/zeph-tools", default-features = false, version = "
 zeph-tui = { path = "crates/zeph-tui", default-features = false, version = "0.25.0" }
 zeph-worktree = { path = "crates/zeph-worktree", version = "0.25.0" }
 zeph-vault = { path = "crates/zeph-vault", version = "0.25.0" }
-zeroize = { version = "1.9.1", default-features = false }
+zeroize = { version = "1.9.2", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
