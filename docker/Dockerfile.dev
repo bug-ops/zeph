@@ -14,7 +14,7 @@ RUN CARGO_BUILD_WARNINGS=warn cargo chef cook --release --locked --recipe-path r
 COPY . .
 RUN cargo build --release --locked ${CARGO_FEATURES:+--features $CARGO_FEATURES}
 
-FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
