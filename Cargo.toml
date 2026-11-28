@@ -18,7 +18,7 @@ publish = true
 [workspace.dependencies]
 age = { version = "0.12.1", default-features = false }
 # unstable_* may break in 5.x minors; zeph-acp exposes them in the `acp` bundle, so stay on one minor.
-agent-client-protocol = "~5.5.1"
+agent-client-protocol = "~5.6.1"
 anyhow = "1.0.104"
 arboard = "3.7.0"
 arc-swap = "1.9.5"
