@@ -29,7 +29,7 @@ services:
       retries: 5
 
   pyroscope:
-    image: grafana/pyroscope:1.9.0
+    image: grafana/pyroscope:2.4.4@sha256:288da0b9b73193b5aee0843b6f1f5d033ee697d4afa280efb95de338d1409870
     ports:
       - "127.0.0.1:4040:4040"
     healthcheck:
