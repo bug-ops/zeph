@@ -14,7 +14,7 @@
 #   pyroscope_endpoint = "http://localhost:4040"  # requires profiling-pyroscope feature
 services:
   tempo:
-    image: grafana/tempo:2.6.0
+    image: grafana/tempo:3.1.1@sha256:64e2fbd56d9c2b3412a4b430a58ea59e91a670b1e75f920a0c702213ad145044
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
