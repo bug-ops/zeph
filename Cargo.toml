@@ -67,7 +67,7 @@ lru = "0.19.0"
 metrics = "0.24.6"
 metrics-util = "0.20.4"
 nix = { version = "0.32.0", default-features = false }
-notify = "8.2.2"
+notify = "9.0.0"
 notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
 ollama-rs = { version = "0.3.6", default-features = false }

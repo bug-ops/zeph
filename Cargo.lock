@@ -4781,13 +4781,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "notify"
+version = "9.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5482d5bd11b91a337521980e5d52fe115bdccfb4c217099daaf0abd69159dc4e"
+dependencies = [
+ "bitflags 2.13.2",
+ "inotify",
+ "kqueue",
+ "libc",
+ "log",
+ "mio",
+ "notify-types",
+ "objc2-core-foundation",
+ "objc2-core-services",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "notify-debouncer-mini"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17849edfaabd9a5fef1c606d99cfc615a8e99f7ac4366406d86c7942a3184cf2"
 dependencies = [
  "log",
- "notify",
+ "notify 8.2.2",
  "notify-types",
  "tempfile",
 ]
@@ -10598,6 +10618,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "xxhash-rust"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40de123dbb523ebcc00d61ec01840ad192578afc378d859f3429caa38308fad5"
+
+[[package]]
 name = "yoke"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11002,7 +11028,7 @@ dependencies = [
  "insta",
  "metrics",
  "metrics-util",
- "notify",
+ "notify 9.0.0",
  "notify-debouncer-mini",
  "parking_lot 0.13.0",
  "proptest",
@@ -11144,7 +11170,7 @@ version = "0.25.0"
 dependencies = [
  "futures",
  "ignore",
- "notify",
+ "notify 9.0.0",
  "notify-debouncer-mini",
  "schemars 1.2.3",
  "serde",
@@ -11440,7 +11466,7 @@ dependencies = [
  "dirs 7.0.0",
  "futures",
  "include_dir",
- "notify",
+ "notify 9.0.0",
  "notify-debouncer-mini",
  "proptest",
  "qdrant-client",
